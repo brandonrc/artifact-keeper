@@ -19,7 +19,7 @@ Follow-up TODOs: None
 ================================================================================
 -->
 
-# Indiana Jones Constitution
+# Artifact Keeper Constitution
 
 ## Core Principles
 
