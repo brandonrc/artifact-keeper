@@ -64,7 +64,7 @@ services:
     environment:
       VITE_API_URL: http://backend:8080
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5173"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:5173').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 5s
       timeout: 10s
       start_period: 30s
