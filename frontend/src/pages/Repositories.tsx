@@ -1,12 +1,15 @@
-import { useState } from 'react'
-import { Table, Button, Space, Tag, Modal, Form, Input, Select, Switch, message, Popconfirm, Row, Col, Tooltip } from 'antd'
-import { PlusOutlined, DeleteOutlined, EyeOutlined, EditOutlined, FilterOutlined, ReloadOutlined } from '@ant-design/icons'
+import { useState, useCallback } from 'react'
+import { Table, Button, Space, Tag, Modal, Form, Input, Select, Switch, message, Row, Col, Tooltip, Typography, Alert } from 'antd'
+import { PlusOutlined, DeleteOutlined, EyeOutlined, EditOutlined, FilterOutlined, ReloadOutlined, ExclamationCircleOutlined } from '@ant-design/icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import type { ColumnsType, TableProps } from 'antd/es/table'
 import { repositoriesApi } from '../api'
 import type { Repository, CreateRepositoryRequest, RepositoryFormat, RepositoryType } from '../types'
 import { useDocumentTitle } from '../hooks'
+import { RepoWizard } from '../components/admin'
+
+const { Text } = Typography
 
 const formatOptions: { value: RepositoryFormat; label: string }[] = [
   { value: 'maven', label: 'Maven' },
@@ -38,12 +41,19 @@ const formatBytes = (bytes: number): string => {
 
 const Repositories = () => {
   useDocumentTitle('Repositories')
-  const [createModalOpen, setCreateModalOpen] = useState(false)
+
+  // Modal states
+  const [wizardOpen, setWizardOpen] = useState(false)
   const [editModalOpen, setEditModalOpen] = useState(false)
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [editingRepo, setEditingRepo] = useState<Repository | null>(null)
+  const [deletingRepo, setDeletingRepo] = useState<Repository | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+
+  // Filter states
   const [formatFilter, setFormatFilter] = useState<string | undefined>()
   const [typeFilter, setTypeFilter] = useState<string | undefined>()
-  const [createForm] = Form.useForm()
+
   const [editForm] = Form.useForm()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -51,19 +61,6 @@ const Repositories = () => {
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['repositories', formatFilter, typeFilter],
     queryFn: () => repositoriesApi.list({ per_page: 100, format: formatFilter, repo_type: typeFilter }),
-  })
-
-  const createMutation = useMutation({
-    mutationFn: (data: CreateRepositoryRequest) => repositoriesApi.create(data),
-    onSuccess: () => {
-      message.success('Repository created successfully')
-      queryClient.invalidateQueries({ queryKey: ['repositories'] })
-      setCreateModalOpen(false)
-      createForm.resetFields()
-    },
-    onError: () => {
-      message.error('Failed to create repository')
-    },
   })
 
   const updateMutation = useMutation({
@@ -86,15 +83,20 @@ const Repositories = () => {
     onSuccess: () => {
       message.success('Repository deleted successfully')
       queryClient.invalidateQueries({ queryKey: ['repositories'] })
+      setDeleteModalOpen(false)
+      setDeletingRepo(null)
+      setDeleteConfirmText('')
     },
     onError: () => {
       message.error('Failed to delete repository')
     },
   })
 
-  const handleCreate = async (values: CreateRepositoryRequest) => {
-    createMutation.mutate(values)
-  }
+  const handleWizardSuccess = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['repositories'] })
+    setWizardOpen(false)
+    message.success('Repository created successfully')
+  }, [queryClient])
 
   const handleEdit = (repo: Repository) => {
     setEditingRepo(repo)
@@ -109,6 +111,18 @@ const Repositories = () => {
   const handleUpdate = async (values: Partial<CreateRepositoryRequest>) => {
     if (editingRepo) {
       updateMutation.mutate({ key: editingRepo.key, data: values })
+    }
+  }
+
+  const handleDeleteClick = (repo: Repository) => {
+    setDeletingRepo(repo)
+    setDeleteConfirmText('')
+    setDeleteModalOpen(true)
+  }
+
+  const handleDeleteConfirm = () => {
+    if (deletingRepo && deleteConfirmText === deletingRepo.key) {
+      deleteMutation.mutate(deletingRepo.key)
     }
   }
 
@@ -192,18 +206,14 @@ const Repositories = () => {
           >
             Edit
           </Button>
-          <Popconfirm
-            title="Delete repository"
-            description="Are you sure you want to delete this repository? This will delete all artifacts."
-            onConfirm={() => deleteMutation.mutate(record.key)}
-            okText="Yes"
-            cancelText="No"
-            okButtonProps={{ danger: true }}
+          <Button
+            type="link"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => handleDeleteClick(record)}
           >
-            <Button type="link" danger icon={<DeleteOutlined />} loading={deleteMutation.isPending}>
-              Delete
-            </Button>
-          </Popconfirm>
+            Delete
+          </Button>
         </Space>
       ),
     },
@@ -224,7 +234,7 @@ const Repositories = () => {
               onClick={handleRefresh}
             />
           </Tooltip>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setWizardOpen(true)}>
             Create Repository
           </Button>
         </Space>
@@ -280,80 +290,12 @@ const Repositories = () => {
         }}
       />
 
-      {/* Create Modal */}
-      <Modal
-        title="Create Repository"
-        open={createModalOpen}
-        onCancel={() => {
-          setCreateModalOpen(false)
-          createForm.resetFields()
-        }}
-        footer={null}
-      >
-        <Form
-          form={createForm}
-          layout="vertical"
-          onFinish={handleCreate}
-          initialValues={{ is_public: false, repo_type: 'local' }}
-        >
-          <Form.Item
-            name="key"
-            label="Repository Key"
-            rules={[
-              { required: true, message: 'Please enter a repository key' },
-              { pattern: /^[a-z0-9-]+$/, message: 'Key must be lowercase alphanumeric with dashes' },
-            ]}
-          >
-            <Input placeholder="my-repo" />
-          </Form.Item>
-
-          <Form.Item
-            name="name"
-            label="Name"
-            rules={[{ required: true, message: 'Please enter a name' }]}
-          >
-            <Input placeholder="My Repository" />
-          </Form.Item>
-
-          <Form.Item name="description" label="Description">
-            <Input.TextArea placeholder="Repository description" rows={3} />
-          </Form.Item>
-
-          <Form.Item
-            name="format"
-            label="Format"
-            rules={[{ required: true, message: 'Please select a format' }]}
-          >
-            <Select options={formatOptions} placeholder="Select format" />
-          </Form.Item>
-
-          <Form.Item
-            name="repo_type"
-            label="Type"
-            rules={[{ required: true, message: 'Please select a type' }]}
-          >
-            <Select options={repoTypeOptions} placeholder="Select type" />
-          </Form.Item>
-
-          <Form.Item name="is_public" label="Public" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit" loading={createMutation.isPending}>
-                Create
-              </Button>
-              <Button onClick={() => {
-                setCreateModalOpen(false)
-                createForm.resetFields()
-              }}>
-                Cancel
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
+      {/* Create Repository Wizard */}
+      <RepoWizard
+        visible={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onSuccess={handleWizardSuccess}
+      />
 
       {/* Edit Modal */}
       <Modal
@@ -402,6 +344,61 @@ const Repositories = () => {
             </Space>
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* Delete Confirmation Modal with Type-to-Confirm */}
+      <Modal
+        title={
+          <Space>
+            <ExclamationCircleOutlined style={{ color: '#ff4d4f' }} />
+            <span>Delete Repository</span>
+          </Space>
+        }
+        open={deleteModalOpen}
+        onCancel={() => {
+          setDeleteModalOpen(false)
+          setDeletingRepo(null)
+          setDeleteConfirmText('')
+        }}
+        footer={[
+          <Button key="cancel" onClick={() => {
+            setDeleteModalOpen(false)
+            setDeletingRepo(null)
+            setDeleteConfirmText('')
+          }}>
+            Cancel
+          </Button>,
+          <Button
+            key="delete"
+            type="primary"
+            danger
+            loading={deleteMutation.isPending}
+            disabled={deleteConfirmText !== deletingRepo?.key}
+            onClick={handleDeleteConfirm}
+          >
+            Delete Repository
+          </Button>,
+        ]}
+      >
+        <Alert
+          type="error"
+          message="This action cannot be undone"
+          description={
+            <>
+              Deleting repository <Text strong>{deletingRepo?.key}</Text> will permanently remove all artifacts and metadata.
+            </>
+          }
+          style={{ marginBottom: 16 }}
+        />
+        <div style={{ marginBottom: 8 }}>
+          <Text>To confirm, type the repository key <Text strong code>{deletingRepo?.key}</Text> below:</Text>
+        </div>
+        <Input
+          placeholder={deletingRepo?.key}
+          value={deleteConfirmText}
+          onChange={(e) => setDeleteConfirmText(e.target.value)}
+          status={deleteConfirmText && deleteConfirmText !== deletingRepo?.key ? 'error' : undefined}
+        />
       </Modal>
     </div>
   )
