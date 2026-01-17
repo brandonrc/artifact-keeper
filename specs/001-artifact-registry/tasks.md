@@ -61,7 +61,7 @@
 
 - [x] T023 Define storage trait for artifact backends in backend/src/storage/mod.rs
 - [x] T024 [P] Implement filesystem storage backend in backend/src/storage/filesystem.rs
-- [ ] T025 [P] Implement S3 storage backend with aws-sdk-s3 in backend/src/storage/s3.rs
+- [x] T025 [P] Implement S3 storage backend with aws-sdk-s3 in backend/src/storage/s3.rs
 
 ### Core Models (SQLx)
 
@@ -121,16 +121,16 @@
 ### Implementation for User Story 2
 
 - [x] T050 [P] [US2] Create database migration for api_tokens table in backend/migrations/006_api_tokens.sql
-- [ ] T051 [P] [US2] Create ApiToken model with SQLx in backend/src/models/api_token.rs
-- [ ] T052 [US2] Implement LDAP authentication with ldap3 crate in backend/src/services/ldap_service.rs
-- [ ] T053 [US2] Implement OIDC authentication with openidconnect crate in backend/src/services/oidc_service.rs
-- [ ] T054 [US2] Implement SAML authentication with samael crate in backend/src/services/saml_service.rs
-- [ ] T055 [US2] Extend auth_service to route by auth_provider type in backend/src/services/auth_service.rs
-- [ ] T056 [US2] Implement group-to-role mapping for federated auth in backend/src/services/auth_service.rs
-- [ ] T057 [US2] Implement API token generation and validation in backend/src/services/token_service.rs
-- [ ] T058 [US2] Implement API token CRUD handlers in backend/src/api/handlers/users.rs
-- [ ] T059 [US2] Extend auth middleware to support API tokens in backend/src/api/middleware/auth.rs
-- [ ] T060 [US2] Implement user sync/deactivation for federated providers in backend/src/services/auth_service.rs
+- [x] T051 [P] [US2] Create ApiToken model with SQLx in backend/src/models/api_token.rs
+- [x] T052 [US2] Implement LDAP authentication with ldap3 crate in backend/src/services/ldap_service.rs
+- [x] T053 [US2] Implement OIDC authentication with openidconnect crate in backend/src/services/oidc_service.rs
+- [x] T054 [US2] Implement SAML authentication with samael crate in backend/src/services/saml_service.rs
+- [x] T055 [US2] Extend auth_service to route by auth_provider type in backend/src/services/auth_service.rs
+- [x] T056 [US2] Implement group-to-role mapping for federated auth in backend/src/services/auth_service.rs
+- [x] T057 [US2] Implement API token generation and validation in backend/src/services/token_service.rs
+- [x] T058 [US2] Implement API token CRUD handlers in backend/src/api/handlers/users.rs
+- [x] T059 [US2] Extend auth middleware to support API tokens in backend/src/api/middleware/auth.rs
+- [x] T060 [US2] Implement user sync/deactivation for federated providers in backend/src/services/auth_service.rs
 - [x] T061 [US2] Add audit logging for authentication events in backend/src/services/auth_service.rs
 
 **Checkpoint**: User Story 2 complete - enterprise SSO and API tokens functional
@@ -168,26 +168,26 @@
 
 ### Package Format Handlers (Tier 2 - High Priority)
 
-- [ ] T077 [P] [US3] Implement PyPI format handler (PEP 503 simple API) in backend/src/formats/pypi.rs
-- [ ] T078 [P] [US3] Implement Helm format handler (index.yaml, charts) in backend/src/formats/helm.rs
-- [ ] T079 [P] [US3] Implement NuGet format handler (v3 API) in backend/src/formats/nuget.rs
+- [x] T077 [P] [US3] Implement PyPI format handler (PEP 503 simple API) in backend/src/formats/pypi.rs
+- [x] T078 [P] [US3] Implement Helm format handler (index.yaml, charts) in backend/src/formats/helm.rs
+- [x] T079 [P] [US3] Implement NuGet format handler (v3 API) in backend/src/formats/nuget.rs
 
 ### Package Format Handlers (Tier 3 - Standard)
 
-- [ ] T080 [P] [US3] Implement Go module proxy handler (GOPROXY) in backend/src/formats/go.rs
-- [ ] T081 [P] [US3] Implement Cargo format handler (sparse index) in backend/src/formats/cargo.rs
-- [ ] T082 [P] [US3] Implement RPM format handler (repodata, GPG) in backend/src/formats/rpm.rs
-- [ ] T083 [P] [US3] Implement Debian format handler (Packages, Release) in backend/src/formats/debian.rs
+- [x] T080 [P] [US3] Implement Go module proxy handler (GOPROXY) in backend/src/formats/go.rs
+- [x] T081 [P] [US3] Implement Cargo format handler (sparse index) in backend/src/formats/cargo.rs
+- [x] T082 [P] [US3] Implement RPM format handler (repodata, GPG) in backend/src/formats/rpm.rs
+- [x] T083 [P] [US3] Implement Debian format handler (Packages, Release) in backend/src/formats/debian.rs
 
 ### Package Format Handlers (Tier 4 - Specialized)
 
-- [ ] T084 [P] [US3] Implement RubyGems format handler in backend/src/formats/rubygems.rs
-- [ ] T085 [P] [US3] Implement Conan format handler (v2 API) in backend/src/formats/conan.rs
+- [x] T084 [P] [US3] Implement RubyGems format handler in backend/src/formats/rubygems.rs
+- [x] T085 [P] [US3] Implement Conan format handler (v2 API) in backend/src/formats/conan.rs
 
 ### Remote/Proxy Repositories
 
-- [ ] T086 [US3] Implement upstream proxy service for remote repos in backend/src/services/proxy_service.rs
-- [ ] T087 [US3] Add caching logic for proxied artifacts in backend/src/services/proxy_service.rs
+- [x] T086 [US3] Implement upstream proxy service for remote repos in backend/src/services/proxy_service.rs
+- [x] T087 [US3] Add caching logic for proxied artifacts in backend/src/services/proxy_service.rs
 
 **Checkpoint**: User Story 3 complete - all 13+ package formats supported
 
@@ -205,8 +205,8 @@
 
 - [x] T088 [P] [US4] Create database migration for edge_nodes table in backend/migrations/008_edge_nodes.sql
 - [x] T089 [P] [US4] Create database migration for sync_tasks table in backend/migrations/009_sync_tasks.sql
-- [ ] T090 [P] [US4] Create EdgeNode model with SQLx in backend/src/models/edge_node.rs
-- [ ] T091 [P] [US4] Create SyncTask model with SQLx in backend/src/models/sync_task.rs
+- [x] T090 [P] [US4] Create EdgeNode model with SQLx in backend/src/models/edge_node.rs
+- [x] T091 [P] [US4] Create SyncTask model with SQLx in backend/src/models/sync_task.rs
 - [x] T092 [US4] Implement EdgeNodeService with registration in backend/src/services/edge_service.rs
 - [x] T093 [US4] Implement sync task configuration in backend/src/services/edge_service.rs
 - [x] T094 [US4] Implement edge node handlers (CRUD) in backend/src/api/handlers/edge.rs
@@ -220,7 +220,7 @@
 - [x] T099 [US4] Implement LRU cache for artifacts in edge/src/cache.rs
 - [x] T100 [US4] Implement sync protocol (pull from primary) in edge/src/sync.rs
 - [x] T101 [US4] Implement heartbeat reporting to primary in edge/src/sync.rs
-- [ ] T102 [US4] Implement offline mode (serve from cache) in edge/src/main.rs
+- [x] T102 [US4] Implement offline mode (serve from cache) in edge/src/main.rs
 
 **Checkpoint**: User Story 4 complete - edge nodes deployable with automatic sync
 
@@ -237,7 +237,7 @@
 ### Implementation for User Story 5
 
 - [x] T103 [P] [US5] Create database migration for backups table in backend/migrations/010_backups.sql
-- [ ] T104 [US5] Create Backup model with SQLx in backend/src/models/backup.rs
+- [x] T104 [US5] Create Backup model with SQLx in backend/src/models/backup.rs
 - [x] T105 [US5] Implement BackupService with scheduling in backend/src/services/backup_service.rs
 - [x] T106 [US5] Implement full backup logic (metadata + artifacts) in backend/src/services/backup_service.rs
 - [x] T107 [US5] Implement incremental backup logic in backend/src/services/backup_service.rs
@@ -263,16 +263,16 @@
 
 - [x] T113 [P] [US6] Create database migration for plugins table in backend/migrations/011_plugins.sql
 - [x] T114 [P] [US6] Create database migration for plugin_config table in backend/migrations/012_plugin_config.sql
-- [ ] T115 [P] [US6] Create Plugin model with SQLx in backend/src/models/plugin.rs
-- [ ] T116 [P] [US6] Create PluginConfig model with SQLx in backend/src/models/plugin.rs
-- [ ] T117 [US6] Implement PluginService with lifecycle management in backend/src/services/plugin_service.rs
-- [ ] T118 [US6] Implement plugin loading and isolation in backend/src/services/plugin_service.rs
-- [ ] T119 [US6] Implement plugin event hooks (upload, download, delete) in backend/src/services/plugin_service.rs
-- [ ] T120 [US6] Implement webhook plugin type in backend/src/services/plugin_service.rs
-- [ ] T121 [US6] Implement validator plugin type in backend/src/services/plugin_service.rs
+- [x] T115 [P] [US6] Create Plugin model with SQLx in backend/src/models/plugin.rs
+- [x] T116 [P] [US6] Create PluginConfig model with SQLx in backend/src/models/plugin.rs
+- [x] T117 [US6] Implement PluginService with lifecycle management in backend/src/services/plugin_service.rs
+- [x] T118 [US6] Implement plugin loading and isolation in backend/src/services/plugin_service.rs
+- [x] T119 [US6] Implement plugin event hooks (upload, download, delete) in backend/src/services/plugin_service.rs
+- [x] T120 [US6] Implement webhook plugin type in backend/src/services/plugin_service.rs
+- [x] T121 [US6] Implement validator plugin type in backend/src/services/plugin_service.rs
 - [x] T122 [US6] Implement plugin handlers (install, enable, disable, uninstall) in backend/src/api/handlers/plugins.rs
 - [x] T123 [US6] Register plugin routes in backend/src/api/routes.rs
-- [ ] T124 [US6] Integrate plugin hooks into artifact service in backend/src/services/artifact_service.rs
+- [x] T124 [US6] Integrate plugin hooks into artifact service in backend/src/services/artifact_service.rs
 
 **Checkpoint**: User Story 6 complete - plugin system operational
 
@@ -289,7 +289,7 @@
 - [x] T125 [P] Setup React Router in frontend/src/App.tsx
 - [x] T126 [P] Generate API client from OpenAPI spec in frontend/src/services/api.ts
 - [x] T127 [P] Create layout components (Header, Sidebar, Footer) in frontend/src/components/layout/
-- [ ] T128 [P] Create common components (Button, Table, Form, Modal) in frontend/src/components/common/
+- [x] T128 [P] Create common components (Button, Table, Form, Modal) in frontend/src/components/common/
 - [x] T129 Setup TanStack Query provider in frontend/src/main.tsx
 
 ### Pages
@@ -307,7 +307,7 @@
 
 ### File Upload Component
 
-- [ ] T140 Implement file upload with progress tracking in frontend/src/components/common/FileUpload.tsx
+- [x] T140 Implement file upload with progress tracking in frontend/src/components/common/FileUpload.tsx
 - [x] T141 Integrate file upload into repository detail page in frontend/src/pages/RepositoryDetail.tsx
 
 **Checkpoint**: Frontend complete - full admin UI operational
@@ -319,18 +319,18 @@
 **Purpose**: Improvements that affect multiple user stories
 
 - [x] T142 [P] Create Dockerfile for backend in deploy/docker/Dockerfile.backend
-- [ ] T143 [P] Create Dockerfile for frontend in deploy/docker/Dockerfile.frontend
-- [ ] T144 [P] Create Dockerfile for edge node in deploy/docker/Dockerfile.edge
+- [x] T143 [P] Create Dockerfile for frontend in deploy/docker/Dockerfile.frontend
+- [x] T144 [P] Create Dockerfile for edge node in deploy/docker/Dockerfile.edge
 - [x] T145 Update docker-compose.yml with all services in deploy/docker/docker-compose.yml
-- [ ] T146 [P] Create Kubernetes manifests in deploy/k8s/
-- [ ] T147 Add rate limiting middleware in backend/src/api/middleware/rate_limit.rs
+- [x] T146 [P] Create Kubernetes manifests in deploy/k8s/
+- [x] T147 Add rate limiting middleware in backend/src/api/middleware/rate_limit.rs
 - [x] T148 Implement quota enforcement per repository in backend/src/services/artifact_service.rs
 - [x] T149 Add CORS configuration in backend/src/main.rs
-- [ ] T150 [P] Add request correlation IDs to all handlers in backend/src/api/middleware/tracing.rs
-- [ ] T151 Run cargo clippy and fix all warnings
-- [ ] T152 Run cargo test and ensure all pass
-- [ ] T153 [P] Run ESLint and fix all warnings in frontend
-- [ ] T154 Validate quickstart.md instructions work end-to-end
+- [x] T150 [P] Add request correlation IDs to all handlers in backend/src/api/middleware/tracing.rs
+- [x] T151 Run cargo clippy and fix all warnings
+- [x] T152 Run cargo test and ensure all pass
+- [x] T153 [P] Run ESLint and fix all warnings in frontend
+- [x] T154 Validate quickstart.md instructions work end-to-end
 
 ---
 

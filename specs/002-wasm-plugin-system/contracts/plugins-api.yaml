@@ -1,0 +1,546 @@
+openapi: 3.1.0
+info:
+  title: Artifact Keeper Plugin Management API
+  version: 1.0.0
+  description: |
+    REST API for managing WASM plugins in Artifact Keeper.
+    All endpoints require administrator authentication.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: plugins
+    description: Plugin lifecycle management
+
+paths:
+  /plugins:
+    get:
+      tags: [plugins]
+      summary: List all plugins
+      description: Returns all installed plugins with optional filtering
+      operationId: listPlugins
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PluginStatus'
+        - name: plugin_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/PluginType'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: List of plugins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /plugins/{id}:
+    get:
+      tags: [plugins]
+      summary: Get plugin details
+      operationId: getPlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Plugin details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [plugins]
+      summary: Uninstall plugin
+      description: |
+        Removes a plugin from the system. If repositories depend on this plugin's
+        format handler, returns 409 Conflict unless `force=true` is specified.
+      operationId: uninstallPlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - name: force
+          in: query
+          description: Force uninstall even if repositories depend on this plugin
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '204':
+          description: Plugin uninstalled
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Plugin has dependent repositories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyConflict'
+
+  /plugins/install/git:
+    post:
+      tags: [plugins]
+      summary: Install plugin from Git repository
+      description: |
+        Clones a Git repository, validates the plugin manifest, builds the WASM
+        binary (if needed), and installs the plugin.
+      operationId: installPluginFromGit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GitInstallRequest'
+      responses:
+        '201':
+          description: Plugin installed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Plugin with same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: Plugin validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginValidationError'
+
+  /plugins/install/zip:
+    post:
+      tags: [plugins]
+      summary: Install plugin from ZIP file
+      description: |
+        Uploads a ZIP file containing the plugin, validates the manifest and
+        WASM binary, and installs the plugin.
+      operationId: installPluginFromZip
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: ZIP file containing plugin.toml and plugin.wasm
+      responses:
+        '201':
+          description: Plugin installed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Plugin with same name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: Plugin validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginValidationError'
+
+  /plugins/{id}/enable:
+    post:
+      tags: [plugins]
+      summary: Enable plugin
+      description: Activates a disabled plugin
+      operationId: enablePlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Plugin enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Plugin cannot be enabled (e.g., in error state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /plugins/{id}/disable:
+    post:
+      tags: [plugins]
+      summary: Disable plugin
+      description: |
+        Deactivates an active plugin. In-flight requests complete normally;
+        new requests will fail with "format unavailable" error.
+      operationId: disablePlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Plugin disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /plugins/{id}/reload:
+    post:
+      tags: [plugins]
+      summary: Hot-reload plugin
+      description: |
+        Reloads a plugin from its source (Git or filesystem). For Git-installed
+        plugins, pulls the latest version or specified ref. In-flight requests
+        complete with the old version; new requests use the new version.
+      operationId: reloadPlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ref:
+                  type: string
+                  description: Git ref (tag, branch, commit) to reload. If not specified, uses original ref or HEAD.
+                  example: v2.0.0
+      responses:
+        '200':
+          description: Plugin reloaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plugin'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Reload validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginValidationError'
+
+  /plugins/{id}/events:
+    get:
+      tags: [plugins]
+      summary: Get plugin event log
+      description: Returns lifecycle and error events for a plugin
+      operationId: getPluginEvents
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [info, warning, error]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Plugin events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginEventList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  parameters:
+    PluginId:
+      name: id
+      in: path
+      required: true
+      description: Plugin UUID
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    PluginStatus:
+      type: string
+      enum: [active, disabled, error]
+
+    PluginType:
+      type: string
+      enum: [format_handler, storage_backend, authentication, authorization, webhook, custom]
+
+    PluginSourceType:
+      type: string
+      enum: [core, wasm_git, wasm_zip, wasm_local]
+
+    Plugin:
+      type: object
+      required:
+        - id
+        - name
+        - version
+        - display_name
+        - status
+        - plugin_type
+        - source_type
+        - installed_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: unity-assetbundle
+        version:
+          type: string
+          example: "1.0.0"
+        display_name:
+          type: string
+          example: Unity AssetBundle
+        description:
+          type: string
+        author:
+          type: string
+        homepage:
+          type: string
+          format: uri
+        license:
+          type: string
+        status:
+          $ref: '#/components/schemas/PluginStatus'
+        plugin_type:
+          $ref: '#/components/schemas/PluginType'
+        source_type:
+          $ref: '#/components/schemas/PluginSourceType'
+        source_url:
+          type: string
+          description: Git URL or file path (null for core plugins)
+        source_ref:
+          type: string
+          description: Git tag/branch/commit (null for non-git sources)
+        format_key:
+          type: string
+          description: Format handler key (for format_handler plugins)
+        capabilities:
+          type: object
+          properties:
+            parse_metadata:
+              type: boolean
+            generate_index:
+              type: boolean
+            validate_artifact:
+              type: boolean
+        resource_limits:
+          type: object
+          properties:
+            memory_mb:
+              type: integer
+            timeout_secs:
+              type: integer
+        error_message:
+          type: string
+          description: Last error message (when status is 'error')
+        installed_at:
+          type: string
+          format: date-time
+        enabled_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PluginListResponse:
+      type: object
+      required: [items, total, page, per_page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plugin'
+        total:
+          type: integer
+        page:
+          type: integer
+        per_page:
+          type: integer
+
+    GitInstallRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Git repository URL
+          example: https://github.com/example/unity-plugin.git
+        ref:
+          type: string
+          description: Git ref to checkout (tag, branch, or commit). Defaults to HEAD.
+          example: v1.0.0
+        build:
+          type: boolean
+          description: Whether to build from source (requires Rust toolchain)
+          default: false
+
+    PluginEvent:
+      type: object
+      required: [id, plugin_id, event_type, severity, message, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        plugin_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum: [installed, enabled, disabled, reloaded, error, uninstalled]
+        severity:
+          type: string
+          enum: [info, warning, error]
+        message:
+          type: string
+        details:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    PluginEventList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginEvent'
+
+    PluginValidationError:
+      type: object
+      required: [error, validation_errors]
+      properties:
+        error:
+          type: string
+          example: plugin_validation_failed
+        message:
+          type: string
+        validation_errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    DependencyConflict:
+      type: object
+      required: [error, dependent_repositories]
+      properties:
+        error:
+          type: string
+          example: dependency_conflict
+        message:
+          type: string
+        dependent_repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+
+    ConflictError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: plugin_already_exists
+        message:
+          type: string
+        existing_plugin_id:
+          type: string
+          format: uuid
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: Insufficient permissions (admin required)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    ValidationError:
+      description: Request validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

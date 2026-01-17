@@ -1,0 +1,299 @@
+openapi: 3.1.0
+info:
+  title: Artifact Keeper Format Handler API
+  version: 1.0.0
+  description: |
+    REST API for managing format handlers in Artifact Keeper.
+    Format handlers process artifacts for specific package formats (Maven, npm, etc.).
+    Core handlers are compiled-in; WASM handlers are loaded from plugins.
+
+servers:
+  - url: /api/v1
+
+tags:
+  - name: formats
+    description: Format handler management
+
+paths:
+  /formats:
+    get:
+      tags: [formats]
+      summary: List all format handlers
+      description: |
+        Returns all registered format handlers (both core and WASM plugins).
+        Core handlers are always listed; WASM handlers appear when their
+        plugin is installed.
+      operationId: listFormats
+      parameters:
+        - name: handler_type
+          in: query
+          description: Filter by handler type
+          schema:
+            $ref: '#/components/schemas/FormatHandlerType'
+        - name: enabled
+          in: query
+          description: Filter by enabled status
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: List of format handlers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatHandlerListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /formats/{format_key}:
+    get:
+      tags: [formats]
+      summary: Get format handler details
+      operationId: getFormat
+      parameters:
+        - $ref: '#/components/parameters/FormatKey'
+      responses:
+        '200':
+          description: Format handler details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatHandler'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /formats/{format_key}/enable:
+    post:
+      tags: [formats]
+      summary: Enable format handler
+      description: |
+        Enables a format handler. For WASM handlers, the associated plugin
+        must be in 'active' status.
+      operationId: enableFormat
+      parameters:
+        - $ref: '#/components/parameters/FormatKey'
+      responses:
+        '200':
+          description: Format handler enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatHandler'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Cannot enable (e.g., plugin not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /formats/{format_key}/disable:
+    post:
+      tags: [formats]
+      summary: Disable format handler
+      description: |
+        Disables a format handler. Disabled handlers cannot be used for new
+        repositories. Existing repositories using this format remain accessible
+        in read-only mode.
+
+        At least one format handler must remain enabled. Attempting to disable
+        the last handler returns 409 Conflict.
+      operationId: disableFormat
+      parameters:
+        - $ref: '#/components/parameters/FormatKey'
+      responses:
+        '200':
+          description: Format handler disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatHandler'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Cannot disable (last enabled handler)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /formats/{format_key}/test:
+    post:
+      tags: [formats]
+      summary: Test format handler
+      description: |
+        Tests a format handler with sample data. Useful for verifying
+        WASM plugins work correctly before enabling.
+      operationId: testFormat
+      parameters:
+        - $ref: '#/components/parameters/FormatKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Sample artifact file
+                path:
+                  type: string
+                  description: Artifact path (defaults to filename)
+      responses:
+        '200':
+          description: Test results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatTestResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Handler validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FormatTestResult'
+
+components:
+  parameters:
+    FormatKey:
+      name: format_key
+      in: path
+      required: true
+      description: Format handler key (e.g., 'maven', 'npm', 'unity-assetbundle')
+      schema:
+        type: string
+        pattern: '^[a-z][a-z0-9-]{2,49}$'
+
+  schemas:
+    FormatHandlerType:
+      type: string
+      enum: [core, wasm]
+
+    FormatHandler:
+      type: object
+      required:
+        - id
+        - format_key
+        - handler_type
+        - display_name
+        - extensions
+        - is_enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        format_key:
+          type: string
+          example: maven
+        plugin_id:
+          type: string
+          format: uuid
+          description: Associated plugin ID (null for core handlers)
+        handler_type:
+          $ref: '#/components/schemas/FormatHandlerType'
+        display_name:
+          type: string
+          example: Maven
+        description:
+          type: string
+        extensions:
+          type: array
+          items:
+            type: string
+          example: [".jar", ".pom", ".war"]
+        is_enabled:
+          type: boolean
+        priority:
+          type: integer
+          description: Handler priority (higher = preferred)
+        capabilities:
+          type: object
+          properties:
+            parse_metadata:
+              type: boolean
+            generate_index:
+              type: boolean
+            validate_artifact:
+              type: boolean
+        repository_count:
+          type: integer
+          description: Number of repositories using this format
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    FormatHandlerListResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormatHandler'
+        total:
+          type: integer
+
+    FormatTestResult:
+      type: object
+      required: [success, format_key]
+      properties:
+        success:
+          type: boolean
+        format_key:
+          type: string
+        execution_time_ms:
+          type: integer
+          description: Handler execution time in milliseconds
+        memory_used_bytes:
+          type: integer
+          description: Peak memory usage (WASM handlers only)
+        metadata:
+          type: object
+          description: Parsed metadata (if successful)
+        validation_result:
+          type: object
+          properties:
+            valid:
+              type: boolean
+            errors:
+              type: array
+              items:
+                type: string
+        error:
+          type: string
+          description: Error message (if failed)
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
