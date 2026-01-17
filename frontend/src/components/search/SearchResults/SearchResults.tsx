@@ -330,7 +330,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({
               <FileOutlined style={{ fontSize: 32, color: colors.textSecondary }} />
             }
             title={
-              <Space direction="vertical" size={0}>
+              <Space orientation="vertical" size={0}>
                 <Text
                   strong
                   ellipsis
@@ -344,7 +344,7 @@ export const SearchResults: React.FC<SearchResultsProps> = ({
               </Space>
             }
             description={
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Space orientation="vertical" size={4} style={{ width: '100%' }}>
                 <Tooltip title={result.path}>
                   <Text
                     type="secondary"
