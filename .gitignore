@@ -72,3 +72,4 @@ credentials/
 
 # Claude Code local config
 .claude/
+ARTIFACTORY_UI_UX_DEEP_DIVE.md
