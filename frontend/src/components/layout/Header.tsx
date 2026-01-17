@@ -1,8 +1,17 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Layout, Avatar, Dropdown, Space, message, Button, Modal, Typography, Divider } from 'antd'
-import { UserOutlined, LogoutOutlined, QuestionCircleOutlined, GithubOutlined } from '@ant-design/icons'
+import {
+  UserOutlined,
+  LogoutOutlined,
+  QuestionCircleOutlined,
+  GithubOutlined,
+  MenuOutlined,
+} from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuth } from '../../contexts'
+import { QuickSearch } from '../search'
+import { useAppShell } from './AppShell'
 
 const { Header } = Layout
 const { Title, Text, Paragraph } = Typography
@@ -11,10 +20,14 @@ const APP_VERSION = '1.0.0'
 
 const AppHeader = () => {
   const { user, logout } = useAuth()
+  const navigate = useNavigate()
   const [helpModalOpen, setHelpModalOpen] = useState(false)
+  const { isMobile, toggleSidebarVisible } = useAppShell()
 
   const handleMenuClick: MenuProps['onClick'] = async ({ key }) => {
-    if (key === 'logout') {
+    if (key === 'profile') {
+      navigate('/profile')
+    } else if (key === 'logout') {
       try {
         await logout()
         message.success('Logged out successfully')
@@ -24,12 +37,15 @@ const AppHeader = () => {
     }
   }
 
+  const handleAdvancedSearch = () => {
+    navigate('/search')
+  }
+
   const items: MenuProps['items'] = [
     {
       key: 'profile',
       icon: <UserOutlined />,
       label: user?.email || 'Profile',
-      disabled: true,
     },
     {
       type: 'divider',
@@ -44,18 +60,48 @@ const AppHeader = () => {
 
   return (
     <>
-      <Header style={{ background: '#fff', padding: '0 24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 16 }}>
-        <Button
-          type="text"
-          icon={<QuestionCircleOutlined />}
-          onClick={() => setHelpModalOpen(true)}
-        />
-        <Dropdown menu={{ items, onClick: handleMenuClick }} placement="bottomRight">
-          <Space style={{ cursor: 'pointer' }}>
-            <Avatar icon={<UserOutlined />} />
-            <span>{user?.display_name || user?.username || 'User'}</span>
-          </Space>
-        </Dropdown>
+      <Header
+        style={{
+          background: '#fff',
+          padding: isMobile ? '0 12px' : '0 24px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: isMobile ? 8 : 16,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 16, flex: 1 }}>
+          {isMobile && (
+            <Button
+              type="text"
+              icon={<MenuOutlined />}
+              onClick={toggleSidebarVisible}
+              aria-label="Open navigation menu"
+              style={{ marginRight: 4 }}
+            />
+          )}
+          <div style={{ flex: 1, maxWidth: isMobile ? 'none' : 400 }}>
+            <QuickSearch
+              placeholder={isMobile ? 'Search...' : 'Search artifacts...'}
+              onAdvancedClick={handleAdvancedSearch}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+        <Space size={isMobile ? 'small' : 'middle'}>
+          <Button
+            type="text"
+            icon={<QuestionCircleOutlined />}
+            onClick={() => setHelpModalOpen(true)}
+            aria-label="Help"
+          />
+          <Dropdown menu={{ items, onClick: handleMenuClick }} placement="bottomRight">
+            <Space style={{ cursor: 'pointer' }}>
+              <Avatar icon={<UserOutlined />} />
+              {!isMobile && <span>{user?.display_name || user?.username || 'User'}</span>}
+            </Space>
+          </Dropdown>
+        </Space>
       </Header>
 
       <Modal

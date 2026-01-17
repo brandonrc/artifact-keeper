@@ -1,17 +1,26 @@
-import { Layout, Menu, Typography } from 'antd'
+import { Layout, Menu, Typography, Button, Drawer } from 'antd'
 import { Link, useLocation } from 'react-router-dom'
 import {
   DashboardOutlined,
   DatabaseOutlined,
   FileOutlined,
+  AppstoreOutlined,
+  BuildOutlined,
+  ToolOutlined,
   CloudServerOutlined,
   CloudUploadOutlined,
   UserOutlined,
+  TeamOutlined,
+  LockOutlined,
   SettingOutlined,
   ApiOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { useAuth } from '../../contexts'
+import { useAppShell } from './AppShell'
+import { colors, sidebar, animation } from '../../styles/tokens'
 
 const { Sider } = Layout
 const { Text } = Typography
@@ -21,6 +30,13 @@ const APP_VERSION = '1.0.0'
 const AppSidebar = () => {
   const location = useLocation()
   const { user } = useAuth()
+  const {
+    collapsed,
+    toggleCollapsed,
+    sidebarVisible,
+    setSidebarVisible,
+    isMobile
+  } = useAppShell()
 
   const items: MenuProps['items'] = [
     {
@@ -37,6 +53,21 @@ const AppSidebar = () => {
       key: '/artifacts',
       icon: <FileOutlined />,
       label: <Link to="/artifacts">Artifacts</Link>,
+    },
+    {
+      key: '/packages',
+      icon: <AppstoreOutlined />,
+      label: <Link to="/packages">Packages</Link>,
+    },
+    {
+      key: '/builds',
+      icon: <BuildOutlined />,
+      label: <Link to="/builds">Builds</Link>,
+    },
+    {
+      key: '/setup',
+      icon: <ToolOutlined />,
+      label: <Link to="/setup">Set Me Up</Link>,
     },
     ...(user?.is_admin ? [
       {
@@ -60,6 +91,16 @@ const AppSidebar = () => {
         label: <Link to="/users">Users</Link>,
       },
       {
+        key: '/groups',
+        icon: <TeamOutlined />,
+        label: <Link to="/groups">Groups</Link>,
+      },
+      {
+        key: '/permissions',
+        icon: <LockOutlined />,
+        label: <Link to="/permissions">Permissions</Link>,
+      },
+      {
         key: '/settings',
         icon: <SettingOutlined />,
         label: <Link to="/settings">Settings</Link>,
@@ -67,33 +108,120 @@ const AppSidebar = () => {
     ] : []),
   ]
 
-  return (
-    <Sider
-      width={200}
-      theme="dark"
-      style={{ display: 'flex', flexDirection: 'column' }}
-    >
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ height: 32, margin: 16, color: '#fff', fontSize: 18, fontWeight: 'bold', textAlign: 'center' }}>
-          Artifact Keeper
-        </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={[location.pathname]}
-          items={items}
-          style={{ flex: 1 }}
+  const handleMenuClick = () => {
+    if (isMobile) {
+      setSidebarVisible(false)
+    }
+  }
+
+  const siderStyle: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    background: colors.siderBg,
+    transition: `all ${animation.slow} ease`,
+    overflow: 'hidden',
+  }
+
+  const logoStyle: React.CSSProperties = {
+    height: 32,
+    margin: 16,
+    color: colors.siderText,
+    fontSize: collapsed ? 14 : 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    transition: `all ${animation.normal} ease`,
+  }
+
+  const toggleButtonStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: 16,
+    right: collapsed ? 'calc(50% - 16px)' : 8,
+    zIndex: 1,
+    color: colors.siderTextSecondary,
+    transition: `all ${animation.normal} ease`,
+  }
+
+  const versionStyle: React.CSSProperties = {
+    padding: '12px 16px',
+    borderTop: `1px solid ${colors.siderBorder}`,
+    textAlign: 'center',
+  }
+
+  const sidebarContent = (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      {!isMobile && (
+        <Button
+          type="text"
+          icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+          onClick={toggleCollapsed}
+          style={toggleButtonStyle}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         />
-        <div style={{
-          padding: '12px 16px',
-          borderTop: '1px solid rgba(255,255,255,0.1)',
-          textAlign: 'center'
-        }}>
-          <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>
+      )}
+      <div style={logoStyle}>
+        {collapsed ? 'AK' : 'Artifact Keeper'}
+      </div>
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={[location.pathname]}
+        items={items}
+        style={{ flex: 1, background: colors.siderBg }}
+        onClick={handleMenuClick}
+        inlineCollapsed={collapsed && !isMobile}
+      />
+      {!collapsed && (
+        <div style={versionStyle}>
+          <Text style={{ color: colors.siderTextMuted, fontSize: 12 }}>
             v{APP_VERSION}
           </Text>
         </div>
-      </div>
+      )}
+    </div>
+  )
+
+  // Mobile: Use Drawer for sidebar
+  if (isMobile) {
+    return (
+      <Drawer
+        placement="left"
+        open={sidebarVisible}
+        onClose={() => setSidebarVisible(false)}
+        width={sidebar.width}
+        styles={{
+          body: {
+            padding: 0,
+            background: colors.siderBg,
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+          },
+          header: {
+            display: 'none',
+          },
+        }}
+      >
+        {sidebarContent}
+      </Drawer>
+    )
+  }
+
+  // Desktop/Tablet: Use Sider
+  return (
+    <Sider
+      collapsible
+      collapsed={collapsed}
+      onCollapse={toggleCollapsed}
+      trigger={null}
+      width={sidebar.width}
+      collapsedWidth={sidebar.collapsedWidth}
+      theme="dark"
+      style={siderStyle}
+    >
+      {sidebarContent}
     </Sider>
   )
 }

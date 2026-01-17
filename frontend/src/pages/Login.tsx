@@ -1,13 +1,23 @@
 import { useState } from 'react'
-import { Form, Input, Button, Card, message, Alert, Modal } from 'antd'
+import { Form, Input, Button, Card, message, Alert, Modal, Divider } from 'antd'
 import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useAuth } from '../contexts'
 import { useDocumentTitle } from '../hooks'
+import { SSOButtons, MFAVerify, SSOProvider, SSOProviderConfig } from '../components/auth'
+import { colors } from '../styles/tokens'
 
 interface LoginValues {
   username: string
   password: string
 }
+
+// Available SSO providers - this would normally come from the backend
+const SSO_PROVIDERS: SSOProviderConfig[] = [
+  { id: 'google', name: 'Google', enabled: true },
+  { id: 'github', name: 'GitHub', enabled: true },
+  { id: 'saml', name: 'SAML', enabled: false },
+  { id: 'ldap', name: 'LDAP', enabled: false },
+]
 
 interface ChangePasswordValues {
   current_password: string
@@ -23,6 +33,14 @@ const Login = () => {
   const [changePasswordModalOpen, setChangePasswordModalOpen] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [changePasswordForm] = Form.useForm<ChangePasswordValues>()
+
+  // MFA state
+  const [mfaRequired, setMfaRequired] = useState(false)
+  const [mfaError, setMfaError] = useState<string | null>(null)
+  const [mfaSessionToken, setMfaSessionToken] = useState<string | null>(null)
+
+  // SSO state
+  const [ssoLoading, setSsoLoading] = useState<SSOProvider | null>(null)
 
   const onFinish = async (values: LoginValues) => {
     setLoading(true)
@@ -67,6 +85,74 @@ const Login = () => {
     setChangePasswordModalOpen(false)
     clearMustChangePassword()
     changePasswordForm.resetFields()
+  }
+
+  // Handle SSO provider selection
+  const handleSSOSelect = async (provider: SSOProvider) => {
+    setSsoLoading(provider)
+    setError(null)
+    try {
+      // Redirect to SSO provider - this would normally call a backend endpoint
+      // that returns the OAuth redirect URL
+      window.location.href = `/api/v1/auth/sso/${provider}`
+    } catch (err) {
+      setError('Failed to initiate SSO login')
+      setSsoLoading(null)
+    }
+  }
+
+  // Handle MFA verification
+  const handleMFAVerify = async (code: string) => {
+    setMfaError(null)
+    setLoading(true)
+    try {
+      // This would call the MFA verification endpoint
+      // await authApi.verifyMFA(mfaSessionToken, code)
+      message.success('MFA verification successful!')
+      setMfaRequired(false)
+    } catch (err) {
+      setMfaError('Invalid verification code. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Handle MFA cancel
+  const handleMFACancel = () => {
+    setMfaRequired(false)
+    setMfaSessionToken(null)
+    setMfaError(null)
+  }
+
+  // Handle MFA resend
+  const handleMFAResend = async () => {
+    try {
+      // This would call the resend MFA code endpoint
+      message.success('Verification code resent')
+    } catch (err) {
+      message.error('Failed to resend code')
+    }
+  }
+
+  // Show MFA verification if required
+  if (mfaRequired) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        background: colors.bgLayout
+      }}>
+        <MFAVerify
+          onSubmit={handleMFAVerify}
+          onCancel={handleMFACancel}
+          onResend={handleMFAResend}
+          loading={loading}
+          error={mfaError || undefined}
+        />
+      </div>
+    )
   }
 
   return (
@@ -117,6 +203,20 @@ const Login = () => {
             </Button>
           </Form.Item>
         </Form>
+
+        {/* SSO Login Options */}
+        {SSO_PROVIDERS.some(p => p.enabled) && (
+          <>
+            <Divider>or continue with</Divider>
+            <SSOButtons
+              availableProviders={SSO_PROVIDERS}
+              onSelect={handleSSOSelect}
+              loading={!!ssoLoading}
+              loadingProvider={ssoLoading || undefined}
+              disabled={loading}
+            />
+          </>
+        )}
       </Card>
 
       {/* Change Password Modal */}
