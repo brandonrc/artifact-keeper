@@ -1,231 +1,195 @@
-import { useState } from 'react'
-import { Table, Button, Space, Tag, Alert, Spin, Modal, Form, Input, Switch, message, Typography } from 'antd'
-import { PlusOutlined, EditOutlined, StopOutlined, CheckOutlined, CopyOutlined, KeyOutlined } from '@ant-design/icons'
-import type { ColumnsType } from 'antd/es/table'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { adminApi } from '../api'
-import apiClient from '../api/client'
-import { useAuth } from '../contexts'
-import { useDocumentTitle } from '../hooks'
-import type { User, CreateUserResponse } from '../types'
+import { useState } from 'react';
+import { Modal, Alert, Spin, Typography, message, Button } from 'antd';
+import { CopyOutlined } from '@ant-design/icons';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { adminApi } from '../api';
+import apiClient from '../api/client';
+import { useAuth } from '../contexts';
+import { useDocumentTitle } from '../hooks';
+import UserTable from '../components/admin/UserManagement/UserTable';
+import UserForm, { type UserFormValues } from '../components/admin/UserManagement/UserForm';
+import type { User, CreateUserResponse } from '../types';
+import { spacing } from '../styles/tokens';
 
-const { Text } = Typography
-
-interface CreateUserForm {
-  username: string
-  email: string
-  display_name?: string
-  is_admin: boolean
-}
-
-interface EditUserForm {
-  email?: string
-  display_name?: string
-  is_admin: boolean
-}
+const { Text } = Typography;
 
 interface ApiError extends Error {
   response?: {
     data?: {
-      message?: string
-    }
-  }
+      message?: string;
+    };
+  };
 }
 
 const Users = () => {
-  useDocumentTitle('Users')
-  const { user: currentUser } = useAuth()
-  const queryClient = useQueryClient()
+  useDocumentTitle('Users');
+  const { user: currentUser } = useAuth();
+  const queryClient = useQueryClient();
 
-  const [createModalOpen, setCreateModalOpen] = useState(false)
-  const [editModalOpen, setEditModalOpen] = useState(false)
-  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
-  const [generatedPassword, setGeneratedPassword] = useState<string | null>(null)
-  const [createdUsername, setCreatedUsername] = useState<string | null>(null)
-  const [selectedUser, setSelectedUser] = useState<User | null>(null)
-  const [createForm] = Form.useForm<CreateUserForm>()
-  const [editForm] = Form.useForm<EditUserForm>()
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [generatedPassword, setGeneratedPassword] = useState<string | null>(null);
+  const [createdUsername, setCreatedUsername] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
   const { data: users, isLoading, error } = useQuery({
     queryKey: ['admin-users'],
     queryFn: () => adminApi.listUsers(),
     enabled: currentUser?.is_admin,
-  })
+  });
 
   const createUserMutation = useMutation({
-    mutationFn: async (data: CreateUserForm) => {
-      const response = await apiClient.post<CreateUserResponse>('/api/v1/users', data)
-      return response.data
+    mutationFn: async (data: UserFormValues) => {
+      const payload: Record<string, unknown> = {
+        username: data.username,
+        email: data.email,
+        display_name: data.display_name,
+        is_admin: data.is_admin,
+      };
+      if (!data.auto_generate_password && data.password) {
+        payload.password = data.password;
+      }
+      const response = await apiClient.post<CreateUserResponse>('/api/v1/users', payload);
+      return response.data;
     },
     onSuccess: (data) => {
-      setCreateModalOpen(false)
-      createForm.resetFields()
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      setCreateModalOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
 
       if (data.generated_password) {
-        setGeneratedPassword(data.generated_password)
-        setCreatedUsername(data.user.username)
-        setPasswordModalOpen(true)
+        setGeneratedPassword(data.generated_password);
+        setCreatedUsername(data.user.username);
+        setPasswordModalOpen(true);
       } else {
-        message.success('User created successfully')
+        message.success('User created successfully');
       }
     },
     onError: (error: ApiError) => {
-      message.error(error.response?.data?.message || 'Failed to create user')
+      message.error(error.response?.data?.message || 'Failed to create user');
     },
-  })
+  });
 
   const updateUserMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: EditUserForm }) => {
-      const response = await apiClient.patch(`/api/v1/users/${id}`, data)
-      return response.data
+    mutationFn: async ({ id, data }: { id: string; data: Partial<UserFormValues> }) => {
+      const response = await apiClient.patch(`/api/v1/users/${id}`, {
+        email: data.email,
+        display_name: data.display_name,
+        is_admin: data.is_admin,
+        is_active: data.is_active,
+      });
+      return response.data;
     },
     onSuccess: () => {
-      message.success('User updated successfully')
-      setEditModalOpen(false)
-      setSelectedUser(null)
-      editForm.resetFields()
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      message.success('User updated successfully');
+      setEditModalOpen(false);
+      setSelectedUser(null);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
     onError: (error: ApiError) => {
-      message.error(error.response?.data?.message || 'Failed to update user')
+      message.error(error.response?.data?.message || 'Failed to update user');
     },
-  })
+  });
 
   const toggleUserStatusMutation = useMutation({
     mutationFn: async ({ id, is_active }: { id: string; is_active: boolean }) => {
-      const response = await apiClient.patch(`/api/v1/users/${id}`, { is_active })
-      return response.data
+      const response = await apiClient.patch(`/api/v1/users/${id}`, { is_active });
+      return response.data;
     },
     onSuccess: (_, variables) => {
-      message.success(`User ${variables.is_active ? 'enabled' : 'disabled'} successfully`)
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      message.success(`User ${variables.is_active ? 'enabled' : 'disabled'} successfully`);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
     onError: (error: ApiError) => {
-      message.error(error.response?.data?.message || 'Failed to update user status')
+      message.error(error.response?.data?.message || 'Failed to update user status');
     },
-  })
+  });
 
   const resetPasswordMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await apiClient.post<{ temporary_password: string }>(`/api/v1/users/${id}/password/reset`)
-      return response.data
+      const response = await apiClient.post<{ temporary_password: string }>(`/api/v1/users/${id}/password/reset`);
+      return response.data;
     },
     onSuccess: (data, userId) => {
-      const user = users?.find(u => u.id === userId)
-      setGeneratedPassword(data.temporary_password)
-      setCreatedUsername(user?.username || 'User')
-      setPasswordModalOpen(true)
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      const user = users?.find(u => u.id === userId);
+      setGeneratedPassword(data.temporary_password);
+      setCreatedUsername(user?.username || 'User');
+      setPasswordModalOpen(true);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
     },
     onError: (error: ApiError) => {
-      message.error(error.response?.data?.message || 'Failed to reset password')
+      message.error(error.response?.data?.message || 'Failed to reset password');
     },
-  })
+  });
 
-  const handleCreateUser = (values: CreateUserForm) => {
-    createUserMutation.mutate(values)
-  }
+  const deleteUserMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiClient.delete(`/api/v1/users/${id}`);
+    },
+    onSuccess: () => {
+      message.success('User deleted successfully');
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    },
+    onError: (error: ApiError) => {
+      message.error(error.response?.data?.message || 'Failed to delete user');
+    },
+  });
 
-  const handleEditUser = (values: EditUserForm) => {
-    if (selectedUser) {
-      updateUserMutation.mutate({ id: selectedUser.id, data: values })
+  const handleCreate = () => {
+    setCreateModalOpen(true);
+  };
+
+  const handleEdit = (user: User) => {
+    setSelectedUser(user);
+    setEditModalOpen(true);
+  };
+
+  const handleDelete = (user: User) => {
+    if (user.id === currentUser?.id) {
+      message.error('You cannot delete your own account');
+      return;
     }
-  }
+    deleteUserMutation.mutate(user.id);
+  };
+
+  const handleResetPassword = (user: User) => {
+    if (user.id === currentUser?.id) {
+      message.error('You cannot reset your own password from here');
+      return;
+    }
+    resetPasswordMutation.mutate(user.id);
+  };
 
   const handleToggleStatus = (user: User) => {
-    toggleUserStatusMutation.mutate({ id: user.id, is_active: !user.is_active })
-  }
+    if (user.id === currentUser?.id) {
+      message.error('You cannot disable your own account');
+      return;
+    }
+    toggleUserStatusMutation.mutate({ id: user.id, is_active: !user.is_active });
+  };
 
-  const openEditModal = (user: User) => {
-    setSelectedUser(user)
-    editForm.setFieldsValue({
-      email: user.email,
-      display_name: user.display_name || '',
-      is_admin: user.is_admin,
-    })
-    setEditModalOpen(true)
-  }
+  const handleCreateSubmit = async (values: UserFormValues) => {
+    createUserMutation.mutate(values);
+  };
+
+  const handleEditSubmit = async (values: UserFormValues) => {
+    if (selectedUser) {
+      updateUserMutation.mutate({ id: selectedUser.id, data: values });
+    }
+  };
 
   const copyPassword = () => {
     if (generatedPassword) {
-      navigator.clipboard.writeText(generatedPassword)
-      message.success('Password copied to clipboard')
+      navigator.clipboard.writeText(generatedPassword);
+      message.success('Password copied to clipboard');
     }
-  }
+  };
 
   const closePasswordModal = () => {
-    setPasswordModalOpen(false)
-    setGeneratedPassword(null)
-    setCreatedUsername(null)
-  }
-
-  const columns: ColumnsType<User> = [
-    {
-      title: 'Username',
-      dataIndex: 'username',
-      key: 'username',
-    },
-    {
-      title: 'Email',
-      dataIndex: 'email',
-      key: 'email',
-    },
-    {
-      title: 'Display Name',
-      dataIndex: 'display_name',
-      key: 'display_name',
-      render: (name: string) => name || '-',
-    },
-    {
-      title: 'Status',
-      dataIndex: 'is_active',
-      key: 'is_active',
-      render: (isActive: boolean) => isActive ? <Tag color="green">Active</Tag> : <Tag color="red">Disabled</Tag>,
-    },
-    {
-      title: 'Role',
-      dataIndex: 'is_admin',
-      key: 'is_admin',
-      render: (isAdmin: boolean) => isAdmin ? <Tag color="gold">Admin</Tag> : <Tag>User</Tag>,
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Space>
-          <Button
-            type="link"
-            icon={<EditOutlined />}
-            onClick={() => openEditModal(record)}
-          >
-            Edit
-          </Button>
-          {record.id !== currentUser?.id && (
-            <>
-              <Button
-                type="link"
-                icon={<KeyOutlined />}
-                onClick={() => resetPasswordMutation.mutate(record.id)}
-                loading={resetPasswordMutation.isPending}
-              >
-                Reset Password
-              </Button>
-              <Button
-                type="link"
-                danger={record.is_active}
-                icon={record.is_active ? <StopOutlined /> : <CheckOutlined />}
-                onClick={() => handleToggleStatus(record)}
-                loading={toggleUserStatusMutation.isPending}
-              >
-                {record.is_active ? 'Disable' : 'Enable'}
-              </Button>
-            </>
-          )}
-        </Space>
-      ),
-    },
-  ]
+    setPasswordModalOpen(false);
+    setGeneratedPassword(null);
+    setCreatedUsername(null);
+  };
 
   if (!currentUser?.is_admin) {
     return (
@@ -238,7 +202,7 @@ const Users = () => {
           showIcon
         />
       </div>
-    )
+    );
   }
 
   if (isLoading) {
@@ -246,7 +210,7 @@ const Users = () => {
       <div style={{ display: 'flex', justifyContent: 'center', padding: 50 }}>
         <Spin size="large" />
       </div>
-    )
+    );
   }
 
   if (error) {
@@ -260,28 +224,30 @@ const Users = () => {
           showIcon
         />
       </div>
-    )
+    );
   }
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h1>Users</h1>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateModalOpen(true)}>
-          Create User
-        </Button>
-      </div>
-      <Table columns={columns} dataSource={users || []} rowKey="id" />
+      <h1 style={{ marginBottom: spacing.lg }}>Users</h1>
 
-      {/* Create User Modal */}
+      <UserTable
+        users={users || []}
+        loading={isLoading}
+        onEdit={handleEdit}
+        onDelete={handleDelete}
+        onResetPassword={handleResetPassword}
+        onToggleStatus={handleToggleStatus}
+        onCreate={handleCreate}
+      />
+
       <Modal
         title="Create User"
         open={createModalOpen}
-        onCancel={() => {
-          setCreateModalOpen(false)
-          createForm.resetFields()
-        }}
+        onCancel={() => setCreateModalOpen(false)}
         footer={null}
+        width={600}
+        destroyOnClose
       >
         <Alert
           message="Password will be auto-generated"
@@ -290,62 +256,14 @@ const Users = () => {
           showIcon
           style={{ marginBottom: 16 }}
         />
-        <Form
-          form={createForm}
-          layout="vertical"
-          onFinish={handleCreateUser}
-          initialValues={{ is_admin: false }}
-        >
-          <Form.Item
-            name="username"
-            label="Username"
-            rules={[
-              { required: true, message: 'Please enter a username' },
-              { min: 3, message: 'Username must be at least 3 characters' },
-            ]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="email"
-            label="Email"
-            rules={[
-              { required: true, message: 'Please enter an email' },
-              { type: 'email', message: 'Please enter a valid email' },
-            ]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="display_name"
-            label="Display Name"
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="is_admin"
-            label="Administrator"
-            valuePropName="checked"
-          >
-            <Switch />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit" loading={createUserMutation.isPending}>
-                Create
-              </Button>
-              <Button onClick={() => {
-                setCreateModalOpen(false)
-                createForm.resetFields()
-              }}>
-                Cancel
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+        <UserForm
+          mode="create"
+          onSubmit={handleCreateSubmit}
+          onCancel={() => setCreateModalOpen(false)}
+          loading={createUserMutation.isPending}
+        />
       </Modal>
 
-      {/* Generated Password Modal */}
       <Modal
         title="Temporary Password"
         open={passwordModalOpen}
@@ -381,62 +299,38 @@ const Users = () => {
         />
       </Modal>
 
-      {/* Edit User Modal */}
       <Modal
         title={`Edit User: ${selectedUser?.username}`}
         open={editModalOpen}
         onCancel={() => {
-          setEditModalOpen(false)
-          setSelectedUser(null)
-          editForm.resetFields()
+          setEditModalOpen(false);
+          setSelectedUser(null);
         }}
         footer={null}
+        width={600}
+        destroyOnClose
       >
-        <Form
-          form={editForm}
-          layout="vertical"
-          onFinish={handleEditUser}
-        >
-          <Form.Item
-            name="email"
-            label="Email"
-            rules={[
-              { type: 'email', message: 'Please enter a valid email' },
-            ]}
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="display_name"
-            label="Display Name"
-          >
-            <Input />
-          </Form.Item>
-          <Form.Item
-            name="is_admin"
-            label="Administrator"
-            valuePropName="checked"
-          >
-            <Switch />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit" loading={updateUserMutation.isPending}>
-                Save
-              </Button>
-              <Button onClick={() => {
-                setEditModalOpen(false)
-                setSelectedUser(null)
-                editForm.resetFields()
-              }}>
-                Cancel
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+        {selectedUser && (
+          <UserForm
+            mode="edit"
+            initialValues={{
+              username: selectedUser.username,
+              email: selectedUser.email,
+              display_name: selectedUser.display_name,
+              is_admin: selectedUser.is_admin,
+              is_active: selectedUser.is_active,
+            }}
+            onSubmit={handleEditSubmit}
+            onCancel={() => {
+              setEditModalOpen(false);
+              setSelectedUser(null);
+            }}
+            loading={updateUserMutation.isPending}
+          />
+        )}
       </Modal>
     </div>
-  )
-}
+  );
+};
 
-export default Users
+export default Users;
