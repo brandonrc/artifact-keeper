@@ -1,266 +1,254 @@
-import { useState } from 'react'
-import { Table, Input, Select, Space, Tag, Button, Tooltip, message, Popconfirm, Card, Row, Col, Statistic } from 'antd'
-import { SearchOutlined, DownloadOutlined, DeleteOutlined, ReloadOutlined, FileOutlined, DatabaseOutlined } from '@ant-design/icons'
+import { useState, useCallback } from 'react'
+import { Layout, Spin, message } from 'antd'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import type { ColumnsType } from 'antd/es/table'
-import { repositoriesApi, artifactsApi } from '../api'
-import type { Artifact, Repository } from '../types'
+import { repositoriesApi, artifactsApi, treeApi } from '../api'
+import type { Artifact, Repository, TreeNode } from '../types'
 import { useDocumentTitle } from '../hooks'
+import { useConfirmDialog } from '../components/common'
+import {
+  RepositoryTree,
+  RepositoryItem,
+  ArtifactList,
+  ArtifactDetail,
+} from '../components/repository'
+import { colors } from '../styles/tokens'
 
-const { Search } = Input
-
-const formatBytes = (bytes: number): string => {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`
-}
+const { Sider, Content } = Layout
 
 const Artifacts = () => {
   useDocumentTitle('Artifacts')
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [selectedRepo, setSelectedRepo] = useState<string | undefined>()
-  const [searchTerm, setSearchTerm] = useState('')
+  const { showConfirm } = useConfirmDialog()
+
+  // State for selection
+  const [selectedPath, setSelectedPath] = useState<string | undefined>()
+  const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null)
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null)
+
+  // State for pagination
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
-  // Fetch repositories for selector
-  const { data: reposData } = useQuery({
+  // Fetch repositories for the tree
+  const { data: reposData, isLoading: reposLoading } = useQuery({
     queryKey: ['repositories'],
     queryFn: () => repositoriesApi.list({ per_page: 100 }),
   })
 
-  // Fetch artifacts for selected repository
-  const { data: artifactsData, isLoading, isFetching } = useQuery({
-    queryKey: ['artifacts', selectedRepo, searchTerm, page, pageSize],
-    queryFn: () => artifactsApi.list(selectedRepo!, { page, per_page: pageSize, search: searchTerm || undefined }),
-    enabled: !!selectedRepo,
+  // Transform repositories for the tree component
+  const repositories: RepositoryItem[] = (reposData?.items ?? []).map((repo: Repository) => ({
+    id: repo.id,
+    key: repo.key,
+    name: repo.name,
+    format: repo.format,
+    repo_type: repo.repo_type,
+    is_public: repo.is_public,
+    storage_used_bytes: repo.storage_used_bytes,
+  }))
+
+  // Determine if we're viewing a folder or repository
+  const getCurrentRepoKey = (): string | undefined => {
+    if (!selectedPath) return undefined
+    // Extract repository key from path (first segment)
+    return selectedPath.split('/')[0]
+  }
+
+  const getCurrentFolderPath = (): string | undefined => {
+    if (!selectedPath) return undefined
+    const parts = selectedPath.split('/')
+    if (parts.length <= 1) return undefined
+    return parts.slice(1).join('/')
+  }
+
+  // Fetch artifacts for selected folder
+  const repoKey = getCurrentRepoKey()
+  const folderPath = getCurrentFolderPath()
+
+  const { data: artifactsData, isLoading: artifactsLoading } = useQuery({
+    queryKey: ['artifacts', repoKey, folderPath, page, pageSize],
+    queryFn: () =>
+      artifactsApi.list(repoKey!, {
+        page,
+        per_page: pageSize,
+        path: folderPath,
+      }),
+    enabled: !!repoKey,
   })
 
+  // Fetch single artifact for detail view
+  const { data: artifactDetail } = useQuery({
+    queryKey: ['artifact', selectedArtifact?.id],
+    queryFn: () =>
+      selectedArtifact
+        ? artifactsApi.get(selectedArtifact.repository_key, selectedArtifact.path)
+        : null,
+    enabled: !!selectedArtifact,
+  })
+
+  // Delete mutation
   const deleteMutation = useMutation({
-    mutationFn: ({ repoKey, path }: { repoKey: string; path: string }) => artifactsApi.delete(repoKey, path),
+    mutationFn: ({ repoKey, path }: { repoKey: string; path: string }) =>
+      artifactsApi.delete(repoKey, path),
     onSuccess: () => {
       message.success('Artifact deleted successfully')
       queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+      setSelectedArtifact(null)
     },
     onError: () => {
       message.error('Failed to delete artifact')
     },
   })
 
-  const handleDownload = (artifact: Artifact) => {
+  // Handle tree node selection
+  const handleTreeSelect = useCallback((path: string, node: TreeNode | null) => {
+    setSelectedPath(path)
+    setSelectedNode(node)
+    setSelectedArtifact(null)
+    setPage(1)
+  }, [])
+
+  // Handle artifact selection from list
+  const handleArtifactSelect = useCallback((artifact: Artifact) => {
+    setSelectedArtifact(artifact)
+  }, [])
+
+  // Handle artifact download
+  const handleDownload = useCallback((artifact: Artifact) => {
     const url = artifactsApi.getDownloadUrl(artifact.repository_key, artifact.path)
     window.open(url, '_blank')
-  }
+  }, [])
 
-  const handleDelete = (artifact: Artifact) => {
-    deleteMutation.mutate({ repoKey: artifact.repository_key, path: artifact.path })
-  }
+  // Handle artifact delete with confirmation
+  const handleDelete = useCallback(
+    async (artifact: Artifact) => {
+      const confirmed = await showConfirm({
+        title: 'Delete Artifact',
+        content: `Are you sure you want to delete "${artifact.name}"? This action cannot be undone.`,
+        type: 'danger',
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+      })
 
-  const columns: ColumnsType<Artifact> = [
-    {
-      title: 'Path',
-      dataIndex: 'path',
-      key: 'path',
-      ellipsis: true,
-      render: (path: string, record: Artifact) => (
-        <Tooltip title={path}>
-          <a onClick={() => navigate(`/repositories/${record.repository_key}?artifact=${encodeURIComponent(path)}`)}>
-            {path}
-          </a>
-        </Tooltip>
-      ),
+      if (confirmed) {
+        deleteMutation.mutate({
+          repoKey: artifact.repository_key,
+          path: artifact.path,
+        })
+      }
     },
-    {
-      title: 'Name',
-      dataIndex: 'name',
-      key: 'name',
-      width: 200,
-    },
-    {
-      title: 'Version',
-      dataIndex: 'version',
-      key: 'version',
-      width: 120,
-      render: (version: string | undefined) => version || '-',
-    },
-    {
-      title: 'Size',
-      dataIndex: 'size_bytes',
-      key: 'size_bytes',
-      width: 100,
-      sorter: (a, b) => a.size_bytes - b.size_bytes,
-      render: (bytes: number) => formatBytes(bytes),
-    },
-    {
-      title: 'Downloads',
-      dataIndex: 'download_count',
-      key: 'download_count',
-      width: 100,
-      sorter: (a, b) => a.download_count - b.download_count,
-      render: (count: number) => count.toLocaleString(),
-    },
-    {
-      title: 'Type',
-      dataIndex: 'content_type',
-      key: 'content_type',
-      width: 150,
-      render: (type: string) => <Tag>{type}</Tag>,
-    },
-    {
-      title: 'Created',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 180,
-      sorter: (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-      render: (date: string) => new Date(date).toLocaleString(),
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      width: 120,
-      render: (_: unknown, record: Artifact) => (
-        <Space>
-          <Tooltip title="Download">
-            <Button
-              type="text"
-              icon={<DownloadOutlined />}
-              onClick={() => handleDownload(record)}
-            />
-          </Tooltip>
-          <Popconfirm
-            title="Delete artifact"
-            description="Are you sure you want to delete this artifact?"
-            onConfirm={() => handleDelete(record)}
-            okText="Yes"
-            cancelText="No"
-          >
-            <Tooltip title="Delete">
-              <Button
-                type="text"
-                danger
-                icon={<DeleteOutlined />}
-                loading={deleteMutation.isPending}
-              />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+    [showConfirm, deleteMutation]
+  )
 
-  const totalArtifacts = artifactsData?.pagination?.total || 0
-  const totalSize = artifactsData?.items?.reduce((acc, a) => acc + a.size_bytes, 0) || 0
+  // Handle copy path action
+  const handleCopyPath = useCallback(async (artifact: Artifact) => {
+    const fullPath = `${artifact.repository_key}/${artifact.path}`
+    try {
+      await navigator.clipboard.writeText(fullPath)
+      message.success('Path copied to clipboard')
+    } catch {
+      message.error('Failed to copy path')
+    }
+  }, [])
+
+  // Handle pagination
+  const handlePaginationChange = useCallback((newPage: number, newPageSize: number) => {
+    setPage(newPage)
+    setPageSize(newPageSize)
+  }, [])
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h1>Artifacts</h1>
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => queryClient.invalidateQueries({ queryKey: ['artifacts'] })}
-          loading={isFetching}
-        >
-          Refresh
-        </Button>
-      </div>
+    <Layout style={{ height: 'calc(100vh - 112px)', background: colors.bgLayout }}>
+      {/* Left Panel: Repository Tree */}
+      <Sider
+        width={280}
+        style={{
+          background: colors.bgContainer,
+          borderRight: `1px solid ${colors.border}`,
+          overflow: 'auto',
+        }}
+      >
+        <div style={{ padding: '16px 8px' }}>
+          <RepositoryTree
+            repositories={repositories}
+            loading={reposLoading}
+            selectedPath={selectedPath}
+            onSelect={handleTreeSelect}
+            virtualHeight={500}
+            showSizes
+          />
+        </div>
+      </Sider>
 
-      <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={8}>
-          <Card>
-            <Statistic
-              title="Total Artifacts"
-              value={totalArtifacts}
-              prefix={<FileOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col span={8}>
-          <Card>
-            <Statistic
-              title="Total Size"
-              value={formatBytes(totalSize)}
-              prefix={<DatabaseOutlined />}
-            />
-          </Card>
-        </Col>
-        <Col span={8}>
-          <Card>
-            <Statistic
-              title="Repositories"
-              value={reposData?.items?.length || 0}
-            />
-          </Card>
-        </Col>
-      </Row>
-
-      <Space style={{ marginBottom: 16, width: '100%' }} direction="vertical" size="middle">
-        <Row gutter={16}>
-          <Col span={8}>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Select a repository"
-              value={selectedRepo}
-              onChange={(value) => {
-                setSelectedRepo(value)
-                setPage(1)
+      {/* Middle Panel: Artifact List */}
+      <Content
+        style={{
+          background: colors.bgContainer,
+          borderRight: selectedArtifact ? `1px solid ${colors.border}` : undefined,
+          overflow: 'auto',
+          minWidth: 400,
+        }}
+      >
+        <div style={{ padding: 16 }}>
+          {!selectedPath ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: 300,
+                color: colors.textSecondary,
               }}
-              options={reposData?.items?.map((repo: Repository) => ({
-                value: repo.key,
-                label: `${repo.key} (${repo.format})`,
-              }))}
-              showSearch
-              filterOption={(input, option) =>
-                (option?.label?.toString() ?? '').toLowerCase().includes(input.toLowerCase())
-              }
-              allowClear
-            />
-          </Col>
-          <Col span={16}>
-            <Search
-              placeholder="Search artifacts by path or name..."
-              allowClear
-              enterButton={<SearchOutlined />}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onSearch={(value) => {
-                setSearchTerm(value)
-                setPage(1)
+            >
+              <p>Select a repository or folder from the tree to browse artifacts</p>
+            </div>
+          ) : artifactsLoading ? (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                height: 200,
               }}
-              disabled={!selectedRepo}
+            >
+              <Spin size="large" />
+            </div>
+          ) : (
+            <ArtifactList
+              artifacts={artifactsData?.items ?? []}
+              loading={artifactsLoading}
+              onSelect={handleArtifactSelect}
+              onDownload={handleDownload}
+              onDelete={handleDelete}
+              pagination={{
+                current: page,
+                pageSize,
+                total: artifactsData?.pagination?.total ?? 0,
+                onChange: handlePaginationChange,
+              }}
             />
-          </Col>
-        </Row>
-      </Space>
+          )}
+        </div>
+      </Content>
 
-      {!selectedRepo ? (
-        <Card style={{ textAlign: 'center', padding: 48 }}>
-          <FileOutlined style={{ fontSize: 48, color: '#ccc', marginBottom: 16 }} />
-          <p style={{ color: '#999' }}>Select a repository to browse artifacts</p>
-        </Card>
-      ) : (
-        <Table
-          columns={columns}
-          dataSource={artifactsData?.items || []}
-          rowKey="id"
-          loading={isLoading}
-          pagination={{
-            current: page,
-            pageSize: pageSize,
-            total: artifactsData?.pagination?.total || 0,
-            showSizeChanger: true,
-            showTotal: (total) => `Total ${total} artifacts`,
-            onChange: (newPage, newPageSize) => {
-              setPage(newPage)
-              setPageSize(newPageSize)
-            },
+      {/* Right Panel: Artifact Detail */}
+      {selectedArtifact && (
+        <Sider
+          width={400}
+          style={{
+            background: colors.bgContainer,
+            overflow: 'auto',
           }}
-        />
+        >
+          <ArtifactDetail
+            artifact={artifactDetail ?? selectedArtifact}
+            onDownload={handleDownload}
+            onDelete={handleDelete}
+            canDelete
+          />
+        </Sider>
       )}
-    </div>
+    </Layout>
   )
 }
 

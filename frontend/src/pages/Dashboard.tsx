@@ -1,5 +1,5 @@
-import { Card, Row, Col, Statistic, Spin, Alert, Table, Tag, Button, Tooltip } from 'antd'
-// Removed unused Space import
+import { useState, useEffect } from 'react'
+import { Card, Row, Col, Statistic, Spin, Alert, Table, Tag, Button, Tooltip, Typography } from 'antd'
 import {
   DatabaseOutlined,
   FileOutlined,
@@ -16,6 +16,17 @@ import type { Repository } from '../types'
 import { useAuth } from '../contexts'
 import { useDocumentTitle } from '../hooks'
 import { useNavigate } from 'react-router-dom'
+import {
+  ArtifactCountWidget,
+  StorageSummaryWidget,
+  RecentActivityWidget,
+  QuickActionsWidget,
+  OnboardingWizard,
+} from '../components/dashboard'
+
+const { Title } = Typography
+
+const ONBOARDING_DISMISSED_KEY = 'artifact-keeper-onboarding-dismissed'
 
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) return '0 B'
@@ -30,6 +41,9 @@ const Dashboard = () => {
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+
+  // First-time user detection for onboarding
+  const [showOnboarding, setShowOnboarding] = useState(false)
 
   const { data: stats, isLoading: statsLoading, error: statsError, isFetching: statsFetching } = useQuery({
     queryKey: ['admin-stats'],
@@ -46,6 +60,25 @@ const Dashboard = () => {
     queryKey: ['recent-repositories'],
     queryFn: () => repositoriesApi.list({ per_page: 5 }),
   })
+
+  // Check if user is first-time (no repositories and onboarding not dismissed)
+  useEffect(() => {
+    if (!reposLoading && recentRepos) {
+      const isDismissed = localStorage.getItem(ONBOARDING_DISMISSED_KEY) === 'true'
+      const isFirstTime = recentRepos.items.length === 0 && !isDismissed
+      setShowOnboarding(isFirstTime)
+    }
+  }, [recentRepos, reposLoading])
+
+  const handleOnboardingComplete = () => {
+    localStorage.setItem(ONBOARDING_DISMISSED_KEY, 'true')
+    setShowOnboarding(false)
+  }
+
+  const handleOnboardingSkip = () => {
+    localStorage.setItem(ONBOARDING_DISMISSED_KEY, 'true')
+    setShowOnboarding(false)
+  }
 
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ['admin-stats'] })
@@ -93,10 +126,22 @@ const Dashboard = () => {
     )
   }
 
+  // Show onboarding wizard for first-time users
+  if (showOnboarding) {
+    return (
+      <div style={{ padding: '24px 0' }}>
+        <OnboardingWizard
+          onComplete={handleOnboardingComplete}
+          onSkip={handleOnboardingSkip}
+        />
+      </div>
+    )
+  }
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>Dashboard</h1>
+        <Title level={2} style={{ margin: 0 }}>Dashboard</Title>
         <Tooltip title="Refresh data">
           <Button
             icon={<ReloadOutlined spin={isRefreshing} />}
@@ -107,6 +152,16 @@ const Dashboard = () => {
           </Button>
         </Tooltip>
       </div>
+
+      {/* Quick Actions Row */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} lg={12}>
+          <QuickActionsWidget />
+        </Col>
+        <Col xs={24} lg={12}>
+          <ArtifactCountWidget />
+        </Col>
+      </Row>
 
       {/* System Health */}
       <Card title="System Health" style={{ marginBottom: 16 }}>
@@ -137,6 +192,16 @@ const Dashboard = () => {
           </Col>
         </Row>
       </Card>
+
+      {/* Storage and Activity Widgets */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} lg={12}>
+          <StorageSummaryWidget />
+        </Col>
+        <Col xs={24} lg={12}>
+          <RecentActivityWidget />
+        </Col>
+      </Row>
 
       {/* Admin Stats */}
       {user?.is_admin ? (

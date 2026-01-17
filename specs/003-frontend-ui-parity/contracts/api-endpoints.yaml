@@ -1,0 +1,1562 @@
+openapi: 3.0.3
+info:
+  title: Artifact Keeper - Frontend UI/UX Parity APIs
+  description: |
+    New API endpoints required for Frontend UI/UX Parity feature.
+    These supplement existing APIs in the artifact-keeper backend.
+  version: 1.0.0
+
+servers:
+  - url: /api/v1
+    description: API v1 base path
+
+tags:
+  - name: Groups
+    description: Group management endpoints
+  - name: Permissions
+    description: Permission target management
+  - name: Search
+    description: Search and discovery
+  - name: Packages
+    description: Package browsing
+  - name: Builds
+    description: Build management
+  - name: Profile
+    description: User profile and tokens
+  - name: Tree
+    description: Repository tree navigation
+  - name: SSO
+    description: Single Sign-On authentication
+
+paths:
+  # ============== GROUPS ==============
+  /groups:
+    get:
+      tags: [Groups]
+      summary: List all groups
+      operationId: listGroups
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Filter groups by name
+      responses:
+        '200':
+          description: Paginated list of groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGroups'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Groups]
+      summary: Create a new group
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+      responses:
+        '201':
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Group name already exists
+
+  /groups/{group_id}:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    get:
+      tags: [Groups]
+      summary: Get group details with members
+      operationId: getGroup
+      responses:
+        '200':
+          description: Group details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Groups]
+      summary: Update group
+      operationId: updateGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGroupRequest'
+      responses:
+        '200':
+          description: Group updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+
+    delete:
+      tags: [Groups]
+      summary: Delete group
+      operationId: deleteGroup
+      responses:
+        '204':
+          description: Group deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /groups/{group_id}/members:
+    parameters:
+      - $ref: '#/components/parameters/GroupId'
+    post:
+      tags: [Groups]
+      summary: Add members to group
+      operationId: addGroupMembers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '200':
+          description: Members added
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Groups]
+      summary: Remove members from group
+      operationId: removeGroupMembers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_ids]
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '200':
+          description: Members removed
+
+  # ============== PERMISSIONS ==============
+  /permissions:
+    get:
+      tags: [Permissions]
+      summary: List permission targets
+      operationId: listPermissionTargets
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+      responses:
+        '200':
+          description: Paginated list of permission targets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPermissionTargets'
+
+    post:
+      tags: [Permissions]
+      summary: Create permission target
+      operationId: createPermissionTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePermissionTargetRequest'
+      responses:
+        '201':
+          description: Permission target created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionTarget'
+
+  /permissions/{permission_id}:
+    parameters:
+      - name: permission_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Permissions]
+      summary: Get permission target details
+      operationId: getPermissionTarget
+      responses:
+        '200':
+          description: Permission target details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionTarget'
+
+    put:
+      tags: [Permissions]
+      summary: Update permission target
+      operationId: updatePermissionTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePermissionTargetRequest'
+      responses:
+        '200':
+          description: Permission target updated
+
+    delete:
+      tags: [Permissions]
+      summary: Delete permission target
+      operationId: deletePermissionTarget
+      responses:
+        '204':
+          description: Permission target deleted
+
+  # ============== SEARCH ==============
+  /search:
+    get:
+      tags: [Search]
+      summary: Quick search across artifacts, packages, and repositories
+      operationId: quickSearch
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 500
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuickSearchResult'
+
+  /search/advanced:
+    post:
+      tags: [Search]
+      summary: Advanced search with filters
+      operationId: advancedSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvancedSearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedSearchResponse'
+
+  /search/checksum:
+    get:
+      tags: [Search]
+      summary: Search by checksum
+      operationId: checksumSearch
+      parameters:
+        - name: checksum
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: algorithm
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [md5, sha1, sha256]
+      responses:
+        '200':
+          description: Matching artifacts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdvancedSearchResponse'
+
+  # ============== TREE ==============
+  /tree/{repository_key}:
+    get:
+      tags: [Tree]
+      summary: Get repository tree root or children
+      operationId: getTreeChildren
+      parameters:
+        - name: repository_key
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          schema:
+            type: string
+          description: Parent path (empty for root)
+      responses:
+        '200':
+          description: Tree nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TreeNode'
+
+  # ============== PACKAGES ==============
+  /packages:
+    get:
+      tags: [Packages]
+      summary: List packages
+      operationId: listPackages
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: package_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/PackageType'
+        - name: repository
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated packages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPackages'
+
+  /packages/{package_id}:
+    get:
+      tags: [Packages]
+      summary: Get package details
+      operationId: getPackage
+      parameters:
+        - name: package_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Package details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PackageDetail'
+
+  # ============== BUILDS ==============
+  /builds:
+    get:
+      tags: [Builds]
+      summary: List builds
+      operationId: listBuilds
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: name
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/BuildStatus'
+      responses:
+        '200':
+          description: Paginated builds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBuilds'
+
+  /builds/{build_name}/{build_number}:
+    get:
+      tags: [Builds]
+      summary: Get build details
+      operationId: getBuild
+      parameters:
+        - name: build_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: build_number
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Build details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildDetail'
+
+  /builds/diff:
+    get:
+      tags: [Builds]
+      summary: Compare two builds
+      operationId: diffBuilds
+      parameters:
+        - name: build1_name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: build1_number
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: build2_name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: build2_number
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Build diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildDiff'
+
+  # ============== PROFILE ==============
+  /profile:
+    get:
+      tags: [Profile]
+      summary: Get current user profile
+      operationId: getProfile
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+
+    put:
+      tags: [Profile]
+      summary: Update current user profile
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Profile updated
+
+  /profile/api-keys:
+    get:
+      tags: [Profile]
+      summary: List user's API keys
+      operationId: listApiKeys
+      responses:
+        '200':
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKey'
+
+    post:
+      tags: [Profile]
+      summary: Generate new API key
+      operationId: createApiKey
+      responses:
+        '201':
+          description: API key created (full key shown only once)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCreated'
+
+  /profile/api-keys/{key_id}:
+    delete:
+      tags: [Profile]
+      summary: Revoke API key
+      operationId: revokeApiKey
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Key revoked
+
+  /profile/access-tokens:
+    get:
+      tags: [Profile]
+      summary: List user's access tokens
+      operationId: listAccessTokens
+      responses:
+        '200':
+          description: Access tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AccessToken'
+
+    post:
+      tags: [Profile]
+      summary: Create access token
+      operationId: createAccessToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccessTokenRequest'
+      responses:
+        '201':
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenCreated'
+
+  /profile/access-tokens/{token_id}:
+    delete:
+      tags: [Profile]
+      summary: Revoke access token
+      operationId: revokeAccessToken
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Token revoked
+
+  # ============== SSO ==============
+  /auth/sso/providers:
+    get:
+      tags: [SSO]
+      summary: List configured SSO providers
+      operationId: listSSOProviders
+      responses:
+        '200':
+          description: SSO providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SSOProvider'
+
+  /auth/sso/{provider}/login:
+    get:
+      tags: [SSO]
+      summary: Initiate SSO login flow
+      operationId: initiateSSOLogin
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/SSOProviderType'
+        - name: redirect_url
+          in: query
+          schema:
+            type: string
+            format: uri
+      responses:
+        '302':
+          description: Redirect to SSO provider
+
+  /auth/mfa/enroll:
+    post:
+      tags: [Profile]
+      summary: Enroll in MFA
+      operationId: enrollMFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MFAEnrollRequest'
+      responses:
+        '200':
+          description: MFA enrollment started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MFAEnrollResponse'
+
+  /auth/mfa/verify:
+    post:
+      tags: [Profile]
+      summary: Verify MFA code
+      operationId: verifyMFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MFAVerifyRequest'
+      responses:
+        '200':
+          description: MFA verified
+
+components:
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+
+    PerPageParam:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+    GroupId:
+      name: group_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    Pagination:
+      type: object
+      required: [page, per_page, total, total_pages]
+      properties:
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    # Groups
+    Group:
+      type: object
+      required: [id, name, auto_join, member_count, is_external, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        auto_join:
+          type: boolean
+        member_count:
+          type: integer
+        is_external:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    GroupDetail:
+      allOf:
+        - $ref: '#/components/schemas/Group'
+        - type: object
+          required: [members]
+          properties:
+            members:
+              type: array
+              items:
+                $ref: '#/components/schemas/GroupMember'
+
+    GroupMember:
+      type: object
+      required: [user_id, username, joined_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type: string
+        joined_at:
+          type: string
+          format: date-time
+
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 50
+        description:
+          type: string
+        auto_join:
+          type: boolean
+          default: false
+
+    UpdateGroupRequest:
+      type: object
+      properties:
+        description:
+          type: string
+        auto_join:
+          type: boolean
+
+    PaginatedGroups:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Permissions
+    PermissionTarget:
+      type: object
+      required: [id, name, repositories, users, groups, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        repositories:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepositoryPattern'
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAssignment'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAssignment'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RepositoryPattern:
+      type: object
+      required: [pattern]
+      properties:
+        pattern:
+          type: string
+        include_patterns:
+          type: array
+          items:
+            type: string
+        exclude_patterns:
+          type: array
+          items:
+            type: string
+
+    PermissionAssignment:
+      type: object
+      required: [id, name, actions]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAction'
+
+    PermissionAction:
+      type: string
+      enum: [read, annotate, deploy, delete, manage]
+
+    CreatePermissionTargetRequest:
+      type: object
+      required: [name, repositories]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        repositories:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepositoryPattern'
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAssignment'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAssignment'
+
+    UpdatePermissionTargetRequest:
+      $ref: '#/components/schemas/CreatePermissionTargetRequest'
+
+    PaginatedPermissionTargets:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionTarget'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Search
+    QuickSearchResult:
+      type: object
+      required: [artifacts, packages, repositories, total_count]
+      properties:
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactSearchHit'
+        packages:
+          type: array
+          items:
+            $ref: '#/components/schemas/PackageSearchHit'
+        repositories:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepositorySearchHit'
+        total_count:
+          type: integer
+
+    ArtifactSearchHit:
+      type: object
+      required: [artifact_id, path, repository_key, name]
+      properties:
+        artifact_id:
+          type: string
+          format: uuid
+        path:
+          type: string
+        repository_key:
+          type: string
+        name:
+          type: string
+        highlight:
+          type: string
+
+    PackageSearchHit:
+      type: object
+      required: [package_id, name, package_type, latest_version]
+      properties:
+        package_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        package_type:
+          $ref: '#/components/schemas/PackageType'
+        latest_version:
+          type: string
+
+    RepositorySearchHit:
+      type: object
+      required: [repository_key, name, format]
+      properties:
+        repository_key:
+          type: string
+        name:
+          type: string
+        format:
+          type: string
+
+    AdvancedSearchRequest:
+      type: object
+      required: [search_type]
+      properties:
+        search_type:
+          type: string
+          enum: [quick, package, property, checksum, gavc]
+        query:
+          type: string
+        package_name:
+          type: string
+        package_version:
+          type: string
+        package_type:
+          $ref: '#/components/schemas/PackageType'
+        properties:
+          type: array
+          items:
+            $ref: '#/components/schemas/PropertyFilter'
+        checksum:
+          type: string
+        checksum_algorithm:
+          type: string
+          enum: [md5, sha1, sha256]
+        group_id:
+          type: string
+        artifact_id:
+          type: string
+        version:
+          type: string
+        classifier:
+          type: string
+        repositories:
+          type: array
+          items:
+            type: string
+        limit:
+          type: integer
+          default: 50
+        offset:
+          type: integer
+          default: 0
+
+    PropertyFilter:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        match_type:
+          type: string
+          enum: [exact, contains, regex]
+          default: exact
+
+    AdvancedSearchResponse:
+      type: object
+      required: [results, total_count]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtifactSearchHit'
+        total_count:
+          type: integer
+        facets:
+          $ref: '#/components/schemas/SearchFacets'
+
+    SearchFacets:
+      type: object
+      properties:
+        repositories:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetValue'
+        formats:
+          type: array
+          items:
+            $ref: '#/components/schemas/FacetValue'
+
+    FacetValue:
+      type: object
+      required: [value, count]
+      properties:
+        value:
+          type: string
+        count:
+          type: integer
+
+    # Tree
+    TreeNode:
+      type: object
+      required: [key, title, isLeaf, nodeType]
+      properties:
+        key:
+          type: string
+        title:
+          type: string
+        isLeaf:
+          type: boolean
+        nodeType:
+          type: string
+          enum: [repository-local, repository-remote, repository-virtual, repository-federated, folder, file]
+        metadata:
+          $ref: '#/components/schemas/TreeNodeMetadata'
+
+    TreeNodeMetadata:
+      type: object
+      properties:
+        size:
+          type: integer
+        modified_at:
+          type: string
+          format: date-time
+        artifact_id:
+          type: string
+          format: uuid
+
+    # Packages
+    PackageType:
+      type: string
+      enum: [maven, npm, pypi, docker, helm, go, cargo, nuget, rubygems, composer, debian, rpm, alpine, generic]
+
+    Package:
+      type: object
+      required: [id, name, package_type, latest_version, versions_count, download_count, repositories, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        package_type:
+          $ref: '#/components/schemas/PackageType'
+        latest_version:
+          type: string
+        versions_count:
+          type: integer
+        download_count:
+          type: integer
+        repositories:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PackageDetail:
+      allOf:
+        - $ref: '#/components/schemas/Package'
+        - type: object
+          properties:
+            description:
+              type: string
+            versions:
+              type: array
+              items:
+                $ref: '#/components/schemas/PackageVersion'
+            dependencies:
+              type: array
+              items:
+                $ref: '#/components/schemas/PackageDependency'
+            installation_instructions:
+              type: array
+              items:
+                $ref: '#/components/schemas/InstallationInstruction'
+
+    PackageVersion:
+      type: object
+      required: [version, download_count, created_at]
+      properties:
+        version:
+          type: string
+        download_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    PackageDependency:
+      type: object
+      required: [name, version_constraint]
+      properties:
+        name:
+          type: string
+        version_constraint:
+          type: string
+        scope:
+          type: string
+
+    InstallationInstruction:
+      type: object
+      required: [tool, command]
+      properties:
+        tool:
+          type: string
+        command:
+          type: string
+
+    PaginatedPackages:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Package'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Builds
+    BuildStatus:
+      type: string
+      enum: [success, failure, running, unknown]
+
+    Build:
+      type: object
+      required: [id, name, number, status, started_at, duration_ms, modules_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        number:
+          type: string
+        status:
+          $ref: '#/components/schemas/BuildStatus'
+        started_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        modules_count:
+          type: integer
+        agent:
+          type: string
+        principal:
+          type: string
+
+    BuildDetail:
+      allOf:
+        - $ref: '#/components/schemas/Build'
+        - type: object
+          properties:
+            modules:
+              type: array
+              items:
+                $ref: '#/components/schemas/BuildModule'
+            dependencies:
+              type: array
+              items:
+                $ref: '#/components/schemas/BuildDependency'
+            environment:
+              type: object
+              additionalProperties:
+                type: string
+            issues:
+              type: array
+              items:
+                $ref: '#/components/schemas/BuildIssue'
+            release_history:
+              type: array
+              items:
+                $ref: '#/components/schemas/ReleaseHistory'
+
+    BuildModule:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+
+    BuildDependency:
+      type: object
+      required: [id, name, version, scope]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        scope:
+          type: string
+
+    BuildIssue:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+        url:
+          type: string
+          format: uri
+        summary:
+          type: string
+
+    ReleaseHistory:
+      type: object
+      required: [version, released_at]
+      properties:
+        version:
+          type: string
+        released_at:
+          type: string
+          format: date-time
+        release_bundle:
+          type: string
+
+    BuildDiff:
+      type: object
+      required: [build1, build2, added_dependencies, removed_dependencies, changed_modules]
+      properties:
+        build1:
+          $ref: '#/components/schemas/BuildSummary'
+        build2:
+          $ref: '#/components/schemas/BuildSummary'
+        added_dependencies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuildDependency'
+        removed_dependencies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuildDependency'
+        changed_modules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModuleDiff'
+
+    BuildSummary:
+      type: object
+      required: [name, number]
+      properties:
+        name:
+          type: string
+        number:
+          type: string
+
+    ModuleDiff:
+      type: object
+      required: [module_name, added_artifacts, removed_artifacts]
+      properties:
+        module_name:
+          type: string
+        added_artifacts:
+          type: array
+          items:
+            type: string
+        removed_artifacts:
+          type: array
+          items:
+            type: string
+
+    PaginatedBuilds:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Build'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Profile
+    UserProfile:
+      type: object
+      required: [id, username, email, is_admin, is_active, mfa_enabled, groups, permissions_summary, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+        is_admin:
+          type: boolean
+        is_active:
+          type: boolean
+        mfa_enabled:
+          type: boolean
+        last_login:
+          type: string
+          format: date-time
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/Group'
+        permissions_summary:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionSummary'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PermissionSummary:
+      type: object
+      required: [repository_key, actions, source, source_name]
+      properties:
+        repository_key:
+          type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionAction'
+        source:
+          type: string
+          enum: [user, group]
+        source_name:
+          type: string
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        email:
+          type: string
+          format: email
+
+    ApiKey:
+      type: object
+      required: [id, key_prefix, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key_prefix:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+
+    ApiKeyCreated:
+      type: object
+      required: [id, key, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AccessToken:
+      type: object
+      required: [id, name, scopes, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenScope'
+        expires_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    TokenScope:
+      type: string
+      enum: ['read:artifacts', 'write:artifacts', 'delete:artifacts', 'admin:users', 'admin:repos']
+
+    CreateAccessTokenRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenScope'
+        expires_at:
+          type: string
+          format: date-time
+
+    AccessTokenCreated:
+      allOf:
+        - $ref: '#/components/schemas/AccessToken'
+        - type: object
+          required: [token]
+          properties:
+            token:
+              type: string
+
+    # SSO
+    SSOProvider:
+      type: object
+      required: [id, provider_type, name, enabled]
+      properties:
+        id:
+          type: string
+        provider_type:
+          $ref: '#/components/schemas/SSOProviderType'
+        name:
+          type: string
+        icon:
+          type: string
+        enabled:
+          type: boolean
+
+    SSOProviderType:
+      type: string
+      enum: [github, gitlab, google, azure, okta, saml]
+
+    MFAEnrollRequest:
+      type: object
+      required: [method]
+      properties:
+        method:
+          type: string
+          enum: [totp, sms, email]
+
+    MFAEnrollResponse:
+      type: object
+      required: [verification_required]
+      properties:
+        secret:
+          type: string
+        qr_code_url:
+          type: string
+          format: uri
+        verification_required:
+          type: boolean
+
+    MFAVerifyRequest:
+      type: object
+      required: [code, method]
+      properties:
+        code:
+          type: string
+        method:
+          type: string
+          enum: [totp, sms, email]
