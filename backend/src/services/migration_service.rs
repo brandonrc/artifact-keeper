@@ -234,7 +234,7 @@ impl MigrationService {
     /// Prepare repository migration config from Artifactory repository
     pub fn prepare_repository_migration(
         repo: &RepositoryListItem,
-        repo_config: Option<&RepositoryConfig>,
+        _repo_config: Option<&RepositoryConfig>,
     ) -> Result<RepositoryMigrationConfig, MigrationError> {
         let repo_type = RepositoryType::from_artifactory(&repo.repo_type).ok_or_else(|| {
             MigrationError::ConfigError(format!("Unknown repository type: {}", repo.repo_type))
@@ -598,7 +598,7 @@ impl MigrationService {
         .fetch_one(&self.db)
         .await?;
 
-        let (total_items, completed, failed, skipped, transferred, started_at, finished_at) = job;
+        let (_total_items, _completed, _failed, _skipped, transferred, started_at, finished_at) = job;
 
         let duration = match (started_at, finished_at) {
             (Some(start), Some(end)) => end.signed_duration_since(start).num_seconds(),
@@ -660,7 +660,7 @@ impl MigrationService {
 
         let errors_json: Vec<serde_json::Value> = errors
             .iter()
-            .map(|(item_type, path, msg)| {
+            .map(|(_item_type, path, msg)| {
                 serde_json::json!({
                     "code": "MIGRATION_FAILED",
                     "message": msg.clone().unwrap_or_default(),
@@ -955,7 +955,7 @@ impl MigrationService {
     /// Run a pre-migration assessment
     pub async fn run_assessment(
         &self,
-        connection_id: Uuid,
+        _connection_id: Uuid,
         client: &ArtifactoryClient,
     ) -> Result<AssessmentResult, MigrationError> {
         let mut repositories = Vec::new();

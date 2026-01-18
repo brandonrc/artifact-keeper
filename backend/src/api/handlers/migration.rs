@@ -905,6 +905,7 @@ async fn stream_migration_progress(
         // Send initial connection event
         yield Ok(Event::default().event("connected").data(format!(r#"{{"job_id":"{}"}}"#, id)));
 
+        #[allow(unused_variables)]
         let mut last_completed = 0i32;
         let terminal_statuses = ["completed", "failed", "cancelled"];
 
