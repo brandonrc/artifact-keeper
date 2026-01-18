@@ -99,6 +99,7 @@ mod tests {
         routing::get,
         Router,
     };
+    use serde_json;
     use tower::ServiceExt;
 
     /// Test the metrics endpoint returns valid Prometheus format

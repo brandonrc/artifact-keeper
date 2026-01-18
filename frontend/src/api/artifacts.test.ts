@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { artifactsApi } from './artifacts'
 import { server } from '../test/mocks/server'
 import { http, HttpResponse } from 'msw'

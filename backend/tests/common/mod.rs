@@ -6,12 +6,12 @@
 //! - Authentication test helpers
 
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 pub mod fixtures;
 
 use axum::Router;
 use sqlx::PgPool;
-use std::sync::Arc;
 
 /// Test context containing shared resources for tests
 pub struct TestContext {
