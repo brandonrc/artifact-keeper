@@ -55,13 +55,12 @@ impl RepositoryService {
 
         // Check if format handler is enabled (T044)
         let format_key = format!("{:?}", req.format).to_lowercase();
-        let format_enabled: Option<bool> = sqlx::query_scalar(
-            "SELECT is_enabled FROM format_handlers WHERE format_key = $1",
-        )
-        .bind(&format_key)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let format_enabled: Option<bool> =
+            sqlx::query_scalar("SELECT is_enabled FROM format_handlers WHERE format_key = $1")
+                .bind(&format_key)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(|e| AppError::Database(e.to_string()))?;
 
         // If format handler exists and is disabled, reject repository creation
         if format_enabled == Some(false) {
@@ -328,7 +327,9 @@ impl RepositoryService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            return Err(AppError::NotFound("Member not found in virtual repository".to_string()));
+            return Err(AppError::NotFound(
+                "Member not found in virtual repository".to_string(),
+            ));
         }
 
         Ok(())

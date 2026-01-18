@@ -2,12 +2,7 @@
 //!
 //! Provides correlation ID generation and propagation for request tracing.
 
-use axum::{
-    extract::Request,
-    http::header::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::header::HeaderValue, middleware::Next, response::Response};
 use uuid::Uuid;
 
 /// The header name for correlation IDs.
@@ -51,10 +46,7 @@ impl std::fmt::Display for CorrelationId {
 /// 3. Adds the correlation ID to request extensions for handler access
 /// 4. Includes the correlation ID in the response headers
 /// 5. Logs the correlation ID with tracing
-pub async fn correlation_id_middleware(
-    mut request: Request,
-    next: Next,
-) -> Response {
+pub async fn correlation_id_middleware(mut request: Request, next: Next) -> Response {
     // Extract or generate correlation ID
     let correlation_id = request
         .headers()

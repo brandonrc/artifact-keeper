@@ -263,7 +263,9 @@ impl ArtifactoryImporter {
         };
 
         // Check for artifactory.config.xml or similar
-        let config_path = self.root_path.join("etc/artifactory/artifactory.config.xml");
+        let config_path = self
+            .root_path
+            .join("etc/artifactory/artifactory.config.xml");
         if config_path.exists() {
             // Parse for version info if needed
             metadata.artifactory_version = Some("detected".to_string());
@@ -316,7 +318,10 @@ impl ArtifactoryImporter {
             let path = entry.path();
             if path.is_file() {
                 // Skip metadata files
-                let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
                 if !name.ends_with(".properties") && !name.starts_with('.') {
                     count += 1;
                     size += entry.metadata().map(|m| m.len()).unwrap_or(0);
@@ -395,7 +400,10 @@ impl ArtifactoryImporter {
     }
 
     /// Parse repository config from XML
-    fn parse_repo_config_xml(content: &str, repo_name: &str) -> Result<ImportedRepository, ImportError> {
+    fn parse_repo_config_xml(
+        content: &str,
+        repo_name: &str,
+    ) -> Result<ImportedRepository, ImportError> {
         // Simple XML parsing using quick-xml
         use quick_xml::events::Event;
         use quick_xml::Reader;
@@ -439,7 +447,12 @@ impl ArtifactoryImporter {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(ImportError::InvalidFormat(format!("XML parse error: {}", e))),
+                Err(e) => {
+                    return Err(ImportError::InvalidFormat(format!(
+                        "XML parse error: {}",
+                        e
+                    )))
+                }
                 _ => {}
             }
             buf.clear();
@@ -609,9 +622,13 @@ impl ArtifactoryImporter {
             if properties_path.exists() {
                 if let Ok(props) = Self::read_properties_file(&properties_path) {
                     artifact.properties = props;
-                    artifact.created = artifact.properties.get("artifactory.created")
+                    artifact.created = artifact
+                        .properties
+                        .get("artifactory.created")
                         .and_then(|v| v.first().cloned());
-                    artifact.modified = artifact.properties.get("artifactory.modified")
+                    artifact.modified = artifact
+                        .properties
+                        .get("artifactory.modified")
                         .and_then(|v| v.first().cloned());
                 }
             }
@@ -730,7 +747,12 @@ impl ArtifactoryImporter {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(ImportError::InvalidFormat(format!("XML parse error: {}", e))),
+                Err(e) => {
+                    return Err(ImportError::InvalidFormat(format!(
+                        "XML parse error: {}",
+                        e
+                    )))
+                }
                 _ => {}
             }
             buf.clear();
@@ -808,7 +830,12 @@ impl ArtifactoryImporter {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(ImportError::InvalidFormat(format!("XML parse error: {}", e))),
+                Err(e) => {
+                    return Err(ImportError::InvalidFormat(format!(
+                        "XML parse error: {}",
+                        e
+                    )))
+                }
                 _ => {}
             }
             buf.clear();
@@ -926,7 +953,12 @@ impl ArtifactoryImporter {
                     }
                 }
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(ImportError::InvalidFormat(format!("XML parse error: {}", e))),
+                Err(e) => {
+                    return Err(ImportError::InvalidFormat(format!(
+                        "XML parse error: {}",
+                        e
+                    )))
+                }
                 _ => {}
             }
             buf.clear();
@@ -1079,7 +1111,10 @@ mod tests {
 
     #[test]
     fn test_infer_repo_type() {
-        assert_eq!(ArtifactoryImporter::infer_repo_type("libs-release"), "local");
+        assert_eq!(
+            ArtifactoryImporter::infer_repo_type("libs-release"),
+            "local"
+        );
         assert_eq!(
             ArtifactoryImporter::infer_repo_type("jcenter-remote"),
             "remote"

@@ -289,10 +289,7 @@ impl ArtifactoryClient {
     }
 
     /// Make a GET request to the Artifactory API with retry logic
-    async fn get<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-    ) -> Result<T, ArtifactoryError> {
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ArtifactoryError> {
         self.request_with_retry(|| async {
             let url = format!("{}{}", self.config.base_url, path);
             let request = self.auth_request(self.client.get(&url));
@@ -302,10 +299,7 @@ impl ArtifactoryClient {
     }
 
     /// Execute a request with retry logic and exponential backoff
-    async fn request_with_retry<T, F, Fut>(
-        &self,
-        request_fn: F,
-    ) -> Result<T, ArtifactoryError>
+    async fn request_with_retry<T, F, Fut>(&self, request_fn: F) -> Result<T, ArtifactoryError>
     where
         T: serde::de::DeserializeOwned,
         F: Fn() -> Fut,
@@ -336,9 +330,7 @@ impl ArtifactoryClient {
                             .and_then(|v| v.parse::<u64>().ok());
 
                         if attempt < retry_config.max_retries {
-                            let wait_time = retry_after
-                                .map(|s| s * 1000)
-                                .unwrap_or(delay_ms);
+                            let wait_time = retry_after.map(|s| s * 1000).unwrap_or(delay_ms);
                             tracing::warn!(
                                 "Rate limited, waiting {}ms before retry (attempt {}/{})",
                                 wait_time,
@@ -457,7 +449,10 @@ impl ArtifactoryClient {
                 .and_then(|v| v.parse().ok());
             Err(ArtifactoryError::RateLimited { retry_after })
         } else {
-            let message = response.text().await.unwrap_or_else(|_| "Unknown error".into());
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".into());
             Err(ArtifactoryError::ApiError {
                 status: status.as_u16(),
                 message,
@@ -531,7 +526,9 @@ impl ArtifactoryClient {
 
         let query = format!(
             r#"items.find({{{}}}).include("repo", "path", "name", "size", "created", "modified", "sha256", "actual_sha1").sort({{"$asc": ["path", "name"]}}).offset({}).limit({})"#,
-            conditions.join(", "), offset, limit
+            conditions.join(", "),
+            offset,
+            limit
         );
         self.search_aql(&query).await
     }
@@ -544,7 +541,8 @@ impl ArtifactoryClient {
         offset: i64,
         limit: i64,
     ) -> Result<AqlResponse, ArtifactoryError> {
-        self.list_artifacts_with_date_filter(repo_key, offset, limit, Some(since), None).await
+        self.list_artifacts_with_date_filter(repo_key, offset, limit, Some(since), None)
+            .await
     }
 
     /// Get artifact storage info (metadata, checksums)

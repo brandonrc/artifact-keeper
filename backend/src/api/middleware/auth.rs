@@ -152,9 +152,11 @@ pub async fn auth_middleware(
         ExtractedToken::None => {
             (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response()
         }
-        ExtractedToken::Invalid => {
-            (StatusCode::UNAUTHORIZED, "Invalid authorization header format").into_response()
-        }
+        ExtractedToken::Invalid => (
+            StatusCode::UNAUTHORIZED,
+            "Invalid authorization header format",
+        )
+            .into_response(),
     }
 }
 
@@ -166,7 +168,10 @@ async fn validate_api_token_with_scopes(
     auth_service: &AuthService,
     token: &str,
 ) -> Result<AuthExtension, ()> {
-    let user = auth_service.validate_api_token(token).await.map_err(|_| ())?;
+    let user = auth_service
+        .validate_api_token(token)
+        .await
+        .map_err(|_| ())?;
 
     Ok(AuthExtension {
         user_id: user.id,
@@ -284,7 +289,10 @@ pub async fn admin_middleware(
             return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
         }
         ExtractedToken::Invalid => {
-            return (StatusCode::UNAUTHORIZED, "Invalid authorization header format")
+            return (
+                StatusCode::UNAUTHORIZED,
+                "Invalid authorization header format",
+            )
                 .into_response();
         }
     };

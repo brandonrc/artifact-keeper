@@ -116,7 +116,7 @@ pub fn get_handler_for_format(format: &RepositoryFormat) -> Box<dyn FormatHandle
 /// List all supported core format keys.
 pub fn list_core_formats() -> Vec<&'static str> {
     vec![
-        "maven", "npm", "pypi", "nuget", "go", "rubygems",
-        "docker", "helm", "rpm", "debian", "conan", "cargo", "generic",
+        "maven", "npm", "pypi", "nuget", "go", "rubygems", "docker", "helm", "rpm", "debian",
+        "conan", "cargo", "generic",
     ]
 }

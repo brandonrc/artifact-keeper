@@ -37,7 +37,11 @@ impl ArtifactService {
     }
 
     /// Create a new artifact service with plugin support.
-    pub fn with_plugins(db: PgPool, storage: Arc<dyn StorageBackend>, plugin_service: Arc<PluginService>) -> Self {
+    pub fn with_plugins(
+        db: PgPool,
+        storage: Arc<dyn StorageBackend>,
+        plugin_service: Arc<PluginService>,
+    ) -> Self {
         let repo_service = RepositoryService::new(db.clone());
         Self {
             db,
@@ -53,7 +57,11 @@ impl ArtifactService {
     }
 
     /// Trigger a plugin hook, logging but not failing if plugin service is unavailable.
-    async fn trigger_hook(&self, event: PluginEventType, artifact_info: &ArtifactInfo) -> Result<()> {
+    async fn trigger_hook(
+        &self,
+        event: PluginEventType,
+        artifact_info: &ArtifactInfo,
+    ) -> Result<()> {
         if let Some(ref plugin_service) = self.plugin_service {
             plugin_service.trigger_hooks(event, artifact_info).await
         } else {
@@ -63,7 +71,11 @@ impl ArtifactService {
 
     /// Trigger a plugin hook, logging errors but not blocking operations.
     /// Used for "after" events where we don't want to fail the main operation.
-    async fn trigger_hook_non_blocking(&self, event: PluginEventType, artifact_info: &ArtifactInfo) {
+    async fn trigger_hook_non_blocking(
+        &self,
+        event: PluginEventType,
+        artifact_info: &ArtifactInfo,
+    ) {
         if let Some(ref plugin_service) = self.plugin_service {
             if let Err(e) = plugin_service.trigger_hooks(event, artifact_info).await {
                 warn!("Plugin hook {:?} failed (non-blocking): {}", event, e);
@@ -98,7 +110,11 @@ impl ArtifactService {
         let size_bytes = data.len() as i64;
 
         // Check quota
-        if !self.repo_service.check_quota(repository_id, size_bytes).await? {
+        if !self
+            .repo_service
+            .check_quota(repository_id, size_bytes)
+            .await?
+        {
             return Err(AppError::QuotaExceeded(
                 "Repository storage quota exceeded".to_string(),
             ));
@@ -122,7 +138,8 @@ impl ArtifactService {
         };
 
         // Trigger BeforeUpload hooks - validators can reject the upload
-        self.trigger_hook(PluginEventType::BeforeUpload, &pre_artifact_info).await?;
+        self.trigger_hook(PluginEventType::BeforeUpload, &pre_artifact_info)
+            .await?;
 
         // Check if artifact with same path already exists
         let existing = sqlx::query!(
@@ -190,7 +207,8 @@ impl ArtifactService {
 
         // Trigger AfterUpload hooks (non-blocking - don't fail upload if hooks fail)
         let artifact_info = ArtifactInfo::from(&artifact);
-        self.trigger_hook_non_blocking(PluginEventType::AfterUpload, &artifact_info).await;
+        self.trigger_hook_non_blocking(PluginEventType::AfterUpload, &artifact_info)
+            .await;
 
         Ok(artifact)
     }
@@ -226,7 +244,8 @@ impl ArtifactService {
 
         // Trigger BeforeDownload hooks - validators can reject the download
         let artifact_info = ArtifactInfo::from(&artifact);
-        self.trigger_hook(PluginEventType::BeforeDownload, &artifact_info).await?;
+        self.trigger_hook(PluginEventType::BeforeDownload, &artifact_info)
+            .await?;
 
         // Get content from storage
         let content = self.storage.get(&artifact.storage_key).await?;
@@ -247,7 +266,8 @@ impl ArtifactService {
         .ok(); // Ignore stats errors
 
         // Trigger AfterDownload hooks (non-blocking)
-        self.trigger_hook_non_blocking(PluginEventType::AfterDownload, &artifact_info).await;
+        self.trigger_hook_non_blocking(PluginEventType::AfterDownload, &artifact_info)
+            .await;
 
         Ok((artifact, content))
     }
@@ -335,7 +355,8 @@ impl ArtifactService {
         let artifact_info = ArtifactInfo::from(&artifact);
 
         // Trigger BeforeDelete hooks - validators can reject the deletion
-        self.trigger_hook(PluginEventType::BeforeDelete, &artifact_info).await?;
+        self.trigger_hook(PluginEventType::BeforeDelete, &artifact_info)
+            .await?;
 
         let result = sqlx::query!(
             "UPDATE artifacts SET is_deleted = true, updated_at = NOW() WHERE id = $1",
@@ -350,7 +371,8 @@ impl ArtifactService {
         }
 
         // Trigger AfterDelete hooks (non-blocking)
-        self.trigger_hook_non_blocking(PluginEventType::AfterDelete, &artifact_info).await;
+        self.trigger_hook_non_blocking(PluginEventType::AfterDelete, &artifact_info)
+            .await;
 
         Ok(())
     }

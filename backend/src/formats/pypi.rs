@@ -313,9 +313,7 @@ impl PypiHandler {
             "version" => info.version = value.to_string(),
             "summary" => info.summary = Some(value.to_string()),
             "description" => info.description = Some(value.to_string()),
-            "description-content-type" => {
-                info.description_content_type = Some(value.to_string())
-            }
+            "description-content-type" => info.description_content_type = Some(value.to_string()),
             "keywords" => {
                 info.keywords = Some(value.split(',').map(|s| s.trim().to_string()).collect())
             }
@@ -558,18 +556,12 @@ mod tests {
     fn test_normalize_name() {
         assert_eq!(PypiHandler::normalize_name("My_Package"), "my-package");
         assert_eq!(PypiHandler::normalize_name("some.package"), "some-package");
-        assert_eq!(
-            PypiHandler::normalize_name("Package__Name"),
-            "package-name"
-        );
+        assert_eq!(PypiHandler::normalize_name("Package__Name"), "package-name");
     }
 
     #[test]
     fn test_parse_wheel_filename() {
-        let info = PypiHandler::parse_filename(
-            "requests-2.28.0-py3-none-any.whl",
-        )
-        .unwrap();
+        let info = PypiHandler::parse_filename("requests-2.28.0-py3-none-any.whl").unwrap();
         assert_eq!(info.name, Some("requests".to_string()));
         assert_eq!(info.version, Some("2.28.0".to_string()));
     }

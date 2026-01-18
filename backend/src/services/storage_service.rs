@@ -163,7 +163,10 @@ impl S3BackendWrapper {
     pub async fn from_config(config: &Config) -> crate::error::Result<Self> {
         let s3_config = crate::storage::s3::S3Config::new(
             config.s3_bucket.clone().unwrap_or_default(),
-            config.s3_region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+            config
+                .s3_region
+                .clone()
+                .unwrap_or_else(|| "us-east-1".to_string()),
             config.s3_endpoint.clone(),
             None, // No prefix by default
         );
@@ -324,7 +327,8 @@ mod tests {
 
     fn create_test_storage() -> (StorageService, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let backend: Arc<dyn StorageBackend> = Arc::new(FilesystemBackend::new(temp_dir.path().to_path_buf()));
+        let backend: Arc<dyn StorageBackend> =
+            Arc::new(FilesystemBackend::new(temp_dir.path().to_path_buf()));
         (StorageService::new(backend), temp_dir)
     }
 
@@ -361,7 +365,10 @@ mod tests {
 
         assert!(!storage.exists("nonexistent").await.unwrap());
 
-        storage.put("exists.txt", Bytes::from("data")).await.unwrap();
+        storage
+            .put("exists.txt", Bytes::from("data"))
+            .await
+            .unwrap();
         assert!(storage.exists("exists.txt").await.unwrap());
     }
 
@@ -369,7 +376,10 @@ mod tests {
     async fn test_delete() {
         let (storage, _temp): (StorageService, TempDir) = create_test_storage();
 
-        storage.put("to_delete.txt", Bytes::from("data")).await.unwrap();
+        storage
+            .put("to_delete.txt", Bytes::from("data"))
+            .await
+            .unwrap();
         assert!(storage.exists("to_delete.txt").await.unwrap());
 
         storage.delete("to_delete.txt").await.unwrap();
@@ -380,9 +390,18 @@ mod tests {
     async fn test_list() {
         let (storage, _temp): (StorageService, TempDir) = create_test_storage();
 
-        storage.put("dir/file1.txt", Bytes::from("1")).await.unwrap();
-        storage.put("dir/file2.txt", Bytes::from("2")).await.unwrap();
-        storage.put("other/file3.txt", Bytes::from("3")).await.unwrap();
+        storage
+            .put("dir/file1.txt", Bytes::from("1"))
+            .await
+            .unwrap();
+        storage
+            .put("dir/file2.txt", Bytes::from("2"))
+            .await
+            .unwrap();
+        storage
+            .put("other/file3.txt", Bytes::from("3"))
+            .await
+            .unwrap();
 
         let all_keys = storage.list(None).await.unwrap();
         assert_eq!(all_keys.len(), 3);

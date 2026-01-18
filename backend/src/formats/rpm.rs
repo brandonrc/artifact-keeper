@@ -184,27 +184,27 @@ impl RpmHandler {
         }
 
         // Parse main header
-        let metadata = if content.len() > offset + 16 && content[offset..offset + 3] == RPM_HEADER_MAGIC
-        {
-            Self::parse_header_section(&content[offset..])?
-        } else {
-            // Fallback to lead name
-            RpmMetadata {
-                name: lead_name,
-                version: String::new(),
-                release: String::new(),
-                arch: String::new(),
-                summary: None,
-                description: None,
-                license: None,
-                group: None,
-                url: None,
-                size: None,
-                source_rpm: None,
-                provides: vec![],
-                requires: vec![],
-            }
-        };
+        let metadata =
+            if content.len() > offset + 16 && content[offset..offset + 3] == RPM_HEADER_MAGIC {
+                Self::parse_header_section(&content[offset..])?
+            } else {
+                // Fallback to lead name
+                RpmMetadata {
+                    name: lead_name,
+                    version: String::new(),
+                    release: String::new(),
+                    arch: String::new(),
+                    summary: None,
+                    description: None,
+                    license: None,
+                    group: None,
+                    url: None,
+                    size: None,
+                    source_rpm: None,
+                    provides: vec![],
+                    requires: vec![],
+                }
+            };
 
         Ok(metadata)
     }
@@ -478,7 +478,8 @@ pub fn generate_repomd(data: Vec<RepoMdData>) -> Result<String> {
         data,
     };
 
-    xml_to_string(&repomd).map_err(|e| AppError::Internal(format!("Failed to generate repomd.xml: {}", e)))
+    xml_to_string(&repomd)
+        .map_err(|e| AppError::Internal(format!("Failed to generate repomd.xml: {}", e)))
 }
 
 /// Primary.xml package entry

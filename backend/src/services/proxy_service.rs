@@ -100,19 +100,22 @@ impl ProxyService {
 
         // Cache the artifact
         let cache_ttl = self.get_cache_ttl_for_repo(repo.id).await;
-        self.cache_artifact(&cache_key, &metadata_key, &content, content_type.clone(), etag, cache_ttl)
-            .await?;
+        self.cache_artifact(
+            &cache_key,
+            &metadata_key,
+            &content,
+            content_type.clone(),
+            etag,
+            cache_ttl,
+        )
+        .await?;
 
         Ok((content, content_type))
     }
 
     /// Check if upstream has a newer version of the artifact.
     /// Returns true if upstream has newer content or cache is expired.
-    pub async fn check_upstream(
-        &self,
-        repo: &Repository,
-        path: &str,
-    ) -> Result<bool> {
+    pub async fn check_upstream(&self, repo: &Repository, path: &str) -> Result<bool> {
         // Validate repository type
         if repo.repo_type != RepositoryType::Remote {
             return Err(AppError::Validation(
@@ -286,8 +289,7 @@ impl ProxyService {
         if !status.is_success() {
             return Err(AppError::Storage(format!(
                 "Upstream returned error status {}: {}",
-                status,
-                url
+                status, url
             )));
         }
 
@@ -381,10 +383,7 @@ impl ProxyService {
             }
             StatusCode::OK => {
                 // Check if ETag in response differs
-                let new_etag = response
-                    .headers()
-                    .get(ETAG)
-                    .and_then(|v| v.to_str().ok());
+                let new_etag = response.headers().get(ETAG).and_then(|v| v.to_str().ok());
 
                 match new_etag {
                     Some(etag) if etag == cached_etag => {

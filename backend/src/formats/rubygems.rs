@@ -145,7 +145,13 @@ impl RubygemsHandler {
         let mut found_version = false;
 
         for part in &parts {
-            if !found_version && part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            if !found_version
+                && part
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+            {
                 found_version = true;
             }
 
@@ -302,7 +308,14 @@ impl RubygemsHandler {
         // Try to extract version from nested structure if still empty
         if gemspec.version.is_empty() {
             for line in content.lines() {
-                if line.trim().starts_with("- ") && line.trim_start_matches("- ").chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                if line.trim().starts_with("- ")
+                    && line
+                        .trim_start_matches("- ")
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                {
                     gemspec.version = line.trim().trim_start_matches("- ").to_string();
                     break;
                 }
@@ -513,7 +526,11 @@ pub fn generate_gem_info(gemspec: &GemSpec, sha256: &str, downloads: u64) -> Gem
         name: gemspec.name.clone(),
         version: gemspec.version.clone(),
         platform: gemspec.platform.clone(),
-        authors: gemspec.authors.as_ref().map(|a| a.join(", ")).unwrap_or_default(),
+        authors: gemspec
+            .authors
+            .as_ref()
+            .map(|a| a.join(", "))
+            .unwrap_or_default(),
         info: gemspec.description.clone().unwrap_or_default(),
         licenses: gemspec.licenses.clone().unwrap_or_default(),
         homepage_uri: gemspec.homepage.clone(),
@@ -532,7 +549,8 @@ mod tests {
 
     #[test]
     fn test_parse_gem_filename() {
-        let (name, version, platform) = RubygemsHandler::parse_gem_filename("rails-7.0.8.gem").unwrap();
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("rails-7.0.8.gem").unwrap();
         assert_eq!(name, "rails");
         assert_eq!(version, "7.0.8");
         assert_eq!(platform, None);

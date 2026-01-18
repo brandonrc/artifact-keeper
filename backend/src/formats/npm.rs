@@ -140,9 +140,9 @@ impl NpmHandler {
             // package.json is typically in package/package.json
             if path.ends_with("package.json") {
                 let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| AppError::Validation(format!("Failed to read package.json: {}", e)))?;
+                entry.read_to_string(&mut content).map_err(|e| {
+                    AppError::Validation(format!("Failed to read package.json: {}", e))
+                })?;
 
                 return serde_json::from_str(&content)
                     .map_err(|e| AppError::Validation(format!("Invalid package.json: {}", e)));
@@ -182,12 +182,15 @@ impl FormatHandler for NpmHandler {
         // If it's a tarball, extract package.json metadata
         if info.is_tarball && !content.is_empty() {
             if let Ok(pkg) = Self::extract_package_json(content) {
-                metadata["description"] = serde_json::Value::String(pkg.description.unwrap_or_default());
+                metadata["description"] =
+                    serde_json::Value::String(pkg.description.unwrap_or_default());
                 metadata["keywords"] = serde_json::to_value(&pkg.keywords).unwrap_or_default();
                 metadata["author"] = serde_json::to_value(&pkg.author).unwrap_or_default();
                 metadata["license"] = serde_json::Value::String(pkg.license.unwrap_or_default());
-                metadata["dependencies"] = serde_json::to_value(&pkg.dependencies).unwrap_or_default();
-                metadata["devDependencies"] = serde_json::to_value(&pkg.dev_dependencies).unwrap_or_default();
+                metadata["dependencies"] =
+                    serde_json::to_value(&pkg.dependencies).unwrap_or_default();
+                metadata["devDependencies"] =
+                    serde_json::to_value(&pkg.dev_dependencies).unwrap_or_default();
             }
         }
 

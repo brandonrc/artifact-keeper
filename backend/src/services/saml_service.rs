@@ -66,12 +66,10 @@ impl SamlConfig {
                 .unwrap_or_else(|_| "http://localhost:8080/auth/saml/acs".to_string()),
             username_attr: std::env::var("SAML_USERNAME_ATTR")
                 .unwrap_or_else(|_| "NameID".to_string()),
-            email_attr: std::env::var("SAML_EMAIL_ATTR")
-                .unwrap_or_else(|_| "email".to_string()),
+            email_attr: std::env::var("SAML_EMAIL_ATTR").unwrap_or_else(|_| "email".to_string()),
             display_name_attr: std::env::var("SAML_DISPLAY_NAME_ATTR")
                 .unwrap_or_else(|_| "displayName".to_string()),
-            groups_attr: std::env::var("SAML_GROUPS_ATTR")
-                .unwrap_or_else(|_| "groups".to_string()),
+            groups_attr: std::env::var("SAML_GROUPS_ATTR").unwrap_or_else(|_| "groups".to_string()),
             admin_group: std::env::var("SAML_ADMIN_GROUP").ok(),
             sign_requests: std::env::var("SAML_SIGN_REQUESTS")
                 .map(|v| v == "true" || v == "1")
@@ -223,9 +221,7 @@ impl SamlService {
         // Build redirect URL
         let redirect_url = format!(
             "{}?SAMLRequest={}&RelayState={}",
-            self.config.idp_sso_url,
-            url_encoded_request,
-            url_encoded_relay_state
+            self.config.idp_sso_url, url_encoded_request, url_encoded_relay_state
         );
 
         Ok(SamlAuthnRequest {
@@ -238,11 +234,13 @@ impl SamlService {
     /// Process SAML Response and extract user information
     pub async fn authenticate(&self, saml_response_b64: &str) -> Result<SamlUserInfo> {
         // Decode base64 response
-        let decoded = base64_decode(saml_response_b64)
-            .map_err(|e| AppError::Authentication(format!("Failed to decode SAML response: {}", e)))?;
+        let decoded = base64_decode(saml_response_b64).map_err(|e| {
+            AppError::Authentication(format!("Failed to decode SAML response: {}", e))
+        })?;
 
-        let xml_string = String::from_utf8(decoded)
-            .map_err(|e| AppError::Authentication(format!("Invalid UTF-8 in SAML response: {}", e)))?;
+        let xml_string = String::from_utf8(decoded).map_err(|e| {
+            AppError::Authentication(format!("Invalid UTF-8 in SAML response: {}", e))
+        })?;
 
         // Parse SAML response
         let response = self.parse_saml_response(&xml_string)?;
@@ -251,7 +249,8 @@ impl SamlService {
         self.validate_response(&response)?;
 
         // Extract user info from assertion
-        let assertion = response.assertion
+        let assertion = response
+            .assertion
             .ok_or_else(|| AppError::Authentication("No assertion in SAML response".into()))?;
 
         let user_info = self.extract_user_info(&assertion)?;
@@ -389,7 +388,9 @@ impl SamlService {
                 }
                 Ok(Event::Text(ref e)) => {
                     let raw = String::from_utf8_lossy(e.as_ref());
-                    let text = unescape(&raw).map(|c| c.to_string()).unwrap_or_else(|_| raw.to_string());
+                    let text = unescape(&raw)
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|_| raw.to_string());
                     if !text.trim().is_empty() {
                         match current_element.as_str() {
                             "Issuer" => {
@@ -424,7 +425,9 @@ impl SamlService {
                         }
                         "Attribute" => {
                             if let Some(attr_name) = current_attr_name.take() {
-                                assertion.attributes.insert(attr_name, current_attr_values.clone());
+                                assertion
+                                    .attributes
+                                    .insert(attr_name, current_attr_values.clone());
                                 current_attr_values.clear();
                             }
                         }
@@ -450,7 +453,9 @@ impl SamlService {
     fn validate_response(&self, response: &SamlResponse) -> Result<()> {
         // Check status code
         if !response.status_code.ends_with(":Success") {
-            let message = response.status_message.clone()
+            let message = response
+                .status_message
+                .clone()
                 .unwrap_or_else(|| format!("SAML authentication failed: {}", response.status_code));
             return Err(AppError::Authentication(message));
         }
@@ -467,11 +472,13 @@ impl SamlService {
         if let Some(assertion) = &response.assertion {
             // Check audience restriction
             if !assertion.audiences.is_empty() {
-                let valid_audience = assertion.audiences.iter()
+                let valid_audience = assertion
+                    .audiences
+                    .iter()
                     .any(|a| a == &self.config.sp_entity_id);
                 if !valid_audience {
                     return Err(AppError::Authentication(
-                        "SP entity ID not in audience restriction".into()
+                        "SP entity ID not in audience restriction".into(),
                     ));
                 }
             }
@@ -514,7 +521,8 @@ impl SamlService {
         let username = if self.config.username_attr == "NameID" {
             assertion.name_id.clone()
         } else {
-            assertion.attributes
+            assertion
+                .attributes
                 .get(&self.config.username_attr)
                 .and_then(|v| v.first())
                 .cloned()
@@ -522,20 +530,23 @@ impl SamlService {
         };
 
         // Get email
-        let email = assertion.attributes
+        let email = assertion
+            .attributes
             .get(&self.config.email_attr)
             .and_then(|v| v.first())
             .cloned()
             .unwrap_or_else(|| format!("{}@unknown", username));
 
         // Get display name
-        let display_name = assertion.attributes
+        let display_name = assertion
+            .attributes
             .get(&self.config.display_name_attr)
             .and_then(|v| v.first())
             .cloned();
 
         // Get groups
-        let groups = assertion.attributes
+        let groups = assertion
+            .attributes
             .get(&self.config.groups_attr)
             .cloned()
             .unwrap_or_default();
@@ -661,7 +672,9 @@ impl SamlService {
             suffix += 1;
 
             if suffix > 100 {
-                return Err(AppError::Internal("Failed to generate unique username".into()));
+                return Err(AppError::Internal(
+                    "Failed to generate unique username".into(),
+                ));
             }
         }
     }
@@ -669,7 +682,9 @@ impl SamlService {
     /// Check if user is admin based on group memberships
     fn is_admin_from_groups(&self, groups: &[String]) -> bool {
         if let Some(admin_group) = &self.config.admin_group {
-            groups.iter().any(|g| g.to_lowercase() == admin_group.to_lowercase())
+            groups
+                .iter()
+                .any(|g| g.to_lowercase() == admin_group.to_lowercase())
         } else {
             false
         }
@@ -693,7 +708,10 @@ impl SamlService {
         if let Ok(mappings) = std::env::var("SAML_GROUP_ROLE_MAP") {
             for mapping in mappings.split(';') {
                 if let Some((group, role)) = mapping.split_once(':') {
-                    if groups.iter().any(|g| g.to_lowercase() == group.to_lowercase()) {
+                    if groups
+                        .iter()
+                        .any(|g| g.to_lowercase() == group.to_lowercase())
+                    {
                         roles.push(role.to_string());
                     }
                 }
@@ -777,7 +795,9 @@ fn base64_decode(input: &str) -> std::result::Result<Vec<u8>, String> {
             continue;
         }
 
-        let value = ALPHABET.iter().position(|&c| c == byte)
+        let value = ALPHABET
+            .iter()
+            .position(|&c| c == byte)
             .ok_or_else(|| format!("Invalid base64 character: {}", byte as char))?;
 
         buffer = (buffer << 6) | (value as u32);

@@ -113,9 +113,7 @@ impl DebianHandler {
     /// Parse .deb filename
     /// Format: <name>_<version>_<arch>.deb
     fn parse_deb_filename(filename: &str) -> Result<(String, String, String)> {
-        let name = filename
-            .trim_end_matches(".deb")
-            .trim_end_matches(".udeb");
+        let name = filename.trim_end_matches(".deb").trim_end_matches(".udeb");
         let parts: Vec<&str> = name.split('_').collect();
 
         if parts.len() < 3 {
@@ -155,7 +153,9 @@ impl DebianHandler {
         // - data.tar.gz or data.tar.xz
 
         if content.len() < 8 || &content[..8] != AR_MAGIC {
-            return Err(AppError::Validation("Invalid .deb file: not an ar archive".to_string()));
+            return Err(AppError::Validation(
+                "Invalid .deb file: not an ar archive".to_string(),
+            ));
         }
 
         let mut offset = 8;
@@ -560,7 +560,8 @@ mod tests {
 
     #[test]
     fn test_parse_deb_filename() {
-        let (pkg, ver, arch) = DebianHandler::parse_deb_filename("nginx_1.24.0-1_amd64.deb").unwrap();
+        let (pkg, ver, arch) =
+            DebianHandler::parse_deb_filename("nginx_1.24.0-1_amd64.deb").unwrap();
         assert_eq!(pkg, "nginx");
         assert_eq!(ver, "1.24.0-1");
         assert_eq!(arch, "amd64");

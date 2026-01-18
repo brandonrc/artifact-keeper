@@ -240,13 +240,12 @@ impl PluginService {
             }
             None => {
                 // Check if plugin exists
-                let exists: Option<bool> = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM plugins WHERE id = $1)",
-                )
-                .bind(plugin_id)
-                .fetch_one(&self.db)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?;
+                let exists: Option<bool> =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plugins WHERE id = $1)")
+                        .bind(plugin_id)
+                        .fetch_one(&self.db)
+                        .await
+                        .map_err(|e| AppError::Database(e.to_string()))?;
 
                 if exists == Some(true) {
                     // Plugin exists but wasn't disabled - return current state
@@ -287,13 +286,12 @@ impl PluginService {
                 Ok(p)
             }
             None => {
-                let exists: Option<bool> = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM plugins WHERE id = $1)",
-                )
-                .bind(plugin_id)
-                .fetch_one(&self.db)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?;
+                let exists: Option<bool> =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM plugins WHERE id = $1)")
+                        .bind(plugin_id)
+                        .fetch_one(&self.db)
+                        .await
+                        .map_err(|e| AppError::Database(e.to_string()))?;
 
                 if exists == Some(true) {
                     self.get_plugin(plugin_id).await
@@ -507,11 +505,7 @@ impl PluginService {
             return Ok(());
         }
 
-        debug!(
-            "Triggering {} hooks for event {:?}",
-            hooks.len(),
-            event
-        );
+        debug!("Triggering {} hooks for event {:?}", hooks.len(), event);
 
         for (plugin_id, hook) in hooks {
             let plugin = {
@@ -765,7 +759,11 @@ impl PluginService {
     }
 
     /// Run simple config-based validation rules.
-    fn run_config_rules(&self, plugin: &Plugin, artifact_info: &ArtifactInfo) -> Option<ValidatorResult> {
+    fn run_config_rules(
+        &self,
+        plugin: &Plugin,
+        artifact_info: &ArtifactInfo,
+    ) -> Option<ValidatorResult> {
         let config = plugin.config.as_ref()?;
         let rules = config.get("rules")?;
 
@@ -783,13 +781,17 @@ impl PluginService {
         }
 
         // Check allowed content types
-        if let Some(allowed_types) = rules.get("allowed_content_types").and_then(|v| v.as_array()) {
-            let types: Vec<&str> = allowed_types
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
+        if let Some(allowed_types) = rules
+            .get("allowed_content_types")
+            .and_then(|v| v.as_array())
+        {
+            let types: Vec<&str> = allowed_types.iter().filter_map(|v| v.as_str()).collect();
 
-            if !types.is_empty() && !types.iter().any(|t| artifact_info.content_type.starts_with(t)) {
+            if !types.is_empty()
+                && !types
+                    .iter()
+                    .any(|t| artifact_info.content_type.starts_with(t))
+            {
                 return Some(ValidatorResult {
                     accept: false,
                     reason: Some(format!(
@@ -801,13 +803,16 @@ impl PluginService {
         }
 
         // Check blocked content types
-        if let Some(blocked_types) = rules.get("blocked_content_types").and_then(|v| v.as_array()) {
-            let types: Vec<&str> = blocked_types
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
+        if let Some(blocked_types) = rules
+            .get("blocked_content_types")
+            .and_then(|v| v.as_array())
+        {
+            let types: Vec<&str> = blocked_types.iter().filter_map(|v| v.as_str()).collect();
 
-            if types.iter().any(|t| artifact_info.content_type.starts_with(t)) {
+            if types
+                .iter()
+                .any(|t| artifact_info.content_type.starts_with(t))
+            {
                 return Some(ValidatorResult {
                     accept: false,
                     reason: Some(format!(
@@ -819,12 +824,18 @@ impl PluginService {
         }
 
         // Check path patterns (blocked paths)
-        if let Some(blocked_paths) = rules.get("blocked_path_patterns").and_then(|v| v.as_array()) {
+        if let Some(blocked_paths) = rules
+            .get("blocked_path_patterns")
+            .and_then(|v| v.as_array())
+        {
             for pattern in blocked_paths.iter().filter_map(|v| v.as_str()) {
                 if artifact_info.path.contains(pattern) {
                     return Some(ValidatorResult {
                         accept: false,
-                        reason: Some(format!("Path '{}' matches blocked pattern '{}'", artifact_info.path, pattern)),
+                        reason: Some(format!(
+                            "Path '{}' matches blocked pattern '{}'",
+                            artifact_info.path, pattern
+                        )),
                     });
                 }
             }

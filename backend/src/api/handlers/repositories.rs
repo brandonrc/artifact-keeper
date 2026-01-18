@@ -104,7 +104,10 @@ pub struct Pagination {
 }
 
 /// Convert a Repository model to a RepositoryResponse with optional storage usage.
-fn repo_to_response(repo: crate::models::repository::Repository, storage_used_bytes: i64) -> RepositoryResponse {
+fn repo_to_response(
+    repo: crate::models::repository::Repository,
+    storage_used_bytes: i64,
+) -> RepositoryResponse {
     RepositoryResponse {
         id: repo.id,
         key: repo.key,
@@ -195,7 +198,8 @@ pub async fn create_repository(
     Json(payload): Json<CreateRepositoryRequest>,
 ) -> Result<Json<RepositoryResponse>> {
     // Require authentication
-    let _auth = auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth =
+        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
     let format = parse_format(&payload.format)?;
     let repo_type = parse_repo_type(&payload.repo_type)?;
 
@@ -241,7 +245,8 @@ pub async fn update_repository(
     Json(payload): Json<UpdateRepositoryRequest>,
 ) -> Result<Json<RepositoryResponse>> {
     // Require authentication
-    let _auth = auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth =
+        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
     let service = RepositoryService::new(state.db.clone());
 
     // Get existing repo by key
@@ -272,7 +277,8 @@ pub async fn delete_repository(
     Path(key): Path<String>,
 ) -> Result<()> {
     // Require authentication
-    let _auth = auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth =
+        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
     let service = RepositoryService::new(state.db.clone());
     let repo = service.get_by_key(&key).await?;
     service.delete(repo.id).await?;
@@ -327,7 +333,12 @@ pub async fn list_artifacts(
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
     let (artifacts, total) = artifact_service
-        .list(repo.id, query.path_prefix.as_deref(), offset, per_page as i64)
+        .list(
+            repo.id,
+            query.path_prefix.as_deref(),
+            offset,
+            per_page as i64,
+        )
         .await?;
 
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
@@ -416,7 +427,8 @@ pub async fn upload_artifact(
     Path((key, path)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<ArtifactResponse>> {
-    let auth = auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let auth =
+        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
     let repo_service = RepositoryService::new(state.db.clone());
     let repo = repo_service.get_by_key(&key).await?;
 
@@ -506,10 +518,7 @@ pub async fn download_artifact(
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{}\"", artifact.name),
             ),
-            (
-                header::CONTENT_LENGTH,
-                artifact.size_bytes.to_string(),
-            ),
+            (header::CONTENT_LENGTH, artifact.size_bytes.to_string()),
             (
                 header::HeaderName::from_static("x-checksum-sha256"),
                 artifact.checksum_sha256,
@@ -526,7 +535,8 @@ pub async fn delete_artifact(
     Path((key, path)): Path<(String, String)>,
 ) -> Result<()> {
     // Require authentication
-    let _auth = auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth =
+        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
     let repo_service = RepositoryService::new(state.db.clone());
     let repo = repo_service.get_by_key(&key).await?;
 

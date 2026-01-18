@@ -22,10 +22,7 @@ use crate::services::storage_service::StorageService;
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/backups", get(list_backups).post(create_backup))
-        .route(
-            "/backups/:id",
-            get(get_backup).delete(delete_backup),
-        )
+        .route("/backups/:id", get(get_backup).delete(delete_backup))
         .route("/backups/:id/execute", post(execute_backup))
         .route("/backups/:id/restore", post(restore_backup))
         .route("/backups/:id/cancel", post(cancel_backup))
@@ -102,11 +99,16 @@ pub async fn list_backups(
     let offset = ((page - 1) * per_page) as i64;
 
     let status = query.status.as_ref().and_then(|s| parse_backup_status(s));
-    let backup_type = query.backup_type.as_ref().and_then(|t| parse_backup_type(t));
+    let backup_type = query
+        .backup_type
+        .as_ref()
+        .and_then(|t| parse_backup_type(t));
 
     let storage = Arc::new(StorageService::from_config(&state.config).await?);
     let service = BackupService::new(state.db.clone(), storage);
-    let (backups, total) = service.list(status, backup_type, offset, per_page as i64).await?;
+    let (backups, total) = service
+        .list(status, backup_type, offset, per_page as i64)
+        .await?;
 
     let items = backups
         .into_iter()
@@ -330,19 +332,31 @@ pub async fn get_settings(State(state): State<SharedState>) -> Result<Json<Syste
                 result.allow_anonymous_download = row.value.as_bool().unwrap_or(false);
             }
             "max_upload_size_bytes" => {
-                result.max_upload_size_bytes = row.value.as_i64().unwrap_or(result.max_upload_size_bytes);
+                result.max_upload_size_bytes =
+                    row.value.as_i64().unwrap_or(result.max_upload_size_bytes);
             }
             "retention_days" => {
-                result.retention_days = row.value.as_i64().unwrap_or(result.retention_days as i64) as i32;
+                result.retention_days =
+                    row.value.as_i64().unwrap_or(result.retention_days as i64) as i32;
             }
             "audit_retention_days" => {
-                result.audit_retention_days = row.value.as_i64().unwrap_or(result.audit_retention_days as i64) as i32;
+                result.audit_retention_days =
+                    row.value
+                        .as_i64()
+                        .unwrap_or(result.audit_retention_days as i64) as i32;
             }
             "backup_retention_count" => {
-                result.backup_retention_count = row.value.as_i64().unwrap_or(result.backup_retention_count as i64) as i32;
+                result.backup_retention_count =
+                    row.value
+                        .as_i64()
+                        .unwrap_or(result.backup_retention_count as i64) as i32;
             }
             "edge_stale_threshold_minutes" => {
-                result.edge_stale_threshold_minutes = row.value.as_i64().unwrap_or(result.edge_stale_threshold_minutes as i64) as i32;
+                result.edge_stale_threshold_minutes = row
+                    .value
+                    .as_i64()
+                    .unwrap_or(result.edge_stale_threshold_minutes as i64)
+                    as i32;
             }
             _ => {}
         }
@@ -364,12 +378,27 @@ pub async fn update_settings(
 ) -> Result<Json<SystemSettings>> {
     // Update each setting
     let settings_to_update = vec![
-        ("allow_anonymous_download", serde_json::json!(settings.allow_anonymous_download)),
-        ("max_upload_size_bytes", serde_json::json!(settings.max_upload_size_bytes)),
+        (
+            "allow_anonymous_download",
+            serde_json::json!(settings.allow_anonymous_download),
+        ),
+        (
+            "max_upload_size_bytes",
+            serde_json::json!(settings.max_upload_size_bytes),
+        ),
         ("retention_days", serde_json::json!(settings.retention_days)),
-        ("audit_retention_days", serde_json::json!(settings.audit_retention_days)),
-        ("backup_retention_count", serde_json::json!(settings.backup_retention_count)),
-        ("edge_stale_threshold_minutes", serde_json::json!(settings.edge_stale_threshold_minutes)),
+        (
+            "audit_retention_days",
+            serde_json::json!(settings.audit_retention_days),
+        ),
+        (
+            "backup_retention_count",
+            serde_json::json!(settings.backup_retention_count),
+        ),
+        (
+            "edge_stale_threshold_minutes",
+            serde_json::json!(settings.edge_stale_threshold_minutes),
+        ),
     ];
 
     for (setting_key, setting_value) in settings_to_update {
@@ -421,10 +450,11 @@ pub async fn get_system_stats(State(state): State<SharedState>) -> Result<Json<S
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    let download_count = sqlx::query_scalar!("SELECT COUNT(*) as \"count!\" FROM download_statistics")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+    let download_count =
+        sqlx::query_scalar!("SELECT COUNT(*) as \"count!\" FROM download_statistics")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
     let user_count = sqlx::query_scalar!("SELECT COUNT(*) as \"count!\" FROM users")
         .fetch_one(&state.db)
@@ -488,19 +518,24 @@ pub async fn run_cleanup(
     if request.cleanup_audit_logs.unwrap_or(false) {
         use crate::services::audit_service::AuditService;
         let audit_service = AuditService::new(state.db.clone());
-        result.audit_logs_deleted = audit_service.cleanup(settings.audit_retention_days).await? as i64;
+        result.audit_logs_deleted =
+            audit_service.cleanup(settings.audit_retention_days).await? as i64;
     }
 
     if request.cleanup_old_backups.unwrap_or(false) {
         let storage = Arc::new(StorageService::from_config(&state.config).await?);
         let backup_service = BackupService::new(state.db.clone(), storage);
-        result.backups_deleted = backup_service.cleanup(settings.backup_retention_count, settings.retention_days).await? as i64;
+        result.backups_deleted = backup_service
+            .cleanup(settings.backup_retention_count, settings.retention_days)
+            .await? as i64;
     }
 
     if request.cleanup_stale_edge_nodes.unwrap_or(false) {
         use crate::services::edge_service::EdgeService;
         let edge_service = EdgeService::new(state.db.clone());
-        result.edge_nodes_marked_offline = edge_service.mark_stale_offline(settings.edge_stale_threshold_minutes).await? as i64;
+        result.edge_nodes_marked_offline = edge_service
+            .mark_stale_offline(settings.edge_stale_threshold_minutes)
+            .await? as i64;
     }
 
     Ok(Json(result))

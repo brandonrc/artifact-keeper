@@ -61,8 +61,7 @@ impl RateLimiter {
 
         // Check if we've exceeded the limit
         if entry.0 >= self.max_requests {
-            let retry_after = self.window.as_secs()
-                - now.duration_since(entry.1).as_secs();
+            let retry_after = self.window.as_secs() - now.duration_since(entry.1).as_secs();
             return Err(retry_after.max(1));
         }
 
@@ -76,9 +75,7 @@ impl RateLimiter {
     pub async fn cleanup_expired(&self) {
         let now = Instant::now();
         let mut requests = self.requests.write().await;
-        requests.retain(|_, (_, window_start)| {
-            now.duration_since(*window_start) < self.window
-        });
+        requests.retain(|_, (_, window_start)| now.duration_since(*window_start) < self.window);
     }
 }
 
