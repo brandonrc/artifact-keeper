@@ -436,7 +436,7 @@ pub async fn upload_artifact(
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
     // Extract name from path
-    let name = path.split('/').last().unwrap_or(&path).to_string();
+    let name = path.split('/').next_back().unwrap_or(&path).to_string();
 
     // Infer content type from extension
     let content_type = mime_guess::from_path(&name)

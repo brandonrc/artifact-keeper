@@ -115,7 +115,7 @@ impl TokenService {
 
         // Validate expiration
         if let Some(days) = request.expires_in_days {
-            if days < 1 || days > 365 {
+            if !(1..=365).contains(&days) {
                 return Err(AppError::Validation(
                     "Token expiration must be between 1 and 365 days".to_string(),
                 ));

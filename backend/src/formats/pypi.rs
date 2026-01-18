@@ -44,8 +44,7 @@ impl PypiHandler {
         }
 
         // Package simple index: simple/<package>/
-        if path.starts_with("simple/") {
-            let rest = &path[7..];
+        if let Some(rest) = path.strip_prefix("simple/") {
             let parts: Vec<&str> = rest.trim_end_matches('/').split('/').collect();
             if parts.len() == 1 && !parts[0].is_empty() {
                 return Ok(PypiPackageInfo {
@@ -59,8 +58,7 @@ impl PypiHandler {
         }
 
         // Package file: packages/<package>/<version>/<filename>
-        if path.starts_with("packages/") {
-            let rest = &path[9..];
+        if let Some(rest) = path.strip_prefix("packages/") {
             let parts: Vec<&str> = rest.split('/').collect();
             if parts.len() >= 3 {
                 let name = Self::normalize_name(parts[0]);

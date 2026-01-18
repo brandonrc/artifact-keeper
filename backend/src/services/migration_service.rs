@@ -585,6 +585,7 @@ impl MigrationService {
     }
 
     /// Generate migration report
+    #[allow(clippy::type_complexity)]
     pub async fn generate_report(&self, job_id: Uuid) -> Result<Uuid, MigrationError> {
         // Get job summary
         let job: (i32, i32, i32, i32, i64, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(

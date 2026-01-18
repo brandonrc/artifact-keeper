@@ -58,6 +58,8 @@ pub enum ConflictResolution {
 }
 
 impl ConflictResolution {
+    /// Parse from string representation
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "overwrite" => Self::Overwrite,
@@ -180,7 +182,7 @@ impl MigrationWorker {
         };
 
         self.migration_service
-            .update_job_status(job_id, final_status.clone())
+            .update_job_status(job_id, final_status)
             .await?;
 
         // Mark job as finished
@@ -216,6 +218,7 @@ impl MigrationWorker {
     }
 
     /// Process artifacts for a single repository
+    #[allow(clippy::too_many_arguments)]
     async fn process_repository_artifacts(
         &self,
         job_id: Uuid,
@@ -841,6 +844,7 @@ impl MigrationWorker {
 }
 
 /// Result of a successful artifact transfer
+#[allow(dead_code)]
 struct TransferResult {
     target_path: String,
     calculated_checksum: Option<String>,

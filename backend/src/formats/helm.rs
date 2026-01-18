@@ -351,10 +351,7 @@ pub fn generate_index_yaml(charts: Vec<(ChartYaml, String, String, String)>) -> 
             digest,
         };
 
-        entries
-            .entry(chart.name.clone())
-            .or_insert_with(Vec::new)
-            .push(entry);
+        entries.entry(chart.name.clone()).or_default().push(entry);
     }
 
     let index = HelmIndex {

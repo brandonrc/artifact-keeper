@@ -248,7 +248,7 @@ impl OidcService {
         let authorization_url = format!(
             "{}?{}",
             discovery.authorization_endpoint,
-            serde_urlencoded::to_string(&params)
+            serde_urlencoded::to_string(params)
                 .map_err(|e| AppError::Internal(format!("Failed to encode params: {}", e)))?
         );
 

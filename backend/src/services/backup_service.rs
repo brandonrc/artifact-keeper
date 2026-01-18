@@ -452,8 +452,8 @@ impl BackupService {
             "#,
         )
         .bind(backup_id)
-        .bind(&status)
-        .bind(&error_message)
+        .bind(status)
+        .bind(error_message)
         .bind(started_at)
         .bind(completed_at)
         .execute(&self.db)

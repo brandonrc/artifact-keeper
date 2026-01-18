@@ -106,6 +106,7 @@ pub async fn run(cli: MigrateCli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run import from Artifactory export directory
+#[allow(clippy::too_many_arguments)]
 async fn run_import(
     format: &str,
     verbose: bool,

@@ -64,10 +64,10 @@ enum ExtractedToken<'a> {
 
 /// Extract token from Authorization header (supports Bearer and ApiKey schemes)
 fn extract_token_from_auth_header(auth_header: &str) -> ExtractedToken<'_> {
-    if auth_header.starts_with("Bearer ") {
-        ExtractedToken::Bearer(&auth_header[7..])
-    } else if auth_header.starts_with("ApiKey ") {
-        ExtractedToken::ApiKey(&auth_header[7..])
+    if let Some(token) = auth_header.strip_prefix("Bearer ") {
+        ExtractedToken::Bearer(token)
+    } else if let Some(token) = auth_header.strip_prefix("ApiKey ") {
+        ExtractedToken::ApiKey(token)
     } else {
         ExtractedToken::Invalid
     }
