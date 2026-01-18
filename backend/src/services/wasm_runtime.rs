@@ -88,9 +88,7 @@ impl PluginContext {
             .build();
 
         // Build minimal WASI context for plugins
-        let wasi_ctx = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .build();
+        let wasi_ctx = WasiCtxBuilder::new().inherit_stdio().build();
 
         Self {
             plugin_id,
@@ -205,8 +203,8 @@ impl WasmRuntime {
     /// Each call creates a new Engine for hot-reload isolation.
     pub fn compile(&self, wasm_bytes: &[u8]) -> WasmResult<CompiledPlugin> {
         // Create a new engine for this plugin (isolation for hot-reload)
-        let engine = Engine::new(&self.config)
-            .map_err(|e| WasmError::EngineError(e.to_string()))?;
+        let engine =
+            Engine::new(&self.config).map_err(|e| WasmError::EngineError(e.to_string()))?;
         let engine = Arc::new(engine);
 
         // Compile the component
@@ -236,8 +234,8 @@ impl WasmRuntime {
     /// WASM component that could be compiled.
     pub fn validate(&self, wasm_bytes: &[u8]) -> WasmResult<()> {
         // Create a temporary engine for validation
-        let engine = Engine::new(&self.config)
-            .map_err(|e| WasmError::EngineError(e.to_string()))?;
+        let engine =
+            Engine::new(&self.config).map_err(|e| WasmError::EngineError(e.to_string()))?;
 
         // Try to parse as a component
         Component::new(&engine, wasm_bytes)
@@ -257,11 +255,7 @@ impl WasmRuntime {
         format_key: &str,
         limits: &PluginResourceLimits,
     ) -> WasmResult<Store<PluginContext>> {
-        let context = PluginContext::new(
-            plugin_id.to_string(),
-            format_key.to_string(),
-            limits,
-        );
+        let context = PluginContext::new(plugin_id.to_string(), format_key.to_string(), limits);
 
         let mut store = Store::new(compiled.engine(), context);
 
@@ -269,7 +263,9 @@ impl WasmRuntime {
         store.limiter(|ctx| ctx);
 
         // Set initial fuel based on timeout
-        let fuel = limits.fuel.max(limits.timeout_secs as u64 * FUEL_PER_SECOND);
+        let fuel = limits
+            .fuel
+            .max(limits.timeout_secs as u64 * FUEL_PER_SECOND);
         store
             .set_fuel(fuel)
             .map_err(|e| WasmError::EngineError(e.to_string()))?;
@@ -294,10 +290,7 @@ impl Default for WasmRuntime {
 /// Uses dual-layer protection:
 /// 1. Fuel metering for deterministic per-operation limits
 /// 2. Wall-clock timeout as defense-in-depth
-pub async fn execute_with_timeout<F, T>(
-    timeout_secs: u32,
-    future: F,
-) -> WasmResult<T>
+pub async fn execute_with_timeout<F, T>(timeout_secs: u32, future: F) -> WasmResult<T>
 where
     F: std::future::Future<Output = WasmResult<T>>,
 {
@@ -308,7 +301,10 @@ where
     match tokio::time::timeout(timeout, future).await {
         Ok(result) => result,
         Err(_) => {
-            warn!("WASM execution wall-clock timeout after {} seconds", timeout_secs);
+            warn!(
+                "WASM execution wall-clock timeout after {} seconds",
+                timeout_secs
+            );
             Err(WasmError::Timeout(timeout_secs))
         }
     }
@@ -401,10 +397,7 @@ where
 ///
 /// Wraps WASM execution in a catch_unwind to prevent panics from
 /// propagating and taking down the host process.
-pub async fn execute_with_isolation<F, T>(
-    timeout_secs: u32,
-    future: F,
-) -> WasmResult<T>
+pub async fn execute_with_isolation<F, T>(timeout_secs: u32, future: F) -> WasmResult<T>
 where
     F: std::future::Future<Output = WasmResult<T>> + std::panic::UnwindSafe,
 {
@@ -433,7 +426,10 @@ where
             };
 
             error!("WASM plugin panicked: {}", panic_msg);
-            Err(WasmError::PluginError(format!("Plugin crashed: {}", panic_msg)))
+            Err(WasmError::PluginError(format!(
+                "Plugin crashed: {}",
+                panic_msg
+            )))
         }
     }
 }
@@ -619,10 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_timeout_success() {
-        let result = execute_with_timeout(5, async {
-            Ok::<_, WasmError>("success")
-        })
-        .await;
+        let result = execute_with_timeout(5, async { Ok::<_, WasmError>("success") }).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
     }

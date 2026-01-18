@@ -25,8 +25,7 @@ pub fn public_router() -> Router<SharedState> {
 
 /// Create protected auth routes (auth required)
 pub fn protected_router() -> Router<SharedState> {
-    Router::new()
-        .route("/me", get(get_current_user))
+    Router::new().route("/me", get(get_current_user))
 }
 
 #[derive(Debug, Deserialize)]

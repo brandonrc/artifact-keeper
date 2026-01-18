@@ -362,7 +362,10 @@ mod tests {
         let mut server = TestServer::new();
         let result = server.login().await;
         assert!(result.is_ok(), "Login should succeed");
-        assert!(!server.access_token.is_empty(), "Should receive access token");
+        assert!(
+            !server.access_token.is_empty(),
+            "Should receive access token"
+        );
     }
 
     #[tokio::test]
@@ -404,7 +407,11 @@ mod tests {
                 "application/xml",
             )
             .await;
-        assert!(upload_result.is_ok(), "Maven POM upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Maven POM upload failed: {:?}",
+            upload_result
+        );
 
         // Get metadata
         let metadata = server
@@ -443,7 +450,11 @@ mod tests {
                 "application/zip",
             )
             .await;
-        assert!(upload_result.is_ok(), "PyPI wheel upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "PyPI wheel upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -471,7 +482,11 @@ mod tests {
         let upload_result = server
             .upload_artifact(repo_key, artifact_path, &tarball, "application/gzip")
             .await;
-        assert!(upload_result.is_ok(), "NPM package upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "NPM package upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -503,7 +518,11 @@ mod tests {
                 "application/vnd.docker.distribution.manifest.v2+json",
             )
             .await;
-        assert!(upload_result.is_ok(), "Docker manifest upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Docker manifest upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -531,7 +550,11 @@ mod tests {
         let upload_result = server
             .upload_artifact(repo_key, chart_path, &chart, "application/gzip")
             .await;
-        assert!(upload_result.is_ok(), "Helm chart upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Helm chart upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -563,7 +586,11 @@ mod tests {
                 "application/x-rpm",
             )
             .await;
-        assert!(upload_result.is_ok(), "RPM package upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "RPM package upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -595,7 +622,11 @@ mod tests {
                 "application/vnd.debian.binary-package",
             )
             .await;
-        assert!(upload_result.is_ok(), "Debian package upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Debian package upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -622,7 +653,11 @@ mod tests {
         let upload_result = server
             .upload_artifact(repo_key, module_path, samples::go_mod(), "text/plain")
             .await;
-        assert!(upload_result.is_ok(), "Go module upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Go module upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -654,7 +689,11 @@ mod tests {
                 "application/octet-stream",
             )
             .await;
-        assert!(upload_result.is_ok(), "NuGet package upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "NuGet package upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -682,7 +721,11 @@ mod tests {
         let upload_result = server
             .upload_artifact(repo_key, gem_path, &gem, "application/octet-stream")
             .await;
-        assert!(upload_result.is_ok(), "RubyGems upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "RubyGems upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server
@@ -709,7 +752,11 @@ mod tests {
         let upload_result = server
             .upload_artifact(repo_key, package_path, samples::conan_file(), "text/plain")
             .await;
-        assert!(upload_result.is_ok(), "Conan package upload failed: {:?}", upload_result);
+        assert!(
+            upload_result.is_ok(),
+            "Conan package upload failed: {:?}",
+            upload_result
+        );
 
         // Download and verify
         let downloaded = server

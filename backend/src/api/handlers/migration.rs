@@ -22,20 +22,28 @@ use uuid::Uuid;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
 use crate::models::migration::MigrationConfig;
-use crate::services::artifactory_client::{ArtifactoryAuth, ArtifactoryClient, ArtifactoryClientConfig};
-use crate::services::encryption::{encrypt_credentials, decrypt_credentials};
+use crate::services::artifactory_client::{
+    ArtifactoryAuth, ArtifactoryClient, ArtifactoryClientConfig,
+};
+use crate::services::encryption::{decrypt_credentials, encrypt_credentials};
 
 /// Create the migration router
 pub fn router() -> Router<SharedState> {
     Router::new()
         // Source connections
-        .route("/connections", get(list_connections).post(create_connection))
+        .route(
+            "/connections",
+            get(list_connections).post(create_connection),
+        )
         .route(
             "/connections/:id",
             get(get_connection).delete(delete_connection),
         )
         .route("/connections/:id/test", post(test_connection))
-        .route("/connections/:id/repositories", get(list_source_repositories))
+        .route(
+            "/connections/:id/repositories",
+            get(list_source_repositories),
+        )
         // Migration jobs
         .route("/", get(list_migrations).post(create_migration))
         .route("/:id", get(get_migration).delete(delete_migration))
@@ -536,7 +544,9 @@ async fn test_connection(
 }
 
 /// Helper to create an Artifactory client from a connection row
-fn create_artifactory_client(connection: &SourceConnectionRow) -> std::result::Result<ArtifactoryClient, String> {
+fn create_artifactory_client(
+    connection: &SourceConnectionRow,
+) -> std::result::Result<ArtifactoryClient, String> {
     // Decrypt credentials
     let encryption_key = std::env::var("MIGRATION_ENCRYPTION_KEY")
         .unwrap_or_else(|_| "default-migration-key-change-in-prod".to_string());
@@ -549,14 +559,17 @@ fn create_artifactory_client(connection: &SourceConnectionRow) -> std::result::R
 
     let auth = match connection.auth_type.as_str() {
         "api_token" => {
-            let token = creds.token
+            let token = creds
+                .token
                 .ok_or_else(|| "API token missing from credentials".to_string())?;
             ArtifactoryAuth::ApiToken(token)
         }
         "basic_auth" => {
-            let username = creds.username
+            let username = creds
+                .username
                 .ok_or_else(|| "Username missing from credentials".to_string())?;
-            let password = creds.password
+            let password = creds
+                .password
                 .ok_or_else(|| "Password missing from credentials".to_string())?;
             ArtifactoryAuth::BasicAuth { username, password }
         }
@@ -569,8 +582,7 @@ fn create_artifactory_client(connection: &SourceConnectionRow) -> std::result::R
         ..Default::default()
     };
 
-    ArtifactoryClient::new(config)
-        .map_err(|e| format!("Failed to create client: {}", e))
+    ArtifactoryClient::new(config).map_err(|e| format!("Failed to create client: {}", e))
 }
 
 /// List repositories from Artifactory source
@@ -596,7 +608,9 @@ async fn list_source_repositories(
         .map_err(|e| AppError::Internal(format!("Failed to create client: {}", e)))?;
 
     // List repositories from Artifactory
-    let repos = client.list_repositories().await
+    let repos = client
+        .list_repositories()
+        .await
         .map_err(|e| AppError::Internal(format!("Failed to list repositories: {}", e)))?;
 
     let items: Vec<SourceRepository> = repos

@@ -104,7 +104,7 @@ pub async fn list_packages(
 
     // Check if packages table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
     )
     .fetch_one(&state.db)
     .await
@@ -135,7 +135,7 @@ pub async fn list_packages(
         ORDER BY p.updated_at DESC
         OFFSET $4
         LIMIT $5
-        "#
+        "#,
     )
     .bind(&query.repository_key)
     .bind(&query.format)
@@ -154,7 +154,7 @@ pub async fn list_packages(
         WHERE ($1::text IS NULL OR r.key = $1)
           AND ($2::text IS NULL OR r.format::text = $2)
           AND ($3::text IS NULL OR p.name ILIKE $3)
-        "#
+        "#,
     )
     .bind(&query.repository_key)
     .bind(&query.format)
@@ -183,7 +183,7 @@ pub async fn get_package(
 ) -> Result<Json<PackageResponse>> {
     // Check if packages table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
     )
     .fetch_one(&state.db)
     .await
@@ -201,7 +201,7 @@ pub async fn get_package(
         FROM packages p
         JOIN repositories r ON r.id = p.repository_id
         WHERE p.id = $1
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -254,7 +254,7 @@ pub async fn get_package_versions(
 ) -> Result<Json<PackageVersionsResponse>> {
     // Check if packages table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
     )
     .fetch_one(&state.db)
     .await
@@ -265,13 +265,12 @@ pub async fn get_package_versions(
     }
 
     // First verify the package exists
-    let package_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM packages WHERE id = $1)"
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let package_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM packages WHERE id = $1)")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(false);
 
     if !package_exists {
         return Err(AppError::NotFound("Package not found".to_string()));
@@ -295,7 +294,7 @@ pub async fn get_package_versions(
         FROM package_versions
         WHERE package_id = $1
         ORDER BY created_at DESC
-        "#
+        "#,
     )
     .bind(id)
     .fetch_all(&state.db)
@@ -303,6 +302,9 @@ pub async fn get_package_versions(
     .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(Json(PackageVersionsResponse {
-        versions: versions.into_iter().map(PackageVersionResponse::from).collect(),
+        versions: versions
+            .into_iter()
+            .map(PackageVersionResponse::from)
+            .collect(),
     }))
 }

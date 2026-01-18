@@ -10,7 +10,10 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use artifact_keeper_backend::{
-    api, config::Config, db, error::Result,
+    api,
+    config::Config,
+    db,
+    error::Result,
     services::{plugin_registry::PluginRegistry, wasm_plugin_service::WasmPluginService},
 };
 
@@ -41,9 +44,8 @@ async fn main() -> Result<()> {
     tracing::info!("Database migrations complete");
 
     // Initialize WASM plugin system (T068)
-    let plugins_dir = PathBuf::from(
-        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "./plugins".to_string()),
-    );
+    let plugins_dir =
+        PathBuf::from(std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "./plugins".to_string()));
     let (plugin_registry, wasm_plugin_service) =
         initialize_wasm_plugins(db_pool.clone(), plugins_dir).await?;
 
@@ -87,11 +89,12 @@ async fn initialize_wasm_plugins(
     tracing::info!("Initializing WASM plugin system");
 
     // Create plugin registry
-    let registry = Arc::new(
-        PluginRegistry::new().map_err(|e| artifact_keeper_backend::error::AppError::Internal(
-            format!("Failed to create plugin registry: {}", e),
-        ))?,
-    );
+    let registry = Arc::new(PluginRegistry::new().map_err(|e| {
+        artifact_keeper_backend::error::AppError::Internal(format!(
+            "Failed to create plugin registry: {}",
+            e
+        ))
+    })?);
 
     // Create WASM plugin service
     let wasm_service = Arc::new(WasmPluginService::new(
@@ -111,7 +114,10 @@ async fn initialize_wasm_plugins(
 
     for plugin in active_plugins {
         if let Some(ref wasm_path) = plugin.wasm_path {
-            match wasm_service.activate_plugin_at_startup(&plugin, std::path::Path::new(wasm_path)).await {
+            match wasm_service
+                .activate_plugin_at_startup(&plugin, std::path::Path::new(wasm_path))
+                .await
+            {
                 Ok(_) => {
                     tracing::info!("Loaded plugin: {} v{}", plugin.name, plugin.version);
                     loaded_count += 1;

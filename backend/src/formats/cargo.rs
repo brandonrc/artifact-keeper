@@ -149,12 +149,7 @@ impl CargoHandler {
             1 => format!("1/{}", name_lower),
             2 => format!("2/{}", name_lower),
             3 => format!("3/{}/{}", &name_lower[..1], name_lower),
-            _ => format!(
-                "{}/{}/{}",
-                &name_lower[..2],
-                &name_lower[2..4],
-                name_lower
-            ),
+            _ => format!("{}/{}/{}", &name_lower[..2], &name_lower[2..4], name_lower),
         }
     }
 
@@ -173,8 +168,8 @@ impl CargoHandler {
             .entries()
             .map_err(|e| AppError::Validation(format!("Invalid crate package: {}", e)))?
         {
-            let mut entry = entry
-                .map_err(|e| AppError::Validation(format!("Invalid crate entry: {}", e)))?;
+            let mut entry =
+                entry.map_err(|e| AppError::Validation(format!("Invalid crate entry: {}", e)))?;
 
             let path = entry
                 .path()
@@ -182,9 +177,9 @@ impl CargoHandler {
 
             if path.ends_with("Cargo.toml") {
                 let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| AppError::Validation(format!("Failed to read Cargo.toml: {}", e)))?;
+                entry.read_to_string(&mut content).map_err(|e| {
+                    AppError::Validation(format!("Failed to read Cargo.toml: {}", e))
+                })?;
 
                 return Self::parse_cargo_toml(&content);
             }

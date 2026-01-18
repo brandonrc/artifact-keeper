@@ -79,7 +79,12 @@ impl HelmHandler {
         let chart_name = parts[1];
 
         // Validate version starts with a digit (semver)
-        if !version.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if !version
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             return Err(AppError::Validation(format!(
                 "Invalid Helm chart version in filename: {}",
                 filename
@@ -98,8 +103,8 @@ impl HelmHandler {
             .entries()
             .map_err(|e| AppError::Validation(format!("Invalid chart package: {}", e)))?
         {
-            let mut entry = entry
-                .map_err(|e| AppError::Validation(format!("Invalid chart entry: {}", e)))?;
+            let mut entry =
+                entry.map_err(|e| AppError::Validation(format!("Invalid chart entry: {}", e)))?;
 
             let path = entry
                 .path()
@@ -108,9 +113,9 @@ impl HelmHandler {
             // Chart.yaml is typically in <chartname>/Chart.yaml
             if path.ends_with("Chart.yaml") {
                 let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| AppError::Validation(format!("Failed to read Chart.yaml: {}", e)))?;
+                entry.read_to_string(&mut content).map_err(|e| {
+                    AppError::Validation(format!("Failed to read Chart.yaml: {}", e))
+                })?;
 
                 return serde_yaml::from_str(&content)
                     .map_err(|e| AppError::Validation(format!("Invalid Chart.yaml: {}", e)));
@@ -131,8 +136,8 @@ impl HelmHandler {
             .entries()
             .map_err(|e| AppError::Validation(format!("Invalid chart package: {}", e)))?
         {
-            let mut entry = entry
-                .map_err(|e| AppError::Validation(format!("Invalid chart entry: {}", e)))?;
+            let mut entry =
+                entry.map_err(|e| AppError::Validation(format!("Invalid chart entry: {}", e)))?;
 
             let path = entry
                 .path()
@@ -141,9 +146,9 @@ impl HelmHandler {
             // values.yaml is typically in <chartname>/values.yaml
             if path.ends_with("values.yaml") {
                 let mut content = String::new();
-                entry
-                    .read_to_string(&mut content)
-                    .map_err(|e| AppError::Validation(format!("Failed to read values.yaml: {}", e)))?;
+                entry.read_to_string(&mut content).map_err(|e| {
+                    AppError::Validation(format!("Failed to read values.yaml: {}", e))
+                })?;
 
                 let values: serde_yaml::Value = serde_yaml::from_str(&content)
                     .map_err(|e| AppError::Validation(format!("Invalid values.yaml: {}", e)))?;
@@ -226,7 +231,9 @@ impl FormatHandler for HelmHandler {
             }
 
             // Validate API version
-            if !chart_yaml.api_version.starts_with("v1") && !chart_yaml.api_version.starts_with("v2") {
+            if !chart_yaml.api_version.starts_with("v1")
+                && !chart_yaml.api_version.starts_with("v2")
+            {
                 return Err(AppError::Validation(format!(
                     "Unsupported Chart API version: {}",
                     chart_yaml.api_version

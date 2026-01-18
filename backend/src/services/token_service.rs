@@ -125,7 +125,12 @@ impl TokenService {
         // Delegate to AuthService for actual token generation
         let auth_service = AuthService::new(self.db.clone(), self.config.clone());
         let (token, token_id) = auth_service
-            .generate_api_token(user_id, &request.name, request.scopes.clone(), request.expires_in_days)
+            .generate_api_token(
+                user_id,
+                &request.name,
+                request.scopes.clone(),
+                request.expires_in_days,
+            )
             .await?;
 
         let expires_at = request
@@ -249,13 +254,10 @@ impl TokenService {
     /// # Returns
     /// * `Ok(u64)` - Number of tokens revoked
     pub async fn revoke_all_tokens(&self, user_id: Uuid) -> Result<u64> {
-        let result = sqlx::query!(
-            "DELETE FROM api_tokens WHERE user_id = $1",
-            user_id
-        )
-        .execute(&self.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let result = sqlx::query!("DELETE FROM api_tokens WHERE user_id = $1", user_id)
+            .execute(&self.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(result.rows_affected())
     }

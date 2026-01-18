@@ -239,7 +239,9 @@ impl GoHandler {
             Some(GoDependency {
                 path: parts[0].to_string(),
                 version: parts[1].to_string(),
-                indirect: parts.iter().any(|&p| p == "//indirect" || p == "// indirect"),
+                indirect: parts
+                    .iter()
+                    .any(|&p| p == "//indirect" || p == "// indirect"),
             })
         } else {
             None
@@ -363,8 +365,9 @@ impl FormatHandler for GoHandler {
         if !content.is_empty() {
             match info.operation {
                 GoOperation::Mod => {
-                    let content_str = std::str::from_utf8(content)
-                        .map_err(|e| AppError::Validation(format!("Invalid UTF-8 in go.mod: {}", e)))?;
+                    let content_str = std::str::from_utf8(content).map_err(|e| {
+                        AppError::Validation(format!("Invalid UTF-8 in go.mod: {}", e))
+                    })?;
                     let go_mod = Self::parse_go_mod(content_str)?;
 
                     // Verify module path matches
@@ -388,8 +391,9 @@ impl FormatHandler for GoHandler {
                 }
                 GoOperation::Info => {
                     // Validate JSON structure
-                    let _: VersionInfo = serde_json::from_slice(content)
-                        .map_err(|e| AppError::Validation(format!("Invalid version info JSON: {}", e)))?;
+                    let _: VersionInfo = serde_json::from_slice(content).map_err(|e| {
+                        AppError::Validation(format!("Invalid version info JSON: {}", e))
+                    })?;
                 }
                 _ => {}
             }
@@ -516,12 +520,18 @@ mod tests {
     #[test]
     fn test_decode_module_path() {
         // GitHub uses lowercase in module paths, but other hosts might not
-        assert_eq!(GoHandler::decode_module_path("github.com/!my!package"), "github.com/MyPackage");
+        assert_eq!(
+            GoHandler::decode_module_path("github.com/!my!package"),
+            "github.com/MyPackage"
+        );
     }
 
     #[test]
     fn test_encode_module_path() {
-        assert_eq!(GoHandler::encode_module_path("github.com/MyPackage"), "github.com/!my!package");
+        assert_eq!(
+            GoHandler::encode_module_path("github.com/MyPackage"),
+            "github.com/!my!package"
+        );
     }
 
     #[test]

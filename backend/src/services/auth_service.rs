@@ -418,14 +418,16 @@ impl AuthService {
                 // OIDC authentication is typically handled via callback, not direct auth
                 // This path would be used for token exchange after OIDC redirect
                 Err(AppError::Authentication(
-                    "OIDC authentication requires redirect flow. Use /auth/oidc/login endpoint.".to_string(),
+                    "OIDC authentication requires redirect flow. Use /auth/oidc/login endpoint."
+                        .to_string(),
                 ))
             }
             Some(AuthProvider::Saml) => {
                 // SAML authentication is handled via SSO assertion
                 // This path would be used for SAML response processing
                 Err(AppError::Authentication(
-                    "SAML authentication requires SSO flow. Use /auth/saml/login endpoint.".to_string(),
+                    "SAML authentication requires SSO flow. Use /auth/saml/login endpoint."
+                        .to_string(),
                 ))
             }
         }
@@ -536,10 +538,7 @@ impl AuthService {
         let mut mapping = RoleMapping::default();
 
         // Normalize groups to lowercase for case-insensitive matching
-        let normalized_groups: Vec<String> = groups
-            .iter()
-            .map(|g| g.to_lowercase())
-            .collect();
+        let normalized_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
 
         // Check for admin groups
         // These patterns can be made configurable via Config
@@ -603,13 +602,10 @@ impl AuthService {
         // Assign new roles based on mapping
         for role_name in &mapping.roles {
             // Look up role by name and assign if it exists
-            let role = sqlx::query!(
-                "SELECT id FROM roles WHERE name = $1",
-                role_name
-            )
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+            let role = sqlx::query!("SELECT id FROM roles WHERE name = $1", role_name)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(|e| AppError::Database(e.to_string()))?;
 
             if let Some(role) = role {
                 sqlx::query!(
@@ -790,7 +786,11 @@ impl AuthService {
     ///
     /// This is called when a user who was deactivated (e.g., left the company)
     /// returns and authenticates again via the federated provider.
-    pub async fn reactivate_federated_user(&self, external_id: &str, provider: AuthProvider) -> Result<User> {
+    pub async fn reactivate_federated_user(
+        &self,
+        external_id: &str,
+        provider: AuthProvider,
+    ) -> Result<User> {
         let user = sqlx::query_as!(
             User,
             r#"

@@ -90,7 +90,7 @@ pub async fn list_groups(
 
     // Check if groups table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'groups')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'groups')",
     )
     .fetch_one(&state.db)
     .await
@@ -119,7 +119,7 @@ pub async fn list_groups(
         ORDER BY g.name
         OFFSET $2
         LIMIT $3
-        "#
+        "#,
     )
     .bind(&search_pattern)
     .bind(offset)
@@ -133,7 +133,7 @@ pub async fn list_groups(
         SELECT COUNT(*)
         FROM groups
         WHERE ($1::text IS NULL OR name ILIKE $1 OR description ILIKE $1)
-        "#
+        "#,
     )
     .bind(&search_pattern)
     .fetch_one(&state.db)
@@ -178,7 +178,7 @@ pub async fn create_group(
         INSERT INTO groups (name, description)
         VALUES ($1, $2)
         RETURNING id, name, description, created_at, updated_at
-        "#
+        "#,
     )
     .bind(&payload.name)
     .bind(&payload.description)
@@ -210,7 +210,7 @@ pub async fn get_group(
 ) -> Result<Json<GroupResponse>> {
     // Check if groups table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'groups')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'groups')",
     )
     .fetch_one(&state.db)
     .await
@@ -228,7 +228,7 @@ pub async fn get_group(
         LEFT JOIN user_group_members ugm ON ugm.group_id = g.id
         WHERE g.id = $1
         GROUP BY g.id
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(&state.db)
@@ -251,7 +251,7 @@ pub async fn update_group(
         SET name = $2, description = $3, updated_at = NOW()
         WHERE id = $1
         RETURNING id, name, description, created_at, updated_at
-        "#
+        "#,
     )
     .bind(id)
     .bind(&payload.name)
@@ -261,13 +261,12 @@ pub async fn update_group(
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound("Group not found".to_string()))?;
 
-    let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_group_members WHERE group_id = $1"
-    )
-    .bind(id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_group_members WHERE group_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
     Ok(Json(GroupResponse {
         id: group.id,
@@ -280,10 +279,7 @@ pub async fn update_group(
 }
 
 /// Delete a group
-pub async fn delete_group(
-    State(state): State<SharedState>,
-    Path(id): Path<Uuid>,
-) -> Result<()> {
+pub async fn delete_group(State(state): State<SharedState>, Path(id): Path<Uuid>) -> Result<()> {
     let result = sqlx::query("DELETE FROM groups WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -314,7 +310,7 @@ pub async fn add_members(
             INSERT INTO user_group_members (user_id, group_id)
             VALUES ($1, $2)
             ON CONFLICT DO NOTHING
-            "#
+            "#,
         )
         .bind(user_id)
         .bind(id)

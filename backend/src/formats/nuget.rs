@@ -135,7 +135,13 @@ impl NugetHandler {
         let mut found_version = false;
 
         for part in parts {
-            if !found_version && part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            if !found_version
+                && part
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+            {
                 found_version = true;
             }
 
@@ -526,7 +532,8 @@ mod tests {
 
     #[test]
     fn test_parse_nupkg_filename() {
-        let (id, version) = NugetHandler::parse_nupkg_filename("Newtonsoft.Json.13.0.1.nupkg").unwrap();
+        let (id, version) =
+            NugetHandler::parse_nupkg_filename("Newtonsoft.Json.13.0.1.nupkg").unwrap();
         assert_eq!(id, "Newtonsoft.Json");
         assert_eq!(version, "13.0.1");
     }
@@ -547,13 +554,18 @@ mod tests {
     #[test]
     fn test_parse_path_registration() {
         let info = NugetHandler::parse_path("v3/registration/newtonsoft.json/index.json").unwrap();
-        assert!(matches!(info.operation, NugetOperation::PackageRegistration));
+        assert!(matches!(
+            info.operation,
+            NugetOperation::PackageRegistration
+        ));
         assert_eq!(info.id, Some("newtonsoft.json".to_string()));
     }
 
     #[test]
     fn test_parse_path_flatcontainer() {
-        let info = NugetHandler::parse_path("v3-flatcontainer/mypackage/1.0.0/mypackage.1.0.0.nupkg").unwrap();
+        let info =
+            NugetHandler::parse_path("v3-flatcontainer/mypackage/1.0.0/mypackage.1.0.0.nupkg")
+                .unwrap();
         assert!(matches!(info.operation, NugetOperation::PackageContent));
         assert_eq!(info.id, Some("mypackage".to_string()));
         assert_eq!(info.version, Some("1.0.0".to_string()));
@@ -561,7 +573,10 @@ mod tests {
 
     #[test]
     fn test_normalize_id() {
-        assert_eq!(NugetHandler::normalize_id("Newtonsoft.Json"), "newtonsoft.json");
+        assert_eq!(
+            NugetHandler::normalize_id("Newtonsoft.Json"),
+            "newtonsoft.json"
+        );
         assert_eq!(NugetHandler::normalize_id("MyPackage"), "mypackage");
     }
 }

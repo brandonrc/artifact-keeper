@@ -87,7 +87,10 @@ impl ConanHandler {
         }
 
         // Direct conanfile path
-        if path.ends_with("conanfile.py") || path.ends_with("conanmanifest.txt") || path.ends_with("conan_export.tgz") {
+        if path.ends_with("conanfile.py")
+            || path.ends_with("conanmanifest.txt")
+            || path.ends_with("conan_export.tgz")
+        {
             return Self::parse_artifact_path(path);
         }
 
@@ -99,9 +102,7 @@ impl ConanHandler {
 
     /// Parse /conans/ path
     fn parse_conans_path(path: &str) -> Result<ConanPathInfo> {
-        let path = path
-            .trim_start_matches("v2/")
-            .trim_start_matches("conans/");
+        let path = path.trim_start_matches("v2/").trim_start_matches("conans/");
         let parts: Vec<&str> = path.split('/').collect();
 
         if parts.len() < 4 {
@@ -113,8 +114,16 @@ impl ConanHandler {
 
         let name = parts[0].to_string();
         let version = parts[1].to_string();
-        let user = if parts[2] == "_" { None } else { Some(parts[2].to_string()) };
-        let channel = if parts[3] == "_" { None } else { Some(parts[3].to_string()) };
+        let user = if parts[2] == "_" {
+            None
+        } else {
+            Some(parts[2].to_string())
+        };
+        let channel = if parts[3] == "_" {
+            None
+        } else {
+            Some(parts[3].to_string())
+        };
 
         // Parse the rest of the path
         let mut revision = None;
@@ -213,8 +222,14 @@ impl ConanHandler {
         let re = conan_ref_regex();
 
         if let Some(caps) = re.captures(reference) {
-            let name = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
-            let version = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = caps
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let version = caps
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let user = caps.get(3).map(|m| m.as_str().to_string());
             let channel = caps.get(4).map(|m| m.as_str().to_string());
             let revision = caps.get(5).map(|m| m.as_str().to_string());
@@ -358,10 +373,9 @@ impl ConanHandler {
                 }
                 Some("options") => {
                     if let Some((key, value)) = line.split_once('=') {
-                        conanfile.options.insert(
-                            key.trim().to_string(),
-                            value.trim().to_string(),
-                        );
+                        conanfile
+                            .options
+                            .insert(key.trim().to_string(), value.trim().to_string());
                     }
                 }
                 _ => {}
@@ -649,7 +663,8 @@ mod tests {
 
     #[test]
     fn test_parse_path_recipe() {
-        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc123/files").unwrap();
+        let info =
+            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc123/files").unwrap();
         assert_eq!(info.name, Some("zlib".to_string()));
         assert_eq!(info.version, Some("1.2.13".to_string()));
         assert_eq!(info.revision, Some("abc123".to_string()));
@@ -657,7 +672,10 @@ mod tests {
 
     #[test]
     fn test_parse_path_package() {
-        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc123/packages/pkg123/revisions/def456").unwrap();
+        let info = ConanHandler::parse_path(
+            "v2/conans/zlib/1.2.13/_/_/revisions/abc123/packages/pkg123/revisions/def456",
+        )
+        .unwrap();
         assert_eq!(info.name, Some("zlib".to_string()));
         assert_eq!(info.package_id, Some("pkg123".to_string()));
         assert_eq!(info.package_revision, Some("def456".to_string()));

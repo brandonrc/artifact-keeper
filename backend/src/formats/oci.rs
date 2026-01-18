@@ -40,7 +40,9 @@ impl OciHandler {
         }
 
         // Find the operation part (manifests, blobs, etc.)
-        let op_index = parts.iter().position(|&p| p == "manifests" || p == "blobs" || p == "tags");
+        let op_index = parts
+            .iter()
+            .position(|&p| p == "manifests" || p == "blobs" || p == "tags");
 
         match op_index {
             Some(idx) => {
@@ -93,7 +95,9 @@ impl OciHandler {
                     ))),
                 }
             }
-            None => Err(AppError::Validation("Missing OCI operation in path".to_string())),
+            None => Err(AppError::Validation(
+                "Missing OCI operation in path".to_string(),
+            )),
         }
     }
 
@@ -181,7 +185,8 @@ impl FormatHandler for OciHandler {
         // Parse manifest if this is a manifest operation
         if matches!(info.operation, OciOperation::Manifest) && !content.is_empty() {
             if let Ok(manifest) = Self::parse_manifest(content) {
-                metadata["schemaVersion"] = serde_json::Value::Number(manifest.schema_version.into());
+                metadata["schemaVersion"] =
+                    serde_json::Value::Number(manifest.schema_version.into());
                 if let Some(media_type) = manifest.media_type {
                     metadata["mediaType"] = serde_json::Value::String(media_type);
                 }

@@ -20,7 +20,10 @@ pub fn router() -> Router<SharedState> {
         .route("/:id", get(get_plugin).delete(uninstall_plugin))
         .route("/:id/enable", post(enable_plugin))
         .route("/:id/disable", post(disable_plugin))
-        .route("/:id/config", get(get_plugin_config).post(update_plugin_config))
+        .route(
+            "/:id/config",
+            get(get_plugin_config).post(update_plugin_config),
+        )
         .route("/:id/events", get(get_plugin_events))
         // WASM plugin endpoints
         .route("/install/git", post(install_from_git))
@@ -181,22 +184,33 @@ pub async fn install_plugin(
     // Extract plugin package from multipart
     let mut manifest: Option<PluginManifest> = None;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Validation(e.to_string()))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))?
+    {
         let name = field.name().unwrap_or("").to_string();
 
         if name == "package" || name == "manifest" {
-            let data = field.bytes().await.map_err(|e| AppError::Validation(e.to_string()))?;
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::Validation(e.to_string()))?;
 
             // Parse as JSON manifest
-            manifest = Some(serde_json::from_slice(&data)
-                .map_err(|e| AppError::Validation(format!("Invalid plugin manifest: {}", e)))?);
+            manifest =
+                Some(serde_json::from_slice(&data).map_err(|e| {
+                    AppError::Validation(format!("Invalid plugin manifest: {}", e))
+                })?);
         }
     }
 
-    let manifest = manifest.ok_or_else(|| AppError::Validation("Missing plugin manifest".to_string()))?;
+    let manifest =
+        manifest.ok_or_else(|| AppError::Validation("Missing plugin manifest".to_string()))?;
 
-    let plugin_type = parse_type(&manifest.plugin_type)
-        .ok_or_else(|| AppError::Validation(format!("Invalid plugin type: {}", manifest.plugin_type)))?;
+    let plugin_type = parse_type(&manifest.plugin_type).ok_or_else(|| {
+        AppError::Validation(format!("Invalid plugin type: {}", manifest.plugin_type))
+    })?;
 
     // Insert plugin record
     let plugin = sqlx::query!(
@@ -637,13 +651,14 @@ pub async fn list_format_handlers(
         .as_ref()
         .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
 
-    let handler_type = query.handler_type.as_ref().and_then(|t| {
-        match t.to_lowercase().as_str() {
+    let handler_type = query
+        .handler_type
+        .as_ref()
+        .and_then(|t| match t.to_lowercase().as_str() {
             "core" => Some(FormatHandlerType::Core),
             "wasm" => Some(FormatHandlerType::Wasm),
             _ => None,
-        }
-    });
+        });
 
     let handlers = wasm_service
         .list_format_handlers(handler_type, query.enabled)

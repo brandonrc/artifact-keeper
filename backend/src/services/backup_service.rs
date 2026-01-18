@@ -4,8 +4,8 @@
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -220,13 +220,16 @@ impl BackupService {
         {
             let mut active = self.active_backup.lock().await;
             if active.is_some() {
-                return Err(AppError::Conflict("Another backup is already in progress".to_string()));
+                return Err(AppError::Conflict(
+                    "Another backup is already in progress".to_string(),
+                ));
             }
             *active = Some(backup_id);
         }
 
         // Mark as in progress
-        self.update_status(backup_id, BackupStatus::InProgress, None).await?;
+        self.update_status(backup_id, BackupStatus::InProgress, None)
+            .await?;
 
         let result = self.do_backup(backup_id).await;
 
@@ -238,11 +241,13 @@ impl BackupService {
 
         match result {
             Ok(backup) => {
-                self.update_status(backup_id, BackupStatus::Completed, None).await?;
+                self.update_status(backup_id, BackupStatus::Completed, None)
+                    .await?;
                 Ok(backup)
             }
             Err(e) => {
-                self.update_status(backup_id, BackupStatus::Failed, Some(&e.to_string())).await?;
+                self.update_status(backup_id, BackupStatus::Failed, Some(&e.to_string()))
+                    .await?;
                 Err(e)
             }
         }
@@ -259,8 +264,14 @@ impl BackupService {
 
             // Export database tables as JSON
             let tables = vec![
-                "users", "repositories", "artifacts", "download_stats",
-                "api_tokens", "roles", "user_roles", "repository_permissions",
+                "users",
+                "repositories",
+                "artifacts",
+                "download_stats",
+                "api_tokens",
+                "roles",
+                "user_roles",
+                "repository_permissions",
             ];
 
             for table in &tables {
@@ -278,7 +289,9 @@ impl BackupService {
             }
 
             // Add artifact storage keys
-            let storage_keys = self.get_artifact_storage_keys(backup.metadata.as_ref()).await?;
+            let storage_keys = self
+                .get_artifact_storage_keys(backup.metadata.as_ref())
+                .await?;
             let mut artifact_count = 0i64;
 
             for key in storage_keys {
@@ -303,7 +316,7 @@ impl BackupService {
                 created_at: Utc::now(),
                 database_tables: tables.iter().map(|s| s.to_string()).collect(),
                 artifact_count,
-                total_size_bytes: 0, // Will be actual size in final backup
+                total_size_bytes: 0,     // Will be actual size in final backup
                 checksum: String::new(), // Will be computed after archive is complete
             };
 
@@ -321,9 +334,13 @@ impl BackupService {
         }
 
         // Store backup
-        let storage_path = backup.storage_path.as_ref()
+        let storage_path = backup
+            .storage_path
+            .as_ref()
             .ok_or_else(|| AppError::Internal("Backup has no storage path".to_string()))?;
-        self.storage.put(storage_path, Bytes::from(tar_buffer.clone())).await?;
+        self.storage
+            .put(storage_path, Bytes::from(tar_buffer.clone()))
+            .await?;
 
         // Update backup record
         let artifact_count = self.count_artifacts_in_backup(&tar_buffer)?;
@@ -355,7 +372,10 @@ impl BackupService {
         Ok(serde_json::Value::Array(rows))
     }
 
-    async fn get_artifact_storage_keys(&self, metadata: Option<&serde_json::Value>) -> Result<Vec<String>> {
+    async fn get_artifact_storage_keys(
+        &self,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<Vec<String>> {
         let repository_filter: Option<Vec<Uuid>> = metadata
             .and_then(|m| m.get("repository_ids"))
             .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -383,9 +403,14 @@ impl BackupService {
         let mut archive = Archive::new(decoder);
         let mut count = 0i64;
 
-        for entry in archive.entries().map_err(|e| AppError::Internal(e.to_string()))? {
+        for entry in archive
+            .entries()
+            .map_err(|e| AppError::Internal(e.to_string()))?
+        {
             let entry = entry.map_err(|e| AppError::Internal(e.to_string()))?;
-            let path = entry.path().map_err(|e| AppError::Internal(e.to_string()))?;
+            let path = entry
+                .path()
+                .map_err(|e| AppError::Internal(e.to_string()))?;
             if path.starts_with("artifacts/") {
                 count += 1;
             }
@@ -406,7 +431,10 @@ impl BackupService {
             None
         };
 
-        let completed_at = if matches!(status, BackupStatus::Completed | BackupStatus::Failed | BackupStatus::Cancelled) {
+        let completed_at = if matches!(
+            status,
+            BackupStatus::Completed | BackupStatus::Failed | BackupStatus::Cancelled
+        ) {
             Some(Utc::now())
         } else {
             None
@@ -440,11 +468,15 @@ impl BackupService {
         let backup = self.get_by_id(backup_id).await?;
 
         if backup.status != BackupStatus::Completed {
-            return Err(AppError::Validation("Can only restore from completed backups".to_string()));
+            return Err(AppError::Validation(
+                "Can only restore from completed backups".to_string(),
+            ));
         }
 
         // Download and extract backup
-        let storage_path = backup.storage_path.as_ref()
+        let storage_path = backup
+            .storage_path
+            .as_ref()
             .ok_or_else(|| AppError::Internal("Backup has no storage path".to_string()))?;
         let tar_data = self.storage.get(storage_path).await?;
         let decoder = GzDecoder::new(tar_data.as_ref());
@@ -456,9 +488,15 @@ impl BackupService {
             errors: Vec::new(),
         };
 
-        for entry in archive.entries().map_err(|e| AppError::Internal(e.to_string()))? {
+        for entry in archive
+            .entries()
+            .map_err(|e| AppError::Internal(e.to_string()))?
+        {
             let mut entry = entry.map_err(|e| AppError::Internal(e.to_string()))?;
-            let path = entry.path().map_err(|e| AppError::Internal(e.to_string()))?.to_path_buf();
+            let path = entry
+                .path()
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .to_path_buf();
 
             if path.starts_with("database/") && options.restore_database {
                 // Restore database table
@@ -468,24 +506,33 @@ impl BackupService {
                     .unwrap_or("unknown");
 
                 let mut content = Vec::new();
-                entry.read_to_end(&mut content).map_err(|e| AppError::Internal(e.to_string()))?;
+                entry
+                    .read_to_end(&mut content)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
 
                 match self.restore_table(table_name, &content).await {
                     Ok(_) => result.tables_restored.push(table_name.to_string()),
-                    Err(e) => result.errors.push(format!("Failed to restore {}: {}", table_name, e)),
+                    Err(e) => result
+                        .errors
+                        .push(format!("Failed to restore {}: {}", table_name, e)),
                 }
             } else if path.starts_with("artifacts/") && options.restore_artifacts {
                 // Restore artifact
-                let storage_key = path.strip_prefix("artifacts/")
+                let storage_key = path
+                    .strip_prefix("artifacts/")
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
 
                 let mut content = Vec::new();
-                entry.read_to_end(&mut content).map_err(|e| AppError::Internal(e.to_string()))?;
+                entry
+                    .read_to_end(&mut content)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
 
                 match self.storage.put(&storage_key, Bytes::from(content)).await {
                     Ok(_) => result.artifacts_restored += 1,
-                    Err(e) => result.errors.push(format!("Failed to restore {}: {}", storage_key, e)),
+                    Err(e) => result
+                        .errors
+                        .push(format!("Failed to restore {}: {}", storage_key, e)),
                 }
             }
         }
@@ -499,7 +546,8 @@ impl BackupService {
         // Tables need to be restored in dependency order
         // This is a simplified version - production would need proper ordering
         for row in rows {
-            let columns: Vec<String> = row.as_object()
+            let columns: Vec<String> = row
+                .as_object()
                 .map(|obj| obj.keys().cloned().collect())
                 .unwrap_or_default();
 
@@ -507,9 +555,8 @@ impl BackupService {
                 continue;
             }
 
-            let placeholders: Vec<String> = (1..=columns.len())
-                .map(|i| format!("${}", i))
-                .collect();
+            let placeholders: Vec<String> =
+                (1..=columns.len()).map(|i| format!("${}", i)).collect();
 
             let query = format!(
                 "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT DO NOTHING",
@@ -551,10 +598,13 @@ impl BackupService {
         let backup = self.get_by_id(backup_id).await?;
 
         if backup.status != BackupStatus::InProgress && backup.status != BackupStatus::Pending {
-            return Err(AppError::Validation("Can only cancel pending or in-progress backups".to_string()));
+            return Err(AppError::Validation(
+                "Can only cancel pending or in-progress backups".to_string(),
+            ));
         }
 
-        self.update_status(backup_id, BackupStatus::Cancelled, None).await?;
+        self.update_status(backup_id, BackupStatus::Cancelled, None)
+            .await?;
 
         Ok(())
     }

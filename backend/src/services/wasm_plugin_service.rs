@@ -15,9 +15,7 @@ use crate::models::format_handler::{
     CreateFormatHandler, FormatHandlerRecord, FormatHandlerResponse, FormatHandlerType,
     UpdateFormatHandler,
 };
-use crate::models::plugin::{
-    Plugin, PluginSourceType, PluginStatus,
-};
+use crate::models::plugin::{Plugin, PluginSourceType, PluginStatus};
 use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
 
 use super::plugin_registry::PluginRegistry;
@@ -141,7 +139,10 @@ impl WasmPluginService {
         }
         .map_err(|e| AppError::Database(e.to_string()))?;
 
-        Ok(handlers.into_iter().map(FormatHandlerResponse::from).collect())
+        Ok(handlers
+            .into_iter()
+            .map(FormatHandlerResponse::from)
+            .collect())
     }
 
     /// Get a format handler by format key.
@@ -319,13 +320,12 @@ impl WasmPluginService {
     /// Disable a format handler.
     pub async fn disable_format_handler(&self, format_key: &str) -> Result<FormatHandlerResponse> {
         // Check if this is the last enabled handler
-        let enabled_count: i64 = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM format_handlers WHERE is_enabled = true"
-        )
-        .fetch_one(&self.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?
-        .unwrap_or(0);
+        let enabled_count: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM format_handlers WHERE is_enabled = true")
+                .fetch_one(&self.db)
+                .await
+                .map_err(|e| AppError::Database(e.to_string()))?
+                .unwrap_or(0);
 
         if enabled_count == 1 {
             // Check if the one to disable is the last enabled one
@@ -399,15 +399,17 @@ impl WasmPluginService {
         if repo_count > 0 {
             return Err(AppError::Conflict(format!(
                 "Cannot delete format handler '{}': {} repositories are using it",
-                format_key,
-                repo_count
+                format_key, repo_count
             )));
         }
 
-        sqlx::query!("DELETE FROM format_handlers WHERE format_key = $1", format_key)
-            .execute(&self.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        sqlx::query!(
+            "DELETE FROM format_handlers WHERE format_key = $1",
+            format_key
+        )
+        .execute(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
         info!("Deleted format handler: {}", format_key);
         self.log_event(
@@ -451,7 +453,11 @@ impl WasmPluginService {
     }
 
     /// Check if a format key conflicts with an existing handler.
-    pub async fn check_format_key_conflict(&self, format_key: &str, plugin_id: Option<Uuid>) -> Result<()> {
+    pub async fn check_format_key_conflict(
+        &self,
+        format_key: &str,
+        plugin_id: Option<Uuid>,
+    ) -> Result<()> {
         let existing = sqlx::query_scalar!(
             "SELECT plugin_id FROM format_handlers WHERE format_key = $1",
             format_key
@@ -505,7 +511,10 @@ impl WasmPluginService {
         details: Option<serde_json::Value>,
     ) {
         let Some(plugin_id) = plugin_id else {
-            debug!("Skipping event log (no plugin_id): {} - {}", event_type, message);
+            debug!(
+                "Skipping event log (no plugin_id): {} - {}",
+                event_type, message
+            );
             return;
         };
 
@@ -570,7 +579,13 @@ impl WasmPluginService {
     }
 
     /// Log plugin installed event.
-    pub async fn log_plugin_installed(&self, plugin_id: Uuid, name: &str, version: &str, source: &str) {
+    pub async fn log_plugin_installed(
+        &self,
+        plugin_id: Uuid,
+        name: &str,
+        version: &str,
+        source: &str,
+    ) {
         self.log_event(
             Some(plugin_id),
             "installed",
@@ -610,12 +625,21 @@ impl WasmPluginService {
     }
 
     /// Log plugin reload event.
-    pub async fn log_plugin_reloaded(&self, plugin_id: Uuid, name: &str, old_version: &str, new_version: &str) {
+    pub async fn log_plugin_reloaded(
+        &self,
+        plugin_id: Uuid,
+        name: &str,
+        old_version: &str,
+        new_version: &str,
+    ) {
         self.log_event(
             Some(plugin_id),
             "reloaded",
             "info",
-            &format!("Plugin {} reloaded from v{} to v{}", name, old_version, new_version),
+            &format!(
+                "Plugin {} reloaded from v{} to v{}",
+                name, old_version, new_version
+            ),
             Some(serde_json::json!({
                 "old_version": old_version,
                 "new_version": new_version,
@@ -691,13 +715,16 @@ impl WasmPluginService {
             .format
             .as_ref()
             .map(|f| f.key.clone())
-            .ok_or_else(|| AppError::Validation("Plugin manifest missing [format] section".to_string()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Plugin manifest missing [format] section".to_string())
+            })?;
 
         // Check for format key conflicts
         self.check_format_key_conflict(&format_key, None).await?;
 
         // Check for duplicate plugin name
-        self.check_plugin_name_conflict(&manifest.plugin.name).await?;
+        self.check_plugin_name_conflict(&manifest.plugin.name)
+            .await?;
 
         // Find and validate WASM binary
         let wasm_path = self.find_wasm_binary(temp_dir.path()).await?;
@@ -721,7 +748,13 @@ impl WasmPluginService {
 
         // Create plugin record in database
         let plugin = self
-            .create_plugin_record(&manifest, PluginSourceType::WasmGit, Some(url), git_ref, &dest_path)
+            .create_plugin_record(
+                &manifest,
+                PluginSourceType::WasmGit,
+                Some(url),
+                git_ref,
+                &dest_path,
+            )
             .await?;
 
         // Create format handler record
@@ -737,11 +770,17 @@ impl WasmPluginService {
         .await?;
 
         // Activate plugin in registry
-        self.activate_plugin(&plugin, &wasm_bytes, &manifest).await?;
+        self.activate_plugin(&plugin, &wasm_bytes, &manifest)
+            .await?;
 
         // Log installation
-        self.log_plugin_installed(plugin.id, &manifest.plugin.name, &manifest.plugin.version, url)
-            .await;
+        self.log_plugin_installed(
+            plugin.id,
+            &manifest.plugin.name,
+            &manifest.plugin.version,
+            url,
+        )
+        .await;
 
         info!(
             "Plugin {} v{} installed successfully from Git",
@@ -762,11 +801,9 @@ impl WasmPluginService {
         let target = target.to_path_buf();
 
         // Run Git clone in blocking task
-        let result = tokio::task::spawn_blocking(move || {
-            git2::Repository::clone(&url, &target)
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("Git clone task failed: {}", e)))?;
+        let result = tokio::task::spawn_blocking(move || git2::Repository::clone(&url, &target))
+            .await
+            .map_err(|e| AppError::Internal(format!("Git clone task failed: {}", e)))?;
 
         result.map_err(|e| {
             let msg = e.to_string();
@@ -875,19 +912,18 @@ impl WasmPluginService {
         }
 
         Err(AppError::Validation(
-            "No WASM binary found. Expected plugin.wasm in repository root or target directory".to_string(),
+            "No WASM binary found. Expected plugin.wasm in repository root or target directory"
+                .to_string(),
         ))
     }
 
     /// Check if a plugin name already exists.
     async fn check_plugin_name_conflict(&self, name: &str) -> Result<()> {
-        let exists = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM plugins WHERE name = $1)",
-            name
-        )
-        .fetch_one(&self.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        let exists =
+            sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM plugins WHERE name = $1)", name)
+                .fetch_one(&self.db)
+                .await
+                .map_err(|e| AppError::Database(e.to_string()))?;
 
         if exists == Some(true) {
             return Err(AppError::Conflict(format!(
@@ -910,8 +946,9 @@ impl WasmPluginService {
     ) -> Result<Plugin> {
         let capabilities = serde_json::to_value(manifest.to_capabilities())
             .map_err(|e| AppError::Internal(format!("Failed to serialize capabilities: {}", e)))?;
-        let resource_limits = serde_json::to_value(manifest.to_resource_limits())
-            .map_err(|e| AppError::Internal(format!("Failed to serialize resource_limits: {}", e)))?;
+        let resource_limits = serde_json::to_value(manifest.to_resource_limits()).map_err(|e| {
+            AppError::Internal(format!("Failed to serialize resource_limits: {}", e))
+        })?;
         let manifest_json = serde_json::to_value(manifest)
             .map_err(|e| AppError::Internal(format!("Failed to serialize manifest: {}", e)))?;
 
@@ -1078,7 +1115,8 @@ impl WasmPluginService {
                 .and_then(|m| serde_json::from_value(m.clone()).ok())
                 .ok_or_else(|| AppError::Internal("Missing plugin manifest".to_string()))?;
 
-            self.activate_plugin(&plugin, &wasm_bytes, &manifest).await?;
+            self.activate_plugin(&plugin, &wasm_bytes, &manifest)
+                .await?;
         }
 
         // Update status in database
@@ -1177,13 +1215,16 @@ impl WasmPluginService {
             .format
             .as_ref()
             .map(|f| f.key.clone())
-            .ok_or_else(|| AppError::Validation("Plugin manifest missing [format] section".to_string()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Plugin manifest missing [format] section".to_string())
+            })?;
 
         // Check for format key conflicts
         self.check_format_key_conflict(&format_key, None).await?;
 
         // Check for duplicate plugin name
-        self.check_plugin_name_conflict(&manifest.plugin.name).await?;
+        self.check_plugin_name_conflict(&manifest.plugin.name)
+            .await?;
 
         // Find and validate WASM binary
         let wasm_path = self.find_wasm_binary(temp_dir.path()).await?;
@@ -1223,11 +1264,17 @@ impl WasmPluginService {
         .await?;
 
         // Activate plugin in registry
-        self.activate_plugin(&plugin, &wasm_bytes, &manifest).await?;
+        self.activate_plugin(&plugin, &wasm_bytes, &manifest)
+            .await?;
 
         // Log installation
-        self.log_plugin_installed(plugin.id, &manifest.plugin.name, &manifest.plugin.version, "ZIP upload")
-            .await;
+        self.log_plugin_installed(
+            plugin.id,
+            &manifest.plugin.name,
+            &manifest.plugin.version,
+            "ZIP upload",
+        )
+        .await;
 
         info!(
             "Plugin {} v{} installed successfully from ZIP",
@@ -1267,19 +1314,25 @@ impl WasmPluginService {
                 };
 
                 if file.is_dir() {
-                    std::fs::create_dir_all(&outpath)
-                        .map_err(|e| AppError::Internal(format!("Failed to create directory: {}", e)))?;
+                    std::fs::create_dir_all(&outpath).map_err(|e| {
+                        AppError::Internal(format!("Failed to create directory: {}", e))
+                    })?;
                 } else {
                     if let Some(parent) = outpath.parent() {
                         if !parent.exists() {
-                            std::fs::create_dir_all(parent)
-                                .map_err(|e| AppError::Internal(format!("Failed to create parent directory: {}", e)))?;
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                AppError::Internal(format!(
+                                    "Failed to create parent directory: {}",
+                                    e
+                                ))
+                            })?;
                         }
                     }
                     let mut outfile = std::fs::File::create(&outpath)
                         .map_err(|e| AppError::Internal(format!("Failed to create file: {}", e)))?;
-                    std::io::copy(&mut file, &mut outfile)
-                        .map_err(|e| AppError::Internal(format!("Failed to extract file: {}", e)))?;
+                    std::io::copy(&mut file, &mut outfile).map_err(|e| {
+                        AppError::Internal(format!("Failed to extract file: {}", e))
+                    })?;
                 }
             }
 
@@ -1326,9 +1379,7 @@ impl WasmPluginService {
 
         info!(
             "Reloading plugin {} from {:?} (current: v{})",
-            plugin.name,
-            plugin.source_type,
-            old_version
+            plugin.name, plugin.source_type, old_version
         );
 
         // Determine reload source
@@ -1422,8 +1473,13 @@ impl WasmPluginService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // Log reload
-        self.log_plugin_reloaded(plugin_id, &plugin.name, &old_version, &new_manifest.plugin.version)
-            .await;
+        self.log_plugin_reloaded(
+            plugin_id,
+            &plugin.name,
+            &old_version,
+            &new_manifest.plugin.version,
+        )
+        .await;
 
         info!(
             "Plugin {} reloaded from v{} to v{}",
@@ -1434,7 +1490,11 @@ impl WasmPluginService {
     }
 
     /// Fetch plugin from Git repository.
-    async fn fetch_from_git(&self, url: &str, git_ref: Option<&str>) -> Result<(PluginManifest, Vec<u8>)> {
+    async fn fetch_from_git(
+        &self,
+        url: &str,
+        git_ref: Option<&str>,
+    ) -> Result<(PluginManifest, Vec<u8>)> {
         let temp_dir = tempfile::tempdir()
             .map_err(|e| AppError::Internal(format!("Failed to create temp directory: {}", e)))?;
 
@@ -1503,8 +1563,7 @@ impl WasmPluginService {
             if repo_count > 0 {
                 warn!(
                     "Force uninstalling plugin {} with {} dependent repositories",
-                    plugin.name,
-                    repo_count
+                    plugin.name, repo_count
                 );
             }
         }
@@ -1679,7 +1738,8 @@ impl WasmPluginService {
 
         // For now, return an error - local installation not yet fully implemented
         Err(AppError::Internal(
-            "Local plugin installation not yet implemented. Use Git or ZIP installation.".to_string()
+            "Local plugin installation not yet implemented. Use Git or ZIP installation."
+                .to_string(),
         ))
     }
 

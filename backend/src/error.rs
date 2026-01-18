@@ -90,7 +90,11 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
-            AppError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", msg.clone()),
+            AppError::Config(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CONFIG_ERROR",
+                msg.clone(),
+            ),
             AppError::Database(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "DATABASE_ERROR",
@@ -112,7 +116,11 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
             AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            AppError::QuotaExceeded(msg) => (StatusCode::INSUFFICIENT_STORAGE, "QUOTA_EXCEEDED", msg.clone()),
+            AppError::QuotaExceeded(msg) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "QUOTA_EXCEEDED",
+                msg.clone(),
+            ),
             AppError::Storage(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "STORAGE_ERROR",
@@ -133,7 +141,11 @@ impl IntoResponse for AppError {
                 "JSON_ERROR",
                 "Invalid JSON".to_string(),
             ),
-            AppError::Jwt(_) => (StatusCode::UNAUTHORIZED, "JWT_ERROR", "Invalid token".to_string()),
+            AppError::Jwt(_) => (
+                StatusCode::UNAUTHORIZED,
+                "JWT_ERROR",
+                "Invalid token".to_string(),
+            ),
             AppError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",

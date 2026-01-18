@@ -32,8 +32,8 @@ pub struct S3Config {
 impl S3Config {
     /// Create config from environment variables
     pub fn from_env() -> Result<Self> {
-        let bucket = std::env::var("S3_BUCKET")
-            .map_err(|_| AppError::Config("S3_BUCKET not set".into()))?;
+        let bucket =
+            std::env::var("S3_BUCKET").map_err(|_| AppError::Config("S3_BUCKET not set".into()))?;
         let region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".into());
         let endpoint = std::env::var("S3_ENDPOINT").ok();
         let prefix = std::env::var("S3_PREFIX").ok();
@@ -47,7 +47,12 @@ impl S3Config {
     }
 
     /// Create config with explicit values
-    pub fn new(bucket: String, region: String, endpoint: Option<String>, prefix: Option<String>) -> Self {
+    pub fn new(
+        bucket: String,
+        region: String,
+        endpoint: Option<String>,
+        prefix: Option<String>,
+    ) -> Self {
         Self {
             bucket,
             region,
@@ -76,9 +81,10 @@ impl S3Backend {
                 region: config.region.clone(),
                 endpoint: endpoint.clone(),
             },
-            None => config.region.parse().map_err(|_| {
-                AppError::Config(format!("Invalid S3 region: {}", config.region))
-            })?,
+            None => config
+                .region
+                .parse()
+                .map_err(|_| AppError::Config(format!("Invalid S3 region: {}", config.region)))?,
         };
 
         // Create bucket handle
@@ -143,17 +149,14 @@ impl super::StorageBackend for S3Backend {
     async fn get(&self, key: &str) -> Result<Bytes> {
         let full_key = self.full_key(key);
 
-        let response = self.bucket
-            .get_object(&full_key)
-            .await
-            .map_err(|e| {
-                // Check for 404 errors
-                if e.to_string().contains("404") || e.to_string().contains("NoSuchKey") {
-                    AppError::NotFound(format!("Storage key not found: {}", key))
-                } else {
-                    AppError::Storage(format!("Failed to get object '{}': {}", key, e))
-                }
-            })?;
+        let response = self.bucket.get_object(&full_key).await.map_err(|e| {
+            // Check for 404 errors
+            if e.to_string().contains("404") || e.to_string().contains("NoSuchKey") {
+                AppError::NotFound(format!("Storage key not found: {}", key))
+            } else {
+                AppError::Storage(format!("Failed to get object '{}': {}", key, e))
+            }
+        })?;
 
         tracing::debug!(key = %key, size = response.bytes().len(), "S3 get object successful");
         Ok(Bytes::from(response.to_vec()))
@@ -167,7 +170,10 @@ impl super::StorageBackend for S3Backend {
             Err(e) => {
                 // Check if it's a "not found" error
                 let err_str = e.to_string();
-                if err_str.contains("404") || err_str.contains("NoSuchKey") || err_str.contains("Not Found") {
+                if err_str.contains("404")
+                    || err_str.contains("NoSuchKey")
+                    || err_str.contains("Not Found")
+                {
                     Ok(false)
                 } else {
                     Err(AppError::Storage(format!(
@@ -203,7 +209,8 @@ impl S3Backend {
             (None, None) => String::new(),
         };
 
-        let results = self.bucket
+        let results = self
+            .bucket
             .list(search_prefix, None)
             .await
             .map_err(|e| AppError::Storage(format!("Failed to list objects: {}", e)))?;
@@ -229,7 +236,9 @@ impl S3Backend {
         self.bucket
             .copy_object_internal(&copy_source, &dest_key)
             .await
-            .map_err(|e| AppError::Storage(format!("Failed to copy '{}' to '{}': {}", source, dest, e)))?;
+            .map_err(|e| {
+                AppError::Storage(format!("Failed to copy '{}' to '{}': {}", source, dest, e))
+            })?;
 
         tracing::debug!(source = %source, dest = %dest, "S3 copy object successful");
         Ok(())
@@ -239,17 +248,17 @@ impl S3Backend {
     pub async fn size(&self, key: &str) -> Result<u64> {
         let full_key = self.full_key(key);
 
-        let (head, _) = self.bucket
-            .head_object(&full_key)
-            .await
-            .map_err(|e| {
-                let err_str = e.to_string();
-                if err_str.contains("404") || err_str.contains("NoSuchKey") || err_str.contains("Not Found") {
-                    AppError::NotFound(format!("Storage key not found: {}", key))
-                } else {
-                    AppError::Storage(format!("Failed to get size of '{}': {}", key, e))
-                }
-            })?;
+        let (head, _) = self.bucket.head_object(&full_key).await.map_err(|e| {
+            let err_str = e.to_string();
+            if err_str.contains("404")
+                || err_str.contains("NoSuchKey")
+                || err_str.contains("Not Found")
+            {
+                AppError::NotFound(format!("Storage key not found: {}", key))
+            } else {
+                AppError::Storage(format!("Failed to get size of '{}': {}", key, e))
+            }
+        })?;
 
         let size = head.content_length.unwrap_or(0) as u64;
         tracing::debug!(key = %key, size = size, "S3 head object successful");
