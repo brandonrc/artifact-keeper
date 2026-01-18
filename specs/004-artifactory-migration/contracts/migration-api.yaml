@@ -1,0 +1,874 @@
+openapi: 3.1.0
+info:
+  title: Artifact Keeper Migration API
+  description: API for migrating from JFrog Artifactory to Artifact Keeper
+  version: 1.0.0
+
+servers:
+  - url: /api/v1
+    description: Main API server
+
+tags:
+  - name: Connections
+    description: Manage source Artifactory connections
+  - name: Migrations
+    description: Migration job management
+  - name: Assessment
+    description: Pre-migration assessment
+
+paths:
+  # ============ Source Connections ============
+  /migrations/connections:
+    get:
+      tags: [Connections]
+      summary: List source connections
+      operationId: listConnections
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of connections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SourceConnection'
+                  total:
+                    type: integer
+    post:
+      tags: [Connections]
+      summary: Create source connection
+      operationId: createConnection
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConnectionRequest'
+      responses:
+        '201':
+          description: Connection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceConnection'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /migrations/connections/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Connections]
+      summary: Get connection details
+      operationId: getConnection
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Connection details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceConnection'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Connections]
+      summary: Delete connection
+      operationId: deleteConnection
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Connection deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /migrations/connections/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Connections]
+      summary: Test connection
+      operationId: testConnection
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Connection test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionTestResult'
+
+  /migrations/connections/{id}/repositories:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Connections]
+      summary: List repositories from source
+      operationId: listSourceRepositories
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SourceRepository'
+
+  # ============ Migration Jobs ============
+  /migrations:
+    get:
+      tags: [Migrations]
+      summary: List migration jobs
+      operationId: listMigrations
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, assessing, ready, running, paused, completed, failed, cancelled]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of migrations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MigrationJob'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+    post:
+      tags: [Migrations]
+      summary: Create migration job
+      operationId: createMigration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMigrationRequest'
+      responses:
+        '201':
+          description: Migration job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+
+  /migrations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Migrations]
+      summary: Get migration job details
+      operationId: getMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Migration details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+    delete:
+      tags: [Migrations]
+      summary: Delete migration job
+      operationId: deleteMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Migration deleted
+
+  /migrations/{id}/start:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Migrations]
+      summary: Start migration
+      operationId: startMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Migration started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+        '409':
+          description: Migration cannot be started (wrong state)
+
+  /migrations/{id}/pause:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Migrations]
+      summary: Pause migration
+      operationId: pauseMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Migration paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+
+  /migrations/{id}/resume:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Migrations]
+      summary: Resume migration
+      operationId: resumeMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Migration resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+
+  /migrations/{id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Migrations]
+      summary: Cancel migration
+      operationId: cancelMigration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Migration cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+
+  /migrations/{id}/stream:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Migrations]
+      summary: Stream migration progress (SSE)
+      operationId: streamMigrationProgress
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /migrations/{id}/items:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Migrations]
+      summary: List migration items
+      operationId: listMigrationItems
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, in_progress, completed, failed, skipped]
+        - name: item_type
+          in: query
+          schema:
+            type: string
+            enum: [repository, artifact, user, group, permission]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of migration items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MigrationItem'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /migrations/{id}/report:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Migrations]
+      summary: Get migration report
+      operationId: getMigrationReport
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, html]
+            default: json
+      responses:
+        '200':
+          description: Migration report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationReport'
+            text/html:
+              schema:
+                type: string
+
+  # ============ Assessment ============
+  /migrations/{id}/assess:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Assessment]
+      summary: Run pre-migration assessment
+      operationId: runAssessment
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Assessment started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationJob'
+
+  /migrations/{id}/assessment:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Assessment]
+      summary: Get assessment results
+      operationId: getAssessment
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Assessment results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssessmentResult'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+        total_pages:
+          type: integer
+
+    SourceConnection:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+        auth_type:
+          type: string
+          enum: [api_token, basic_auth]
+        created_at:
+          type: string
+          format: date-time
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateConnectionRequest:
+      type: object
+      required: [name, url, auth_type, credentials]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        url:
+          type: string
+          format: uri
+        auth_type:
+          type: string
+          enum: [api_token, basic_auth]
+        credentials:
+          type: object
+          properties:
+            token:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+
+    ConnectionTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        artifactory_version:
+          type: string
+        license_type:
+          type: string
+
+    SourceRepository:
+      type: object
+      properties:
+        key:
+          type: string
+        type:
+          type: string
+          enum: [local, remote, virtual]
+        package_type:
+          type: string
+        url:
+          type: string
+        description:
+          type: string
+
+    MigrationJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        source_connection_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, assessing, ready, running, paused, completed, failed, cancelled]
+        job_type:
+          type: string
+          enum: [full, incremental, assessment]
+        config:
+          $ref: '#/components/schemas/MigrationConfig'
+        total_items:
+          type: integer
+        completed_items:
+          type: integer
+        failed_items:
+          type: integer
+        skipped_items:
+          type: integer
+        total_bytes:
+          type: integer
+          format: int64
+        transferred_bytes:
+          type: integer
+          format: int64
+        progress_percent:
+          type: number
+        estimated_time_remaining:
+          type: integer
+          description: Seconds remaining
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        error_summary:
+          type: string
+          nullable: true
+
+    MigrationConfig:
+      type: object
+      properties:
+        include_repos:
+          type: array
+          items:
+            type: string
+        exclude_repos:
+          type: array
+          items:
+            type: string
+        exclude_paths:
+          type: array
+          items:
+            type: string
+        include_users:
+          type: boolean
+          default: true
+        include_groups:
+          type: boolean
+          default: true
+        include_permissions:
+          type: boolean
+          default: true
+        include_cached_remote:
+          type: boolean
+          default: false
+        dry_run:
+          type: boolean
+          default: false
+        conflict_resolution:
+          type: string
+          enum: [skip, overwrite, rename]
+          default: skip
+        concurrent_transfers:
+          type: integer
+          default: 4
+          minimum: 1
+          maximum: 16
+        throttle_delay_ms:
+          type: integer
+          default: 100
+        date_from:
+          type: string
+          format: date-time
+          nullable: true
+        date_to:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateMigrationRequest:
+      type: object
+      required: [source_connection_id, config]
+      properties:
+        source_connection_id:
+          type: string
+          format: uuid
+        job_type:
+          type: string
+          enum: [full, incremental]
+          default: full
+        config:
+          $ref: '#/components/schemas/MigrationConfig'
+
+    MigrationItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        item_type:
+          type: string
+          enum: [repository, artifact, user, group, permission, property]
+        source_path:
+          type: string
+        target_path:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, in_progress, completed, failed, skipped]
+        size_bytes:
+          type: integer
+          format: int64
+        checksum_source:
+          type: string
+          nullable: true
+        checksum_target:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        retry_count:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    MigrationReport:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        job_id:
+          type: string
+          format: uuid
+        generated_at:
+          type: string
+          format: date-time
+        summary:
+          type: object
+          properties:
+            duration_seconds:
+              type: integer
+            repositories:
+              $ref: '#/components/schemas/ItemSummary'
+            artifacts:
+              $ref: '#/components/schemas/ItemSummary'
+            users:
+              $ref: '#/components/schemas/ItemSummary'
+            groups:
+              $ref: '#/components/schemas/ItemSummary'
+            permissions:
+              $ref: '#/components/schemas/ItemSummary'
+            total_bytes_transferred:
+              type: integer
+              format: int64
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+              item_path:
+                type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+              item_path:
+                type: string
+              stack_trace:
+                type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+
+    ItemSummary:
+      type: object
+      properties:
+        total:
+          type: integer
+        migrated:
+          type: integer
+        failed:
+          type: integer
+        skipped:
+          type: integer
+
+    AssessmentResult:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        repositories:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+              type:
+                type: string
+              package_type:
+                type: string
+              artifact_count:
+                type: integer
+              total_size_bytes:
+                type: integer
+                format: int64
+              compatibility:
+                type: string
+                enum: [full, partial, unsupported]
+              warnings:
+                type: array
+                items:
+                  type: string
+        users_count:
+          type: integer
+        groups_count:
+          type: integer
+        permissions_count:
+          type: integer
+        total_artifacts:
+          type: integer
+        total_size_bytes:
+          type: integer
+          format: int64
+        estimated_duration_seconds:
+          type: integer
+        warnings:
+          type: array
+          items:
+            type: string
+        blockers:
+          type: array
+          items:
+            type: string
