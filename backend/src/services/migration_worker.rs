@@ -469,7 +469,7 @@ impl MigrationWorker {
         completed: &mut i32,
         failed: &mut i32,
         skipped: &mut i32,
-        progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
     ) -> Result<(), MigrationError> {
         tracing::info!(job_id = %job_id, "Starting user migration");
 
@@ -587,7 +587,7 @@ impl MigrationWorker {
         completed: &mut i32,
         failed: &mut i32,
         skipped: &mut i32,
-        progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
     ) -> Result<(), MigrationError> {
         tracing::info!(job_id = %job_id, "Starting group migration");
 
@@ -676,7 +676,7 @@ impl MigrationWorker {
         completed: &mut i32,
         failed: &mut i32,
         skipped: &mut i32,
-        progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
+        _progress_tx: Option<mpsc::Sender<ProgressUpdate>>,
     ) -> Result<(), MigrationError> {
         tracing::info!(job_id = %job_id, "Starting permission migration");
 

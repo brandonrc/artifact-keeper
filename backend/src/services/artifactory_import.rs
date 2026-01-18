@@ -194,9 +194,7 @@ impl ArtifactoryImporter {
         let export_root = Self::find_export_root(&temp_path)?;
 
         // Keep the temp directory so it's not deleted when the function returns
-        let temp_path_owned = temp_dir
-            .keep()
-            .map_err(|e| ImportError::Io(io::Error::other(e.to_string())))?;
+        let temp_path_owned = temp_dir.keep();
 
         Ok(Self {
             root_path: export_root,
