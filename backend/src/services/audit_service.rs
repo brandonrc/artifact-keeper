@@ -217,6 +217,7 @@ impl AuditService {
     }
 
     /// Query audit logs
+    #[allow(clippy::too_many_arguments)]
     pub async fn query(
         &self,
         user_id: Option<Uuid>,

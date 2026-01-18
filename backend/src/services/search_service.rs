@@ -79,7 +79,7 @@ impl SearchService {
     /// Execute a search query
     pub async fn search(&self, query: SearchQuery) -> Result<SearchResponse> {
         let offset = query.offset.unwrap_or(0).max(0);
-        let limit = query.limit.unwrap_or(20).min(100).max(1);
+        let limit = query.limit.unwrap_or(20).clamp(1, 100);
 
         let items = self.execute_search(&query, offset, limit).await?;
         let total = self.count_results(&query).await?;

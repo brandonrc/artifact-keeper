@@ -191,7 +191,7 @@ pub async fn trending(
     State(state): State<SharedState>,
     Query(query): Query<TrendingQuery>,
 ) -> Result<Json<Vec<SearchResultResponse>>> {
-    let days = query.days.unwrap_or(7).max(1).min(90);
+    let days = query.days.unwrap_or(7).clamp(1, 90);
     let limit = query.limit.unwrap_or(20).min(100);
 
     let service = SearchService::new(state.db.clone());
