@@ -11,7 +11,9 @@ use uuid::Uuid;
 use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::Result;
-use crate::services::edge_service::{EdgeService, EdgeStatus, RegisterEdgeNodeRequest as ServiceRegisterReq};
+use crate::services::edge_service::{
+    EdgeService, EdgeStatus, RegisterEdgeNodeRequest as ServiceRegisterReq,
+};
 
 /// Create edge node routes
 pub fn router() -> Router<SharedState> {
@@ -21,7 +23,10 @@ pub fn router() -> Router<SharedState> {
         .route("/:id/heartbeat", post(heartbeat))
         .route("/:id/sync", post(trigger_sync))
         .route("/:id/sync/tasks", get(get_sync_tasks))
-        .route("/:id/repositories", get(get_assigned_repos).post(assign_repo))
+        .route(
+            "/:id/repositories",
+            get(get_assigned_repos).post(assign_repo),
+        )
         .route("/:id/repositories/:repo_id", delete(unassign_repo))
 }
 
@@ -107,7 +112,12 @@ pub async fn list_edge_nodes(
 
     let service = EdgeService::new(state.db.clone());
     let (nodes, total) = service
-        .list(status_filter, query.region.as_deref(), offset, per_page as i64)
+        .list(
+            status_filter,
+            query.region.as_deref(),
+            offset,
+            per_page as i64,
+        )
         .await?;
 
     let items: Vec<EdgeNodeResponse> = nodes
@@ -224,7 +234,9 @@ pub async fn heartbeat(
 ) -> Result<()> {
     let status = payload.status.as_ref().and_then(|s| parse_status(s));
     let service = EdgeService::new(state.db.clone());
-    service.heartbeat(id, payload.cache_used_bytes, status).await?;
+    service
+        .heartbeat(id, payload.cache_used_bytes, status)
+        .await?;
     Ok(())
 }
 
@@ -282,7 +294,11 @@ pub async fn assign_repo(
 ) -> Result<()> {
     let service = EdgeService::new(state.db.clone());
     service
-        .assign_repository(id, payload.repository_id, payload.sync_enabled.unwrap_or(true))
+        .assign_repository(
+            id,
+            payload.repository_id,
+            payload.sync_enabled.unwrap_or(true),
+        )
         .await?;
     Ok(())
 }

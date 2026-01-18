@@ -6,11 +6,14 @@
 
 use sqlx::PgPool;
 use thiserror::Error;
-use tracing::{info, warn, error, debug, instrument, Span};
+use tracing::{debug, error, info, instrument, warn, Span};
 use uuid::Uuid;
 
-use crate::models::migration::{MigrationJobStatus, MigrationItemType};
-use crate::services::artifactory_client::{ArtifactoryClient, ArtifactoryClientConfig, ArtifactoryAuth, RepositoryListItem, RepositoryConfig};
+use crate::models::migration::{MigrationItemType, MigrationJobStatus};
+use crate::services::artifactory_client::{
+    ArtifactoryAuth, ArtifactoryClient, ArtifactoryClientConfig, RepositoryConfig,
+    RepositoryListItem,
+};
 
 /// Errors that can occur during migration
 #[derive(Error, Debug)]
@@ -179,7 +182,12 @@ impl MigrationService {
                     .ok_or_else(|| MigrationError::ConfigError("Password missing".into()))?;
                 ArtifactoryAuth::BasicAuth { username, password }
             }
-            _ => return Err(MigrationError::ConfigError(format!("Unknown auth type: {}", auth_type))),
+            _ => {
+                return Err(MigrationError::ConfigError(format!(
+                    "Unknown auth type: {}",
+                    auth_type
+                )))
+            }
         };
 
         let config = ArtifactoryClientConfig {
@@ -228,10 +236,9 @@ impl MigrationService {
         repo: &RepositoryListItem,
         repo_config: Option<&RepositoryConfig>,
     ) -> Result<RepositoryMigrationConfig, MigrationError> {
-        let repo_type = RepositoryType::from_artifactory(&repo.repo_type)
-            .ok_or_else(|| MigrationError::ConfigError(
-                format!("Unknown repository type: {}", repo.repo_type)
-            ))?;
+        let repo_type = RepositoryType::from_artifactory(&repo.repo_type).ok_or_else(|| {
+            MigrationError::ConfigError(format!("Unknown repository type: {}", repo.repo_type))
+        })?;
 
         let format_compatibility = Self::get_format_compatibility(&repo.package_type);
 
@@ -243,7 +250,7 @@ impl MigrationService {
             description: repo.description.clone(),
             format_compatibility,
             upstream_url: None, // Will be set from repo_config for remote repos
-            members: vec![], // Will be set from repo_config for virtual repos
+            members: vec![],    // Will be set from repo_config for virtual repos
         })
     }
 
@@ -365,19 +372,19 @@ impl MigrationService {
         let mut member_ids = Vec::with_capacity(members.len());
 
         for member_key in members {
-            let member_id: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM repositories WHERE key = $1"
-            )
-            .bind(member_key)
-            .fetch_optional(&self.db)
-            .await?;
+            let member_id: Option<(Uuid,)> =
+                sqlx::query_as("SELECT id FROM repositories WHERE key = $1")
+                    .bind(member_key)
+                    .fetch_optional(&self.db)
+                    .await?;
 
             match member_id {
                 Some((id,)) => member_ids.push(id),
                 None => {
                     tracing::warn!(
                         "Virtual repository '{}' references non-existent member '{}', skipping",
-                        virtual_key, member_key
+                        virtual_key,
+                        member_key
                     );
                 }
             }
@@ -487,12 +494,11 @@ impl MigrationService {
         }
 
         // Update total items count
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM migration_items WHERE job_id = $1",
-        )
-        .bind(job_id)
-        .fetch_one(&self.db)
-        .await?;
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM migration_items WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_one(&self.db)
+                .await?;
 
         sqlx::query("UPDATE migration_jobs SET total_items = $1 WHERE id = $2")
             .bind(count.0 as i32)
@@ -559,11 +565,7 @@ impl MigrationService {
 
     /// Mark an item as skipped
     #[instrument(skip(self), fields(item_id = %item_id))]
-    pub async fn skip_item(
-        &self,
-        item_id: Uuid,
-        reason: &str,
-    ) -> Result<(), MigrationError> {
+    pub async fn skip_item(&self, item_id: Uuid, reason: &str) -> Result<(), MigrationError> {
         debug!(item_id = %item_id, reason = %reason, "Item skipped");
         sqlx::query(
             r#"
@@ -998,7 +1000,8 @@ impl MigrationService {
 
             // Check for virtual repos
             if repo.repo_type.to_lowercase() == "virtual" {
-                repo_warnings.push("Virtual repositories require member repos to be migrated first".into());
+                repo_warnings
+                    .push("Virtual repositories require member repos to be migrated first".into());
             }
 
             repositories.push(RepositoryAssessment {
@@ -1046,7 +1049,10 @@ impl MigrationService {
         let estimated_seconds = total_artifacts + (repositories.len() as i64 * 10);
 
         // Check for blockers
-        if repositories.iter().all(|r| r.compatibility == "unsupported") {
+        if repositories
+            .iter()
+            .all(|r| r.compatibility == "unsupported")
+        {
             blockers.push("No repositories have supported package types".into());
         }
 
@@ -1069,8 +1075,8 @@ impl MigrationService {
         job_id: Uuid,
         result: &AssessmentResult,
     ) -> Result<(), MigrationError> {
-        let summary = serde_json::to_value(result)
-            .map_err(|e| MigrationError::Other(e.to_string()))?;
+        let summary =
+            serde_json::to_value(result).map_err(|e| MigrationError::Other(e.to_string()))?;
 
         // Update the job with assessment data
         sqlx::query(
@@ -1153,9 +1159,6 @@ mod tests {
             "plugins-local",
             &["libs-*".to_string()]
         ));
-        assert!(MigrationService::matches_pattern(
-            "anything",
-            &[]
-        ));
+        assert!(MigrationService::matches_pattern("anything", &[]));
     }
 }

@@ -108,23 +108,29 @@ impl MigrationWorker {
         tracing::info!(job_id = %job_id, "Starting migration job processing");
 
         // Get job details
-        let job: (serde_json::Value,) = sqlx::query_as(
-            "SELECT config FROM migration_jobs WHERE id = $1"
-        )
-        .bind(job_id)
-        .fetch_one(&self.db)
-        .await?;
+        let job: (serde_json::Value,) =
+            sqlx::query_as("SELECT config FROM migration_jobs WHERE id = $1")
+                .bind(job_id)
+                .fetch_one(&self.db)
+                .await?;
 
         let config = job.0;
-        let include_artifacts = config.get("include_artifacts")
+        let include_artifacts = config
+            .get("include_artifacts")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let include_metadata = config.get("include_metadata")
+        let include_metadata = config
+            .get("include_metadata")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let repos: Vec<String> = config.get("include_repositories")
+        let repos: Vec<String> = config
+            .get("include_repositories")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Update job status to running
@@ -140,18 +146,21 @@ impl MigrationWorker {
         // Process each repository
         for repo_key in &repos {
             if include_artifacts {
-                match self.process_repository_artifacts(
-                    job_id,
-                    client.clone(),
-                    repo_key,
-                    conflict_resolution,
-                    include_metadata,
-                    &mut total_completed,
-                    &mut total_failed,
-                    &mut total_skipped,
-                    &mut total_transferred,
-                    progress_tx.clone(),
-                ).await {
+                match self
+                    .process_repository_artifacts(
+                        job_id,
+                        client.clone(),
+                        repo_key,
+                        conflict_resolution,
+                        include_metadata,
+                        &mut total_completed,
+                        &mut total_failed,
+                        &mut total_skipped,
+                        &mut total_transferred,
+                        progress_tx.clone(),
+                    )
+                    .await
+                {
                     Ok(_) => {
                         tracing::info!(repo = %repo_key, "Repository artifacts processed");
                     }
@@ -182,15 +191,17 @@ impl MigrationWorker {
 
         // Send final progress update
         if let Some(tx) = progress_tx {
-            let _ = tx.send(ProgressUpdate {
-                job_id,
-                completed: total_completed,
-                failed: total_failed,
-                skipped: total_skipped,
-                transferred_bytes: total_transferred,
-                current_item: None,
-                status: final_status,
-            }).await;
+            let _ = tx
+                .send(ProgressUpdate {
+                    job_id,
+                    completed: total_completed,
+                    failed: total_failed,
+                    skipped: total_skipped,
+                    transferred_bytes: total_transferred,
+                    current_item: None,
+                    status: final_status,
+                })
+                .await;
         }
 
         tracing::info!(
@@ -238,35 +249,47 @@ impl MigrationWorker {
 
                 let source_path = format!("{}/{}", repo_key, artifact_path);
                 let size = artifact.size.unwrap_or(0);
-                let checksum = artifact.sha256.clone().or_else(|| artifact.actual_sha1.clone());
+                let checksum = artifact
+                    .sha256
+                    .clone()
+                    .or_else(|| artifact.actual_sha1.clone());
 
                 // Add migration item to database
-                let item_id = self.add_migration_item(
-                    job_id,
-                    MigrationItemType::Artifact,
-                    &source_path,
-                    size,
-                    checksum.as_deref(),
-                ).await?;
+                let item_id = self
+                    .add_migration_item(
+                        job_id,
+                        MigrationItemType::Artifact,
+                        &source_path,
+                        size,
+                        checksum.as_deref(),
+                    )
+                    .await?;
 
                 // Check for duplicates/conflicts
-                let should_skip = self.check_artifact_duplicate(
-                    &source_path,
-                    checksum.as_deref(),
-                    conflict_resolution,
-                ).await?;
+                let should_skip = self
+                    .check_artifact_duplicate(
+                        &source_path,
+                        checksum.as_deref(),
+                        conflict_resolution,
+                    )
+                    .await?;
 
                 if should_skip {
-                    self.migration_service.skip_item(item_id, "Artifact already exists").await?;
+                    self.migration_service
+                        .skip_item(item_id, "Artifact already exists")
+                        .await?;
                     *skipped += 1;
                 } else {
                     // Process the artifact
-                    match self.transfer_artifact(
-                        client.clone(),
-                        repo_key,
-                        &artifact_path,
-                        include_metadata,
-                    ).await {
+                    match self
+                        .transfer_artifact(
+                            client.clone(),
+                            repo_key,
+                            &artifact_path,
+                            include_metadata,
+                        )
+                        .await
+                    {
                         Ok(transfer_result) => {
                             // Verify checksum if enabled
                             let checksum_verified = if self.config.verify_checksums {
@@ -279,52 +302,66 @@ impl MigrationWorker {
                             };
 
                             if checksum_verified {
-                                self.migration_service.complete_item(
-                                    item_id,
-                                    &transfer_result.target_path,
-                                    transfer_result.calculated_checksum.as_deref().unwrap_or(""),
-                                ).await?;
+                                self.migration_service
+                                    .complete_item(
+                                        item_id,
+                                        &transfer_result.target_path,
+                                        transfer_result
+                                            .calculated_checksum
+                                            .as_deref()
+                                            .unwrap_or(""),
+                                    )
+                                    .await?;
                                 *completed += 1;
                                 *transferred += size;
                             } else {
-                                self.migration_service.fail_item(
-                                    item_id,
-                                    &format!("Checksum mismatch: expected {:?}, got {:?}",
-                                        checksum, transfer_result.calculated_checksum),
-                                ).await?;
+                                self.migration_service
+                                    .fail_item(
+                                        item_id,
+                                        &format!(
+                                            "Checksum mismatch: expected {:?}, got {:?}",
+                                            checksum, transfer_result.calculated_checksum
+                                        ),
+                                    )
+                                    .await?;
                                 *failed += 1;
                             }
                         }
                         Err(e) => {
-                            self.migration_service.fail_item(item_id, &e.to_string()).await?;
+                            self.migration_service
+                                .fail_item(item_id, &e.to_string())
+                                .await?;
                             *failed += 1;
                         }
                     }
                 }
 
                 // Update progress
-                self.migration_service.update_job_progress(
-                    job_id, *completed, *failed, *skipped, *transferred
-                ).await?;
+                self.migration_service
+                    .update_job_progress(job_id, *completed, *failed, *skipped, *transferred)
+                    .await?;
 
                 // Send progress update
                 if let Some(ref tx) = progress_tx {
-                    let _ = tx.send(ProgressUpdate {
-                        job_id,
-                        completed: *completed,
-                        failed: *failed,
-                        skipped: *skipped,
-                        transferred_bytes: *transferred,
-                        current_item: Some(source_path.clone()),
-                        status: MigrationJobStatus::Running,
-                    }).await;
+                    let _ = tx
+                        .send(ProgressUpdate {
+                            job_id,
+                            completed: *completed,
+                            failed: *failed,
+                            skipped: *skipped,
+                            transferred_bytes: *transferred,
+                            current_item: Some(source_path.clone()),
+                            status: MigrationJobStatus::Running,
+                        })
+                        .await;
                 }
 
                 // Throttle
                 if self.config.throttle_delay_ms > 0 {
-                    tokio::time::sleep(
-                        tokio::time::Duration::from_millis(self.config.throttle_delay_ms)
-                    ).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        self.config.throttle_delay_ms,
+                    ))
+                    .await;
                 }
             }
 
@@ -443,67 +480,70 @@ impl MigrationWorker {
             let source_path = format!("user:{}", user.name);
 
             // Add migration item
-            let item_id = self.add_migration_item(
-                job_id,
-                MigrationItemType::User,
-                &source_path,
-                0,
-                None,
-            ).await?;
+            let item_id = self
+                .add_migration_item(job_id, MigrationItemType::User, &source_path, 0, None)
+                .await?;
 
             // Check if user has email (required for identity in AK)
             if user.email.is_none() {
-                self.migration_service.skip_item(
-                    item_id,
-                    "User has no email address - cannot migrate without identity"
-                ).await?;
+                self.migration_service
+                    .skip_item(
+                        item_id,
+                        "User has no email address - cannot migrate without identity",
+                    )
+                    .await?;
                 *skipped += 1;
                 continue;
             }
 
             // Check if user already exists in Artifact Keeper
-            let existing: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM users WHERE email = $1"
-            )
-            .bind(&user.email)
-            .fetch_optional(&self.db)
-            .await?;
+            let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+                .bind(&user.email)
+                .fetch_optional(&self.db)
+                .await?;
 
             if existing.is_some() {
-                self.migration_service.skip_item(
-                    item_id,
-                    "User with this email already exists"
-                ).await?;
+                self.migration_service
+                    .skip_item(item_id, "User with this email already exists")
+                    .await?;
                 *skipped += 1;
                 continue;
             }
 
             // Create user in Artifact Keeper
-            match self.create_user(&user.name, user.email.as_deref(), user.admin.unwrap_or(false)).await {
+            match self
+                .create_user(
+                    &user.name,
+                    user.email.as_deref(),
+                    user.admin.unwrap_or(false),
+                )
+                .await
+            {
                 Ok(user_id) => {
-                    self.migration_service.complete_item(
-                        item_id,
-                        &format!("user:{}", user_id),
-                        "",
-                    ).await?;
+                    self.migration_service
+                        .complete_item(item_id, &format!("user:{}", user_id), "")
+                        .await?;
                     *completed += 1;
                 }
                 Err(e) => {
-                    self.migration_service.fail_item(item_id, &e.to_string()).await?;
+                    self.migration_service
+                        .fail_item(item_id, &e.to_string())
+                        .await?;
                     *failed += 1;
                 }
             }
 
             // Update progress
-            self.migration_service.update_job_progress(
-                job_id, *completed, *failed, *skipped, 0
-            ).await?;
+            self.migration_service
+                .update_job_progress(job_id, *completed, *failed, *skipped, 0)
+                .await?;
 
             // Throttle
             if self.config.throttle_delay_ms > 0 {
-                tokio::time::sleep(
-                    tokio::time::Duration::from_millis(self.config.throttle_delay_ms)
-                ).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(
+                    self.config.throttle_delay_ms,
+                ))
+                .await;
             }
         }
 
@@ -558,51 +598,47 @@ impl MigrationWorker {
             let source_path = format!("group:{}", group.name);
 
             // Add migration item
-            let item_id = self.add_migration_item(
-                job_id,
-                MigrationItemType::Group,
-                &source_path,
-                0,
-                None,
-            ).await?;
+            let item_id = self
+                .add_migration_item(job_id, MigrationItemType::Group, &source_path, 0, None)
+                .await?;
 
             // Check if group already exists
-            let existing: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM groups WHERE name = $1"
-            )
-            .bind(&group.name)
-            .fetch_optional(&self.db)
-            .await?;
+            let existing: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM groups WHERE name = $1")
+                .bind(&group.name)
+                .fetch_optional(&self.db)
+                .await?;
 
             if existing.is_some() {
-                self.migration_service.skip_item(
-                    item_id,
-                    "Group with this name already exists"
-                ).await?;
+                self.migration_service
+                    .skip_item(item_id, "Group with this name already exists")
+                    .await?;
                 *skipped += 1;
                 continue;
             }
 
             // Create group in Artifact Keeper
-            match self.create_group(&group.name, group.description.as_deref()).await {
+            match self
+                .create_group(&group.name, group.description.as_deref())
+                .await
+            {
                 Ok(group_id) => {
-                    self.migration_service.complete_item(
-                        item_id,
-                        &format!("group:{}", group_id),
-                        "",
-                    ).await?;
+                    self.migration_service
+                        .complete_item(item_id, &format!("group:{}", group_id), "")
+                        .await?;
                     *completed += 1;
                 }
                 Err(e) => {
-                    self.migration_service.fail_item(item_id, &e.to_string()).await?;
+                    self.migration_service
+                        .fail_item(item_id, &e.to_string())
+                        .await?;
                     *failed += 1;
                 }
             }
 
             // Update progress
-            self.migration_service.update_job_progress(
-                job_id, *completed, *failed, *skipped, 0
-            ).await?;
+            self.migration_service
+                .update_job_progress(job_id, *completed, *failed, *skipped, 0)
+                .await?;
         }
 
         Ok(())
@@ -651,13 +687,9 @@ impl MigrationWorker {
             let source_path = format!("permission:{}", permission.name);
 
             // Add migration item
-            let item_id = self.add_migration_item(
-                job_id,
-                MigrationItemType::Permission,
-                &source_path,
-                0,
-                None,
-            ).await?;
+            let item_id = self
+                .add_migration_item(job_id, MigrationItemType::Permission, &source_path, 0, None)
+                .await?;
 
             // Extract repository permissions
             if let Some(ref repo) = permission.repo {
@@ -665,12 +697,11 @@ impl MigrationWorker {
                     // Map each repository permission
                     for repo_key in repos {
                         // Find the repository in Artifact Keeper
-                        let ak_repo: Option<(Uuid,)> = sqlx::query_as(
-                            "SELECT id FROM repositories WHERE key = $1"
-                        )
-                        .bind(repo_key)
-                        .fetch_optional(&self.db)
-                        .await?;
+                        let ak_repo: Option<(Uuid,)> =
+                            sqlx::query_as("SELECT id FROM repositories WHERE key = $1")
+                                .bind(repo_key)
+                                .fetch_optional(&self.db)
+                                .await?;
 
                         let repo_id = match ak_repo {
                             Some((id,)) => id,
@@ -723,17 +754,15 @@ impl MigrationWorker {
                 }
             }
 
-            self.migration_service.complete_item(
-                item_id,
-                &format!("permission:{}", permission.name),
-                "",
-            ).await?;
+            self.migration_service
+                .complete_item(item_id, &format!("permission:{}", permission.name), "")
+                .await?;
             *completed += 1;
 
             // Update progress
-            self.migration_service.update_job_progress(
-                job_id, *completed, *failed, *skipped, 0
-            ).await?;
+            self.migration_service
+                .update_job_progress(job_id, *completed, *failed, *skipped, 0)
+                .await?;
         }
 
         Ok(())
@@ -749,20 +778,16 @@ impl MigrationWorker {
     ) -> Result<(), MigrationError> {
         // Look up user or group ID
         let (user_id, group_id) = if let Some(uname) = username {
-            let user: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM users WHERE username = $1"
-            )
-            .bind(uname)
-            .fetch_optional(&self.db)
-            .await?;
+            let user: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE username = $1")
+                .bind(uname)
+                .fetch_optional(&self.db)
+                .await?;
             (user.map(|u| u.0), None)
         } else if let Some(gname) = group_name {
-            let group: Option<(Uuid,)> = sqlx::query_as(
-                "SELECT id FROM groups WHERE name = $1"
-            )
-            .bind(gname)
-            .fetch_optional(&self.db)
-            .await?;
+            let group: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM groups WHERE name = $1")
+                .bind(gname)
+                .fetch_optional(&self.db)
+                .await?;
             (None, group.map(|g| g.0))
         } else {
             return Ok(());
@@ -810,7 +835,8 @@ impl MigrationWorker {
 
         // Continue processing from checkpoint
         // The implementation would skip already completed items
-        self.process_job(job_id, client, conflict_resolution, progress_tx).await
+        self.process_job(job_id, client, conflict_resolution, progress_tx)
+            .await
     }
 }
 
@@ -827,10 +853,22 @@ mod tests {
 
     #[test]
     fn test_conflict_resolution_from_str() {
-        assert_eq!(ConflictResolution::from_str("skip"), ConflictResolution::Skip);
-        assert_eq!(ConflictResolution::from_str("overwrite"), ConflictResolution::Overwrite);
-        assert_eq!(ConflictResolution::from_str("rename"), ConflictResolution::Rename);
-        assert_eq!(ConflictResolution::from_str("unknown"), ConflictResolution::Skip);
+        assert_eq!(
+            ConflictResolution::from_str("skip"),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str("overwrite"),
+            ConflictResolution::Overwrite
+        );
+        assert_eq!(
+            ConflictResolution::from_str("rename"),
+            ConflictResolution::Rename
+        );
+        assert_eq!(
+            ConflictResolution::from_str("unknown"),
+            ConflictResolution::Skip
+        );
     }
 
     #[test]

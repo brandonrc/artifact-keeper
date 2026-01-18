@@ -18,7 +18,9 @@ pub fn router() -> Router<SharedState> {
         .route("/", get(list_permissions).post(create_permission))
         .route(
             "/:id",
-            get(get_permission).put(update_permission).delete(delete_permission),
+            get(get_permission)
+                .put(update_permission)
+                .delete(delete_permission),
         )
 }
 
@@ -102,7 +104,7 @@ pub async fn list_permissions(
 
     // Check if permissions table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'permissions')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'permissions')",
     )
     .fetch_one(&state.db)
     .await
@@ -142,7 +144,7 @@ pub async fn list_permissions(
         ORDER BY p.created_at DESC
         OFFSET $5
         LIMIT $6
-        "#
+        "#,
     )
     .bind(&query.principal_type)
     .bind(&query.principal_id)
@@ -162,7 +164,7 @@ pub async fn list_permissions(
           AND ($2::uuid IS NULL OR principal_id = $2)
           AND ($3::text IS NULL OR target_type = $3)
           AND ($4::uuid IS NULL OR target_id = $4)
-        "#
+        "#,
     )
     .bind(&query.principal_type)
     .bind(&query.principal_id)
@@ -175,7 +177,10 @@ pub async fn list_permissions(
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
 
     Ok(Json(PermissionListResponse {
-        items: permissions.into_iter().map(PermissionResponse::from).collect(),
+        items: permissions
+            .into_iter()
+            .map(PermissionResponse::from)
+            .collect(),
         pagination: Pagination {
             page,
             per_page,
@@ -255,7 +260,7 @@ pub async fn get_permission(
 ) -> Result<Json<PermissionResponse>> {
     // Check if permissions table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'permissions')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'permissions')",
     )
     .fetch_one(&state.db)
     .await
@@ -281,7 +286,7 @@ pub async fn get_permission(
         LEFT JOIN groups g ON p.principal_type = 'group' AND p.principal_id = g.id
         LEFT JOIN repositories r ON p.target_type = 'repository' AND p.target_id = r.id
         WHERE p.id = $1
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(&state.db)

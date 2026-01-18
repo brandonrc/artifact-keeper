@@ -23,144 +23,132 @@ pub fn create_router(state: SharedState) -> Router {
 /// API v1 routes
 fn api_v1_routes(state: SharedState) -> Router<SharedState> {
     // Create an AuthService for middleware use
-    let auth_service = Arc::new(AuthService::new(state.db.clone(), Arc::new(state.config.clone())));
+    let auth_service = Arc::new(AuthService::new(
+        state.db.clone(),
+        Arc::new(state.config.clone()),
+    ));
 
     Router::new()
         // Auth routes - split into public and protected
         .nest("/auth", handlers::auth::public_router())
         .nest(
             "/auth",
-            handlers::auth::protected_router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::auth::protected_router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Repository routes with optional auth middleware
         // (some endpoints require auth, others are optional - handlers will check)
         .nest(
             "/repositories",
-            handlers::repositories::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::repositories::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // Artifact routes (standalone by ID) with optional auth
         .nest(
             "/artifacts",
-            handlers::artifacts::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::artifacts::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // User routes with auth middleware
         .nest(
             "/users",
-            handlers::users::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::users::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Group routes with auth middleware
         .nest(
             "/groups",
-            handlers::groups::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::groups::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Permission routes with auth middleware
         .nest(
             "/permissions",
-            handlers::permissions::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::permissions::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Build routes with optional auth
         .nest(
             "/builds",
-            handlers::builds::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::builds::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // Package routes with optional auth
         .nest(
             "/packages",
-            handlers::packages::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::packages::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // Search routes with optional auth
         .nest(
             "/search",
-            handlers::search::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::search::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // Edge node routes with auth middleware
         .nest(
             "/edge-nodes",
-            handlers::edge::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::edge::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Admin routes with auth middleware
         .nest(
             "/admin",
-            handlers::admin::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::admin::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Plugin routes with auth middleware
         .nest(
             "/plugins",
-            handlers::plugins::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::plugins::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Format handler routes with optional auth (list is public, enable/disable requires auth)
         .nest(
             "/formats",
-            handlers::plugins::format_router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    optional_auth_middleware,
-                ))
+            handlers::plugins::format_router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                optional_auth_middleware,
+            )),
         )
         // Webhook routes with auth middleware
         .nest(
             "/webhooks",
-            handlers::webhooks::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service.clone(),
-                    auth_middleware,
-                ))
+            handlers::webhooks::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
         )
         // Migration routes with auth middleware
         .nest(
             "/migrations",
-            handlers::migration::router()
-                .layer(middleware::from_fn_with_state(
-                    auth_service,
-                    auth_middleware,
-                ))
+            handlers::migration::router().layer(middleware::from_fn_with_state(
+                auth_service,
+                auth_middleware,
+            )),
         )
 }

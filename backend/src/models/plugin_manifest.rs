@@ -229,7 +229,12 @@ fn is_valid_semver(s: &str) -> bool {
     for (i, part) in parts.iter().enumerate() {
         let numeric_part = if i == parts.len() - 1 {
             // Last part may have -prerelease or +build suffix
-            part.split('-').next().unwrap_or(part).split('+').next().unwrap_or(part)
+            part.split('-')
+                .next()
+                .unwrap_or(part)
+                .split('+')
+                .next()
+                .unwrap_or(part)
         } else {
             part
         };

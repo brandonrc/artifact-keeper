@@ -292,7 +292,10 @@ pub fn output(format: &str, message: &str, json_value: Option<serde_json::Value>
     match format {
         "json" => {
             if let Some(value) = json_value {
-                println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value).unwrap_or_default()
+                );
             } else {
                 println!(r#"{{"message": "{}"}}"#, message);
             }
@@ -341,6 +344,10 @@ mod tests {
     #[test]
     fn test_output_json() {
         // Just test that it doesn't panic
-        output("json", "test message", Some(serde_json::json!({"key": "value"})));
+        output(
+            "json",
+            "test message",
+            Some(serde_json::json!({"key": "value"})),
+        );
     }
 }

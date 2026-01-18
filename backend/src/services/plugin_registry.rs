@@ -156,11 +156,7 @@ impl PluginRegistry {
                 }
                 info!(
                     "Hot-reloading plugin {} from v{} (internal {}) to v{} (internal {})",
-                    name,
-                    existing.version,
-                    existing.internal_version,
-                    version,
-                    internal_version
+                    name, existing.version, existing.internal_version, version, internal_version
                 );
             }
 
@@ -480,9 +476,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_generate_index_no_plugin() {
         let registry = PluginRegistry::new().unwrap();
-        let result = registry
-            .execute_generate_index("nonexistent", &[])
-            .await;
+        let result = registry.execute_generate_index("nonexistent", &[]).await;
         assert!(matches!(result, Err(WasmError::ValidationFailed(_))));
     }
 

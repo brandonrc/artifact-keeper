@@ -57,7 +57,11 @@ impl MavenHandler {
 
         if !filename.starts_with(&expected_prefix) {
             // Could be metadata file
-            if filename == "maven-metadata.xml" || filename.ends_with(".md5") || filename.ends_with(".sha1") || filename.ends_with(".sha256") {
+            if filename == "maven-metadata.xml"
+                || filename.ends_with(".md5")
+                || filename.ends_with(".sha1")
+                || filename.ends_with(".sha256")
+            {
                 return Ok((None, filename.to_string()));
             }
             return Err(AppError::Validation(format!(
@@ -108,8 +112,7 @@ impl MavenHandler {
         let content_str = std::str::from_utf8(content)
             .map_err(|e| AppError::Validation(format!("Invalid UTF-8 in POM: {}", e)))?;
 
-        from_str(content_str)
-            .map_err(|e| AppError::Validation(format!("Invalid POM XML: {}", e)))
+        from_str(content_str).map_err(|e| AppError::Validation(format!("Invalid POM XML: {}", e)))
     }
 }
 
@@ -310,9 +313,10 @@ mod tests {
 
     #[test]
     fn test_parse_coordinates() {
-        let coords =
-            MavenHandler::parse_coordinates("org/apache/maven/maven-core/3.8.1/maven-core-3.8.1.jar")
-                .unwrap();
+        let coords = MavenHandler::parse_coordinates(
+            "org/apache/maven/maven-core/3.8.1/maven-core-3.8.1.jar",
+        )
+        .unwrap();
         assert_eq!(coords.group_id, "org.apache.maven");
         assert_eq!(coords.artifact_id, "maven-core");
         assert_eq!(coords.version, "3.8.1");
@@ -352,7 +356,10 @@ mod tests {
             classifier: None,
             extension: "jar".to_string(),
         };
-        assert_eq!(coords.to_path("mylib-1.0.0.jar"), "com/example/mylib/1.0.0/mylib-1.0.0.jar");
+        assert_eq!(
+            coords.to_path("mylib-1.0.0.jar"),
+            "com/example/mylib/1.0.0/mylib-1.0.0.jar"
+        );
     }
 
     #[test]

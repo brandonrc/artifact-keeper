@@ -43,36 +43,55 @@ pub async fn run(cli: MigrateCli) -> Result<(), Box<dyn std::error::Error>> {
             )
             .await
         }
-        MigrateCommand::Test => {
-            run_test(&cli.format, &config).await
-        }
+        MigrateCommand::Test => run_test(&cli.format, &config).await,
         MigrateCommand::Assess {
             include,
             exclude,
             output: output_path,
         } => {
-            run_assess(&cli.format, &config, include.as_deref(), exclude.as_deref(), output_path.as_deref()).await
+            run_assess(
+                &cli.format,
+                &config,
+                include.as_deref(),
+                exclude.as_deref(),
+                output_path.as_deref(),
+            )
+            .await
         }
         MigrateCommand::Start { dry_run, .. } => {
             if dry_run {
                 output(&cli.format, "Dry run: no changes will be made", None);
             }
-            output(&cli.format, "Migration start command - use API for full functionality", None);
+            output(
+                &cli.format,
+                "Migration start command - use API for full functionality",
+                None,
+            );
             Ok(())
         }
-        MigrateCommand::Status { job_id, follow } => {
-            run_status(&cli.format, &job_id, follow).await
-        }
+        MigrateCommand::Status { job_id, follow } => run_status(&cli.format, &job_id, follow).await,
         MigrateCommand::Pause { job_id } => {
-            output(&cli.format, &format!("Pause request sent for job {}", job_id), None);
+            output(
+                &cli.format,
+                &format!("Pause request sent for job {}", job_id),
+                None,
+            );
             Ok(())
         }
         MigrateCommand::Resume { job_id } => {
-            output(&cli.format, &format!("Resume request sent for job {}", job_id), None);
+            output(
+                &cli.format,
+                &format!("Resume request sent for job {}", job_id),
+                None,
+            );
             Ok(())
         }
         MigrateCommand::Cancel { job_id } => {
-            output(&cli.format, &format!("Cancel request sent for job {}", job_id), None);
+            output(
+                &cli.format,
+                &format!("Cancel request sent for job {}", job_id),
+                None,
+            );
             Ok(())
         }
         MigrateCommand::List { status, limit } => {
@@ -82,9 +101,7 @@ pub async fn run(cli: MigrateCli) -> Result<(), Box<dyn std::error::Error>> {
             job_id,
             format: report_format,
             output: output_path,
-        } => {
-            run_report(&cli.format, &job_id, &report_format, output_path.as_deref()).await
-        }
+        } => run_report(&cli.format, &job_id, &report_format, output_path.as_deref()).await,
     }
 }
 
@@ -102,10 +119,18 @@ async fn run_import(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create importer based on path type
     let importer = if path.is_dir() {
-        output(format, &format!("Loading export from directory: {}", path.display()), None);
+        output(
+            format,
+            &format!("Loading export from directory: {}", path.display()),
+            None,
+        );
         ArtifactoryImporter::from_directory(path)?
     } else if path.extension().map(|e| e == "zip").unwrap_or(false) {
-        output(format, &format!("Extracting archive: {}", path.display()), None);
+        output(
+            format,
+            &format!("Extracting archive: {}", path.display()),
+            None,
+        );
         ArtifactoryImporter::from_archive(path)?
     } else {
         error(format, "Path must be a directory or ZIP archive");
@@ -120,7 +145,10 @@ async fn run_import(
         importer.with_progress_callback(Box::new(move |progress: ImportProgress| {
             counter.store(progress.current, Ordering::SeqCst);
             if format_clone != "json" {
-                eprint!("\r{}: {}/{} - {}", progress.phase, progress.current, progress.total, progress.message);
+                eprint!(
+                    "\r{}: {}/{} - {}",
+                    progress.phase, progress.current, progress.total, progress.message
+                );
             }
         }))
     } else {
@@ -176,7 +204,10 @@ async fn run_import(
 
     output(
         format,
-        &format!("\n{} repositories selected for import", repos_to_import.len()),
+        &format!(
+            "\n{} repositories selected for import",
+            repos_to_import.len()
+        ),
         Some(serde_json::json!({
             "selected_repositories": repos_to_import.iter().map(|r| &r.key).collect::<Vec<_>>()
         })),
@@ -187,14 +218,19 @@ async fn run_import(
 
         // Show what would be imported
         for repo in repos_to_import {
-            let artifacts: Vec<_> = importer.list_artifacts(&repo.key)?
+            let artifacts: Vec<_> = importer
+                .list_artifacts(&repo.key)?
                 .filter_map(|a| a.ok())
                 .take(10)
                 .collect();
 
             output(
                 format,
-                &format!("\nRepository '{}' would import {} artifacts (showing first 10):", repo.key, artifacts.len()),
+                &format!(
+                    "\nRepository '{}' would import {} artifacts (showing first 10):",
+                    repo.key,
+                    artifacts.len()
+                ),
                 None,
             );
 
@@ -213,7 +249,11 @@ async fn run_import(
     let mut total_failed = 0u64;
 
     for repo in repos_to_import {
-        output(format, &format!("\nImporting repository: {}", repo.key), None);
+        output(
+            format,
+            &format!("\nImporting repository: {}", repo.key),
+            None,
+        );
 
         // TODO: Create repository in Artifact Keeper if it doesn't exist
         // This would require database access and the repository service
@@ -225,7 +265,11 @@ async fn run_import(
             match artifact_result {
                 Ok(artifact) => {
                     if verbose {
-                        output(format, &format!("  Importing: {}/{}", artifact.path, artifact.name), None);
+                        output(
+                            format,
+                            &format!("  Importing: {}/{}", artifact.path, artifact.name),
+                            None,
+                        );
                     }
 
                     // TODO: Upload artifact to Artifact Keeper
@@ -248,7 +292,15 @@ async fn run_import(
 
         for user in &users {
             if verbose {
-                output(format, &format!("  - {} ({})", user.username, user.email.as_deref().unwrap_or("no email")), None);
+                output(
+                    format,
+                    &format!(
+                        "  - {} ({})",
+                        user.username,
+                        user.email.as_deref().unwrap_or("no email")
+                    ),
+                    None,
+                );
             }
             // TODO: Create user in Artifact Keeper
         }
@@ -272,11 +324,23 @@ async fn run_import(
     if include_permissions && metadata.has_security {
         output(format, "\nImporting permissions...", None);
         let permissions = importer.list_permissions()?;
-        output(format, &format!("  Found {} permission targets", permissions.len()), None);
+        output(
+            format,
+            &format!("  Found {} permission targets", permissions.len()),
+            None,
+        );
 
         for perm in &permissions {
             if verbose {
-                output(format, &format!("  - {} (repos: {})", perm.name, perm.repositories.join(", ")), None);
+                output(
+                    format,
+                    &format!(
+                        "  - {} (repos: {})",
+                        perm.name,
+                        perm.repositories.join(", ")
+                    ),
+                    None,
+                );
             }
             // TODO: Create permission in Artifact Keeper
         }
@@ -285,7 +349,10 @@ async fn run_import(
     // Summary
     output(
         format,
-        &format!("\nImport complete: {} imported, {} failed", total_imported, total_failed),
+        &format!(
+            "\nImport complete: {} imported, {} failed",
+            total_imported, total_failed
+        ),
         Some(serde_json::json!({
             "imported": total_imported,
             "failed": total_failed
@@ -296,14 +363,15 @@ async fn run_import(
 }
 
 /// Run connection test
-async fn run_test(
-    format: &str,
-    config: &MigrateConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let artifactory = config.artifactory.as_ref()
+async fn run_test(format: &str, config: &MigrateConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let artifactory = config
+        .artifactory
+        .as_ref()
         .ok_or("No Artifactory configuration provided")?;
 
-    let url = artifactory.url.as_ref()
+    let url = artifactory
+        .url
+        .as_ref()
         .ok_or("No Artifactory URL provided")?;
 
     output(format, &format!("Testing connection to {}...", url), None);
@@ -311,7 +379,9 @@ async fn run_test(
     // Build auth
     let auth = if let Some(ref token) = artifactory.token {
         crate::services::artifactory_client::ArtifactoryAuth::ApiToken(token.clone())
-    } else if let (Some(ref username), Some(ref password)) = (&artifactory.username, &artifactory.password) {
+    } else if let (Some(ref username), Some(ref password)) =
+        (&artifactory.username, &artifactory.password)
+    {
         crate::services::artifactory_client::ArtifactoryAuth::BasicAuth {
             username: username.clone(),
             password: password.clone(),
@@ -331,7 +401,11 @@ async fn run_test(
 
     match client.ping().await {
         Ok(true) => {
-            output(format, "Connection successful!", Some(serde_json::json!({"status": "success"})));
+            output(
+                format,
+                "Connection successful!",
+                Some(serde_json::json!({"status": "success"})),
+            );
 
             // Get version info
             if let Ok(version) = client.get_version().await {
@@ -349,7 +423,10 @@ async fn run_test(
             Ok(())
         }
         Ok(false) => {
-            error(format, "Connection failed: server returned non-success status");
+            error(
+                format,
+                "Connection failed: server returned non-success status",
+            );
             Err("Connection failed".into())
         }
         Err(e) => {
@@ -367,18 +444,28 @@ async fn run_assess(
     exclude: Option<&[String]>,
     output_path: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let artifactory = config.artifactory.as_ref()
+    let artifactory = config
+        .artifactory
+        .as_ref()
         .ok_or("No Artifactory configuration provided")?;
 
-    let url = artifactory.url.as_ref()
+    let url = artifactory
+        .url
+        .as_ref()
         .ok_or("No Artifactory URL provided")?;
 
-    output(format, &format!("Running assessment against {}...", url), None);
+    output(
+        format,
+        &format!("Running assessment against {}...", url),
+        None,
+    );
 
     // Build auth
     let auth = if let Some(ref token) = artifactory.token {
         crate::services::artifactory_client::ArtifactoryAuth::ApiToken(token.clone())
-    } else if let (Some(ref username), Some(ref password)) = (&artifactory.username, &artifactory.password) {
+    } else if let (Some(ref username), Some(ref password)) =
+        (&artifactory.username, &artifactory.password)
+    {
         crate::services::artifactory_client::ArtifactoryAuth::BasicAuth {
             username: username.clone(),
             password: password.clone(),
@@ -438,11 +525,19 @@ async fn run_assess(
     // Output or save report
     if let Some(path) = output_path {
         std::fs::write(path, serde_json::to_string_pretty(&assessment)?)?;
-        output(format, &format!("Assessment report saved to: {}", path.display()), None);
+        output(
+            format,
+            &format!("Assessment report saved to: {}", path.display()),
+            None,
+        );
     } else {
         output(
             format,
-            &format!("Assessment: {} repositories, {} artifacts", selected_repos.len(), total_artifacts),
+            &format!(
+                "Assessment: {} repositories, {} artifacts",
+                selected_repos.len(),
+                total_artifacts
+            ),
             Some(assessment),
         );
     }
@@ -476,7 +571,10 @@ async fn run_list(
 ) -> Result<(), Box<dyn std::error::Error>> {
     output(
         format,
-        &format!("List jobs (status: {:?}, limit: {}): use API for job listing", status, limit),
+        &format!(
+            "List jobs (status: {:?}, limit: {}): use API for job listing",
+            status, limit
+        ),
         Some(serde_json::json!({
             "status_filter": status,
             "limit": limit,

@@ -165,12 +165,16 @@ pub async fn create_webhook(
 
     // Validate events
     if payload.events.is_empty() {
-        return Err(AppError::Validation("At least one event required".to_string()));
+        return Err(AppError::Validation(
+            "At least one event required".to_string(),
+        ));
     }
 
     // Hash secret if provided
     let secret_hash = if let Some(ref secret) = payload.secret {
-        Some(crate::services::auth_service::AuthService::hash_password(secret)?)
+        Some(crate::services::auth_service::AuthService::hash_password(
+            secret,
+        )?)
     } else {
         None
     };
@@ -260,13 +264,10 @@ pub async fn enable_webhook(
     Extension(_auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<()> {
-    let result = sqlx::query!(
-        "UPDATE webhooks SET is_enabled = true WHERE id = $1",
-        id
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let result = sqlx::query!("UPDATE webhooks SET is_enabled = true WHERE id = $1", id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Webhook not found".to_string()));
@@ -281,13 +282,10 @@ pub async fn disable_webhook(
     Extension(_auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<()> {
-    let result = sqlx::query!(
-        "UPDATE webhooks SET is_enabled = false WHERE id = $1",
-        id
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let result = sqlx::query!("UPDATE webhooks SET is_enabled = false WHERE id = $1", id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Webhook not found".to_string()));
@@ -513,14 +511,15 @@ pub async fn redeliver(
         }
     }
 
-    let (success, response_status, response_body) = match request.json(&delivery.payload).send().await {
-        Ok(response) => {
-            let status = response.status().as_u16() as i32;
-            let body = response.text().await.ok();
-            (status >= 200 && status < 300, Some(status), body)
-        }
-        Err(e) => (false, None, Some(e.to_string())),
-    };
+    let (success, response_status, response_body) =
+        match request.json(&delivery.payload).send().await {
+            Ok(response) => {
+                let status = response.status().as_u16() as i32;
+                let body = response.text().await.ok();
+                (status >= 200 && status < 300, Some(status), body)
+            }
+            Err(e) => (false, None, Some(e.to_string())),
+        };
 
     // Update delivery record
     let updated = sqlx::query!(

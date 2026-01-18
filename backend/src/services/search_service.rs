@@ -245,15 +245,24 @@ impl SearchService {
         Ok(SearchFacets {
             formats: format_facets
                 .into_iter()
-                .map(|r| FacetCount { value: r.value, count: r.count })
+                .map(|r| FacetCount {
+                    value: r.value,
+                    count: r.count,
+                })
                 .collect(),
             repositories: repo_facets
                 .into_iter()
-                .map(|r| FacetCount { value: r.value, count: r.count })
+                .map(|r| FacetCount {
+                    value: r.value,
+                    count: r.count,
+                })
                 .collect(),
             content_types: ct_facets
                 .into_iter()
-                .map(|r| FacetCount { value: r.value, count: r.count })
+                .map(|r| FacetCount {
+                    value: r.value,
+                    count: r.count,
+                })
                 .collect(),
         })
     }

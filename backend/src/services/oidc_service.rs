@@ -58,8 +58,7 @@ impl OidcConfig {
                 .unwrap_or_else(|_| vec!["openid".into(), "profile".into(), "email".into()]),
             username_claim: std::env::var("OIDC_USERNAME_CLAIM")
                 .unwrap_or_else(|_| "preferred_username".to_string()),
-            email_claim: std::env::var("OIDC_EMAIL_CLAIM")
-                .unwrap_or_else(|_| "email".to_string()),
+            email_claim: std::env::var("OIDC_EMAIL_CLAIM").unwrap_or_else(|_| "email".to_string()),
             display_name_claim: std::env::var("OIDC_DISPLAY_NAME_CLAIM")
                 .unwrap_or_else(|_| "name".to_string()),
             groups_claim: std::env::var("OIDC_GROUPS_CLAIM")
@@ -206,7 +205,9 @@ impl OidcService {
                 .get(&discovery_url)
                 .send()
                 .await
-                .map_err(|e| AppError::Internal(format!("Failed to fetch OIDC discovery: {}", e)))?;
+                .map_err(|e| {
+                    AppError::Internal(format!("Failed to fetch OIDC discovery: {}", e))
+                })?;
 
             if !response.status().is_success() {
                 return Err(AppError::Internal(format!(
@@ -215,10 +216,9 @@ impl OidcService {
                 )));
             }
 
-            let discovery: OidcDiscovery = response
-                .json()
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to parse OIDC discovery: {}", e)))?;
+            let discovery: OidcDiscovery = response.json().await.map_err(|e| {
+                AppError::Internal(format!("Failed to parse OIDC discovery: {}", e))
+            })?;
 
             self.discovery = Some(discovery);
         }
@@ -343,8 +343,9 @@ impl OidcService {
         let decoded = base64_decode_url_safe(&padded)
             .map_err(|e| AppError::Authentication(format!("Failed to decode ID token: {}", e)))?;
 
-        let claims: IdTokenClaims = serde_json::from_slice(&decoded)
-            .map_err(|e| AppError::Authentication(format!("Failed to parse ID token claims: {}", e)))?;
+        let claims: IdTokenClaims = serde_json::from_slice(&decoded).map_err(|e| {
+            AppError::Authentication(format!("Failed to parse ID token claims: {}", e))
+        })?;
 
         // Validate issuer
         if claims.iss != self.config.issuer {
@@ -397,10 +398,7 @@ impl OidcService {
             })
             .unwrap_or_default();
 
-        let email_verified = claims
-            .extra
-            .get("email_verified")
-            .and_then(|v| v.as_bool());
+        let email_verified = claims.extra.get("email_verified").and_then(|v| v.as_bool());
 
         Ok(OidcUserInfo {
             sub: claims.sub,
@@ -414,7 +412,11 @@ impl OidcService {
     }
 
     /// Fetch user info from userinfo endpoint
-    async fn fetch_userinfo(&self, access_token: &str, userinfo_endpoint: &str) -> Result<OidcUserInfo> {
+    async fn fetch_userinfo(
+        &self,
+        access_token: &str,
+        userinfo_endpoint: &str,
+    ) -> Result<OidcUserInfo> {
         let response = self
             .http_client
             .get(userinfo_endpoint)
@@ -587,7 +589,9 @@ impl OidcService {
             suffix += 1;
 
             if suffix > 100 {
-                return Err(AppError::Internal("Failed to generate unique username".into()));
+                return Err(AppError::Internal(
+                    "Failed to generate unique username".into(),
+                ));
             }
         }
     }
@@ -595,7 +599,9 @@ impl OidcService {
     /// Check if user is admin based on group memberships
     fn is_admin_from_groups(&self, groups: &[String]) -> bool {
         if let Some(admin_group) = &self.config.admin_group {
-            groups.iter().any(|g| g.to_lowercase() == admin_group.to_lowercase())
+            groups
+                .iter()
+                .any(|g| g.to_lowercase() == admin_group.to_lowercase())
         } else {
             false
         }
@@ -619,7 +625,10 @@ impl OidcService {
         if let Ok(mappings) = std::env::var("OIDC_GROUP_ROLE_MAP") {
             for mapping in mappings.split(';') {
                 if let Some((group, role)) = mapping.split_once(':') {
-                    if groups.iter().any(|g| g.to_lowercase() == group.to_lowercase()) {
+                    if groups
+                        .iter()
+                        .any(|g| g.to_lowercase() == group.to_lowercase())
+                    {
                         roles.push(role.to_string());
                     }
                 }
@@ -652,9 +661,7 @@ impl OidcService {
 /// URL-safe base64 decode
 fn base64_decode_url_safe(input: &str) -> std::result::Result<Vec<u8>, String> {
     // Convert URL-safe base64 to standard base64
-    let standard = input
-        .replace('-', "+")
-        .replace('_', "/");
+    let standard = input.replace('-', "+").replace('_', "/");
 
     // Simple base64 decode implementation
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -668,7 +675,9 @@ fn base64_decode_url_safe(input: &str) -> std::result::Result<Vec<u8>, String> {
             break;
         }
 
-        let value = ALPHABET.iter().position(|&c| c == byte)
+        let value = ALPHABET
+            .iter()
+            .position(|&c| c == byte)
             .ok_or_else(|| format!("Invalid base64 character: {}", byte as char))?;
 
         buffer = (buffer << 6) | (value as u32);

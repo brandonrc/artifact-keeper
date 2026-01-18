@@ -19,10 +19,7 @@ use crate::services::auth_service::AuthService;
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/", get(list_users).post(create_user))
-        .route(
-            "/:id",
-            get(get_user).patch(update_user).delete(delete_user),
-        )
+        .route("/:id", get(get_user).patch(update_user).delete(delete_user))
         .route("/:id/roles", get(get_user_roles).post(assign_role))
         .route("/:id/roles/:role_id", delete(revoke_role))
         .route("/:id/tokens", get(list_user_tokens).post(create_api_token))
@@ -469,7 +466,9 @@ pub async fn list_user_tokens(
 ) -> Result<Json<ApiTokenListResponse>> {
     // Users can only view their own tokens unless admin
     if auth.user_id != id && !auth.is_admin {
-        return Err(AppError::Authorization("Cannot view other users' tokens".to_string()));
+        return Err(AppError::Authorization(
+            "Cannot view other users' tokens".to_string(),
+        ));
     }
 
     let tokens = sqlx::query!(
@@ -510,7 +509,9 @@ pub async fn create_api_token(
 ) -> Result<Json<ApiTokenCreatedResponse>> {
     // Users can only create tokens for themselves unless admin
     if auth.user_id != id && !auth.is_admin {
-        return Err(AppError::Authorization("Cannot create tokens for other users".to_string()));
+        return Err(AppError::Authorization(
+            "Cannot create tokens for other users".to_string(),
+        ));
     }
 
     let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
@@ -533,7 +534,9 @@ pub async fn revoke_api_token(
 ) -> Result<()> {
     // Users can only revoke their own tokens unless admin
     if auth.user_id != user_id && !auth.is_admin {
-        return Err(AppError::Authorization("Cannot revoke other users' tokens".to_string()));
+        return Err(AppError::Authorization(
+            "Cannot revoke other users' tokens".to_string(),
+        ));
     }
 
     let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
@@ -568,25 +571,26 @@ pub async fn change_password(
             .current_password
             .ok_or_else(|| AppError::Validation("Current password required".to_string()))?;
 
-        let user = sqlx::query!(
-            "SELECT password_hash FROM users WHERE id = $1",
-            id
-        )
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?
-        .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+        let user = sqlx::query!("SELECT password_hash FROM users WHERE id = $1", id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
-        let hash = user
-            .password_hash
-            .ok_or_else(|| AppError::Validation("Cannot change password for SSO users".to_string()))?;
+        let hash = user.password_hash.ok_or_else(|| {
+            AppError::Validation("Cannot change password for SSO users".to_string())
+        })?;
 
         if !AuthService::verify_password(&current_password, &hash)? {
-            return Err(AppError::Authentication("Current password is incorrect".to_string()));
+            return Err(AppError::Authentication(
+                "Current password is incorrect".to_string(),
+            ));
         }
     } else if auth.user_id != id && !auth.is_admin {
         // Non-admin trying to change another user's password
-        return Err(AppError::Authorization("Cannot change other users' passwords".to_string()));
+        return Err(AppError::Authorization(
+            "Cannot change other users' passwords".to_string(),
+        ));
     }
 
     // Hash new password
@@ -624,27 +628,30 @@ pub async fn reset_password(
 ) -> Result<Json<ResetPasswordResponse>> {
     // Only admins can reset passwords
     if !auth.is_admin {
-        return Err(AppError::Authorization("Only administrators can reset passwords".to_string()));
+        return Err(AppError::Authorization(
+            "Only administrators can reset passwords".to_string(),
+        ));
     }
 
     // Prevent admin from resetting their own password this way
     if auth.user_id == id {
-        return Err(AppError::Validation("Cannot reset your own password. Use change password instead.".to_string()));
+        return Err(AppError::Validation(
+            "Cannot reset your own password. Use change password instead.".to_string(),
+        ));
     }
 
     // Check that user exists and is a local user (reuse existing query pattern)
-    let user = sqlx::query!(
-        "SELECT password_hash FROM users WHERE id = $1",
-        id
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?
-    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let user = sqlx::query!("SELECT password_hash FROM users WHERE id = $1", id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
     // Local users have password_hash set
     if user.password_hash.is_none() {
-        return Err(AppError::Validation("Cannot reset password for SSO users".to_string()));
+        return Err(AppError::Validation(
+            "Cannot reset password for SSO users".to_string(),
+        ));
     }
 
     // Generate new temporary password

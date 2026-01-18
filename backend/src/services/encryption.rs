@@ -159,7 +159,10 @@ pub fn encrypt_credentials(credentials_json: &str, encryption_key: &str) -> Vec<
 }
 
 /// Decrypt credentials from storage.
-pub fn decrypt_credentials(encrypted: &[u8], encryption_key: &str) -> Result<String, EncryptionError> {
+pub fn decrypt_credentials(
+    encrypted: &[u8],
+    encryption_key: &str,
+) -> Result<String, EncryptionError> {
     let encryptor = CredentialEncryption::from_passphrase(encryption_key);
     let plaintext = encryptor.decrypt(encrypted)?;
     String::from_utf8(plaintext).map_err(|_| EncryptionError::DecryptionFailed)

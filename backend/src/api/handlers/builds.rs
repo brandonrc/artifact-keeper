@@ -123,7 +123,7 @@ pub async fn list_builds(
 
     // Check if builds table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'builds')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'builds')",
     )
     .fetch_one(&state.db)
     .await
@@ -177,7 +177,7 @@ pub async fn list_builds(
         FROM builds
         WHERE ($1::text IS NULL OR status = $1)
           AND ($2::text IS NULL OR name ILIKE $2)
-        "#
+        "#,
     )
     .bind(&query.status)
     .bind(&search_pattern)
@@ -205,7 +205,7 @@ pub async fn get_build(
 ) -> Result<Json<BuildResponse>> {
     // Check if builds table exists first
     let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'builds')"
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'builds')",
     )
     .fetch_one(&state.db)
     .await
@@ -221,7 +221,7 @@ pub async fn get_build(
                duration_ms, agent, created_at, updated_at, artifact_count
         FROM builds
         WHERE id = $1
-        "#
+        "#,
     )
     .bind(id)
     .fetch_optional(&state.db)

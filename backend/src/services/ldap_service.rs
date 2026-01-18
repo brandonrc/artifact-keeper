@@ -56,8 +56,7 @@ impl LdapConfig {
             bind_password: std::env::var("LDAP_BIND_PASSWORD").ok(),
             username_attr: std::env::var("LDAP_USERNAME_ATTR")
                 .unwrap_or_else(|_| "uid".to_string()),
-            email_attr: std::env::var("LDAP_EMAIL_ATTR")
-                .unwrap_or_else(|_| "mail".to_string()),
+            email_attr: std::env::var("LDAP_EMAIL_ATTR").unwrap_or_else(|_| "mail".to_string()),
             display_name_attr: std::env::var("LDAP_DISPLAY_NAME_ATTR")
                 .unwrap_or_else(|_| "cn".to_string()),
             groups_attr: std::env::var("LDAP_GROUPS_ATTR")
@@ -129,7 +128,9 @@ impl LdapService {
     pub async fn authenticate(&self, username: &str, password: &str) -> Result<LdapUserInfo> {
         // Validate inputs
         if username.is_empty() || password.is_empty() {
-            return Err(AppError::Authentication("Username and password required".into()));
+            return Err(AppError::Authentication(
+                "Username and password required".into(),
+            ));
         }
 
         // Sanitize username to prevent LDAP injection
@@ -247,7 +248,9 @@ impl LdapService {
     /// Check if user is admin based on group memberships
     fn is_admin_from_groups(&self, groups: &[String]) -> bool {
         if let Some(admin_group) = &self.config.admin_group_dn {
-            groups.iter().any(|g| g.to_lowercase() == admin_group.to_lowercase())
+            groups
+                .iter()
+                .any(|g| g.to_lowercase() == admin_group.to_lowercase())
         } else {
             false
         }
@@ -271,7 +274,10 @@ impl LdapService {
         if let Ok(mappings) = std::env::var("LDAP_GROUP_ROLE_MAP") {
             for mapping in mappings.split(';') {
                 if let Some((group_dn, role)) = mapping.split_once(':') {
-                    if groups.iter().any(|g| g.to_lowercase() == group_dn.to_lowercase()) {
+                    if groups
+                        .iter()
+                        .any(|g| g.to_lowercase() == group_dn.to_lowercase())
+                    {
                         roles.push(role.to_string());
                     }
                 }
@@ -287,8 +293,9 @@ impl LdapService {
     fn build_user_dn(&self, username: &str) -> String {
         // Format: uid=username,base_dn
         // This can be customized via LDAP_USER_DN_PATTERN env var
-        let pattern = std::env::var("LDAP_USER_DN_PATTERN")
-            .unwrap_or_else(|_| format!("{}={{}},{}", self.config.username_attr, self.config.base_dn));
+        let pattern = std::env::var("LDAP_USER_DN_PATTERN").unwrap_or_else(|_| {
+            format!("{}={{}},{}", self.config.username_attr, self.config.base_dn)
+        });
 
         pattern.replace("{}", username)
     }
@@ -362,12 +369,13 @@ impl LdapService {
         let email = std::env::var(format!("LDAP_USER_{}_EMAIL", username.to_uppercase()))
             .unwrap_or_else(|_| format!("{}@example.com", username));
 
-        let display_name = std::env::var(format!("LDAP_USER_{}_NAME", username.to_uppercase()))
-            .ok();
+        let display_name =
+            std::env::var(format!("LDAP_USER_{}_NAME", username.to_uppercase())).ok();
 
-        let groups: Vec<String> = std::env::var(format!("LDAP_USER_{}_GROUPS", username.to_uppercase()))
-            .map(|g| g.split(',').map(|s| s.trim().to_string()).collect())
-            .unwrap_or_default();
+        let groups: Vec<String> =
+            std::env::var(format!("LDAP_USER_{}_GROUPS", username.to_uppercase()))
+                .map(|g| g.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
 
         Ok(LdapUserInfo {
             dn: user_dn.to_string(),
@@ -408,7 +416,10 @@ mod tests {
         assert_eq!(LdapService::sanitize_ldap_input("user"), "user");
         assert_eq!(LdapService::sanitize_ldap_input("user*"), "user\\2a");
         assert_eq!(LdapService::sanitize_ldap_input("(user)"), "\\28user\\29");
-        assert_eq!(LdapService::sanitize_ldap_input("user\\name"), "user\\5cname");
+        assert_eq!(
+            LdapService::sanitize_ldap_input("user\\name"),
+            "user\\5cname"
+        );
     }
 
     #[test]

@@ -85,10 +85,7 @@ impl FormatHandler for WasmFormatHandler {
     }
 
     async fn validate(&self, path: &str, content: &Bytes) -> Result<()> {
-        debug!(
-            "WASM handler {} validating {}",
-            self.format_key, path
-        );
+        debug!("WASM handler {} validating {}", self.format_key, path);
 
         let result = self
             .registry
@@ -101,9 +98,7 @@ impl FormatHandler for WasmFormatHandler {
 
         match result {
             Ok(()) => Ok(()),
-            Err(validation_error) => {
-                Err(AppError::Validation(validation_error.to_string()))
-            }
+            Err(validation_error) => Err(AppError::Validation(validation_error.to_string())),
         }
     }
 
@@ -124,10 +119,8 @@ impl FormatHandler for WasmFormatHandler {
 
         match result {
             Some(files) => {
-                let converted: Vec<(String, Bytes)> = files
-                    .into_iter()
-                    .map(|f| (f.path, f.content))
-                    .collect();
+                let converted: Vec<(String, Bytes)> =
+                    files.into_iter().map(|f| (f.path, f.content)).collect();
                 Ok(Some(converted))
             }
             None => Ok(None),
@@ -181,10 +174,7 @@ mod tests {
     #[tokio::test]
     async fn test_wasm_handler_format_key() {
         let registry = PluginRegistry::new().unwrap();
-        let handler = WasmFormatHandler::new(
-            "test-format".to_string(),
-            Arc::new(registry),
-        );
+        let handler = WasmFormatHandler::new("test-format".to_string(), Arc::new(registry));
 
         assert_eq!(handler.format_key(), "test-format");
         assert!(handler.is_wasm_plugin());
@@ -194,10 +184,7 @@ mod tests {
     #[tokio::test]
     async fn test_wasm_handler_not_available() {
         let registry = PluginRegistry::new().unwrap();
-        let handler = WasmFormatHandler::new(
-            "nonexistent".to_string(),
-            Arc::new(registry),
-        );
+        let handler = WasmFormatHandler::new("nonexistent".to_string(), Arc::new(registry));
 
         assert!(!handler.is_available().await);
     }
@@ -223,10 +210,7 @@ mod tests {
     #[tokio::test]
     async fn test_parse_metadata_no_plugin() {
         let registry = Arc::new(PluginRegistry::new().unwrap());
-        let handler = WasmFormatHandler::new(
-            "nonexistent".to_string(),
-            registry,
-        );
+        let handler = WasmFormatHandler::new("nonexistent".to_string(), registry);
 
         let result = handler
             .parse_metadata("/test.bin", &Bytes::from_static(b"test"))
@@ -238,10 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_validate_no_plugin() {
         let registry = Arc::new(PluginRegistry::new().unwrap());
-        let handler = WasmFormatHandler::new(
-            "nonexistent".to_string(),
-            registry,
-        );
+        let handler = WasmFormatHandler::new("nonexistent".to_string(), registry);
 
         let result = handler
             .validate("/test.bin", &Bytes::from_static(b"test"))
