@@ -371,23 +371,21 @@ impl ArtifactoryClient {
                 }
                 Err(e) => {
                     // Check for network/connection errors that are retryable
-                    if e.is_connect() || e.is_timeout() {
-                        if attempt < retry_config.max_retries {
-                            tracing::warn!(
-                                "Network error: {}, retrying in {}ms (attempt {}/{})",
-                                e,
-                                delay_ms,
-                                attempt + 1,
-                                retry_config.max_retries
-                            );
-                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                            attempt += 1;
-                            delay_ms = std::cmp::min(
-                                (delay_ms as f64 * retry_config.backoff_multiplier) as u64,
-                                retry_config.max_delay_ms,
-                            );
-                            continue;
-                        }
+                    if (e.is_connect() || e.is_timeout()) && attempt < retry_config.max_retries {
+                        tracing::warn!(
+                            "Network error: {}, retrying in {}ms (attempt {}/{})",
+                            e,
+                            delay_ms,
+                            attempt + 1,
+                            retry_config.max_retries
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        attempt += 1;
+                        delay_ms = std::cmp::min(
+                            (delay_ms as f64 * retry_config.backoff_multiplier) as u64,
+                            retry_config.max_delay_ms,
+                        );
+                        continue;
                     }
                     return Err(ArtifactoryError::HttpError(e));
                 }
@@ -396,6 +394,7 @@ impl ArtifactoryClient {
     }
 
     /// Make a POST request to the Artifactory API
+    #[allow(dead_code)]
     async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
         &self,
         path: &str,

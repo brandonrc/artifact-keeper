@@ -147,9 +147,9 @@ pub async fn list_permissions(
         "#,
     )
     .bind(&query.principal_type)
-    .bind(&query.principal_id)
+    .bind(query.principal_id)
     .bind(&query.target_type)
-    .bind(&query.target_id)
+    .bind(query.target_id)
     .bind(offset)
     .bind(per_page as i64)
     .fetch_all(&state.db)
@@ -167,9 +167,9 @@ pub async fn list_permissions(
         "#,
     )
     .bind(&query.principal_type)
-    .bind(&query.principal_id)
+    .bind(query.principal_id)
     .bind(&query.target_type)
-    .bind(&query.target_id)
+    .bind(query.target_id)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -224,9 +224,9 @@ pub async fn create_permission(
         "#
     )
     .bind(&payload.principal_type)
-    .bind(&payload.principal_id)
+    .bind(payload.principal_id)
     .bind(&payload.target_type)
-    .bind(&payload.target_id)
+    .bind(payload.target_id)
     .bind(&payload.actions)
     .fetch_one(&state.db)
     .await
@@ -314,9 +314,9 @@ pub async fn update_permission(
     )
     .bind(id)
     .bind(&payload.principal_type)
-    .bind(&payload.principal_id)
+    .bind(payload.principal_id)
     .bind(&payload.target_type)
-    .bind(&payload.target_id)
+    .bind(payload.target_id)
     .bind(&payload.actions)
     .fetch_optional(&state.db)
     .await

@@ -356,7 +356,7 @@ pub async fn test_webhook(
             let body = response.text().await.ok();
 
             Ok(Json(TestWebhookResponse {
-                success: status >= 200 && status < 300,
+                success: (200..300).contains(&status),
                 status_code: Some(status),
                 response_body: body,
                 error: None,
@@ -516,7 +516,7 @@ pub async fn redeliver(
             Ok(response) => {
                 let status = response.status().as_u16() as i32;
                 let body = response.text().await.ok();
-                (status >= 200 && status < 300, Some(status), body)
+                ((200..300).contains(&status), Some(status), body)
             }
             Err(e) => (false, None, Some(e.to_string())),
         };

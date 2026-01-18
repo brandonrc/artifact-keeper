@@ -117,7 +117,7 @@ impl CredentialEncryption {
     /// Derive encryption key from main key and IV using SHA-256.
     fn derive_enc_key(&self, iv: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.key);
+        hasher.update(self.key);
         hasher.update(iv);
         hasher.update(b"encryption");
         let result = hasher.finalize();
@@ -129,7 +129,7 @@ impl CredentialEncryption {
     /// Compute HMAC over IV and ciphertext.
     fn compute_hmac(&self, iv: &[u8], ciphertext: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.key);
+        hasher.update(self.key);
         hasher.update(iv);
         hasher.update(ciphertext);
         hasher.update(b"hmac");

@@ -108,6 +108,7 @@ impl PluginRegistry {
     /// If a plugin with the same format key exists, it's atomically replaced
     /// (hot-reload). In-flight requests using the old version will complete
     /// normally due to Arc reference counting.
+    #[allow(clippy::too_many_arguments)]
     pub async fn register(
         &self,
         id: Uuid,

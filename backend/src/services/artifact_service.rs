@@ -97,6 +97,7 @@ impl ArtifactService {
     }
 
     /// Upload an artifact
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload(
         &self,
         repository_id: Uuid,

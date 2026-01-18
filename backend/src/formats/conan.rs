@@ -542,7 +542,7 @@ pub struct ConanReference {
 
 impl ConanReference {
     /// Convert to string representation
-    pub fn to_string(&self) -> String {
+    pub fn to_reference_string(&self) -> String {
         let mut s = format!("{}/{}", self.name, self.version);
         if let (Some(user), Some(channel)) = (&self.user, &self.channel) {
             s.push_str(&format!("@{}/{}", user, channel));

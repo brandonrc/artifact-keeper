@@ -830,7 +830,7 @@ impl WasmPluginService {
                 // Try as a commit SHA
                 let oid = git2::Oid::from_str(ref_name)?;
                 repo.find_commit(oid)?;
-                Ok(repo.head()?)
+                repo.head()
             })
             .map_err(|e: git2::Error| {
                 AppError::Validation(format!("Git ref '{}' not found: {}", ref_name, e))
@@ -1129,7 +1129,7 @@ impl WasmPluginService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // Enable format handler
-        if let Some(ref format) = plugin
+        if let Some(format) = plugin
             .manifest
             .as_ref()
             .and_then(|m| m.get("format"))

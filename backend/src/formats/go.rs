@@ -255,8 +255,8 @@ impl GoHandler {
             return None;
         }
 
-        let old_parts: Vec<&str> = parts[0].trim().split_whitespace().collect();
-        let new_parts: Vec<&str> = parts[1].trim().split_whitespace().collect();
+        let old_parts: Vec<&str> = parts[0].split_whitespace().collect();
+        let new_parts: Vec<&str> = parts[1].split_whitespace().collect();
 
         let old_path = old_parts.first()?.to_string();
         let old_version = old_parts.get(1).map(|s| s.to_string());

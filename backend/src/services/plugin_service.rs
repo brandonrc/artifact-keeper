@@ -43,6 +43,7 @@ impl PluginEventType {
     }
 
     /// Parse event type from string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "before_upload" => Some(PluginEventType::BeforeUpload),
@@ -123,6 +124,7 @@ pub struct PluginService {
     /// Cached plugins indexed by ID.
     plugins: Arc<RwLock<HashMap<Uuid, CachedPlugin>>>,
     /// Hooks indexed by event type for quick lookup.
+    #[allow(clippy::type_complexity)]
     hooks_by_event: Arc<RwLock<HashMap<PluginEventType, Vec<(Uuid, PluginHook)>>>>,
 }
 
@@ -157,6 +159,7 @@ impl PluginService {
     // =========================================================================
 
     /// Install a new plugin.
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_plugin(
         &self,
         name: &str,

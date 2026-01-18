@@ -161,8 +161,7 @@ impl ArtifactoryImporter {
         }
 
         // Create temp directory for extraction
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| ImportError::Io(io::Error::new(io::ErrorKind::Other, e)))?;
+        let temp_dir = tempfile::tempdir().map_err(|e| ImportError::Io(io::Error::other(e)))?;
         let temp_path = temp_dir.path().to_path_buf();
 
         // Extract archive

@@ -96,13 +96,9 @@ pub async fn rate_limit_middleware(
     // Priority: authenticated user ID > IP address
     let key = if let Some(auth) = request.extensions().get::<AuthExtension>() {
         format!("user:{}", auth.user_id)
-    } else if let Some(auth) = request.extensions().get::<Option<AuthExtension>>() {
+    } else if let Some(Some(auth)) = request.extensions().get::<Option<AuthExtension>>() {
         // Handle optional auth middleware case
-        if let Some(auth) = auth {
-            format!("user:{}", auth.user_id)
-        } else {
-            extract_client_ip(&request)
-        }
+        format!("user:{}", auth.user_id)
     } else {
         extract_client_ip(&request)
     };
