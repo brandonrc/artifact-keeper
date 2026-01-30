@@ -1,164 +1,247 @@
 <!--
-================================================================================
-SYNC IMPACT REPORT
-================================================================================
-Version change: N/A → 1.0.0 (initial constitution)
-Modified principles: N/A (initial creation)
-Added sections:
-  - Core Principles (7 principles)
-  - Development Standards
-  - Quality Gates
-  - Governance
+  Sync Impact Report
+  ==================
+  Version change: 0.0.0 (template) → 1.0.0 (initial ratification)
 
-Templates requiring updates:
-  - .specify/templates/plan-template.md: ✅ Compatible (Constitution Check section exists)
-  - .specify/templates/spec-template.md: ✅ Compatible (Requirements section aligns)
-  - .specify/templates/tasks-template.md: ✅ Compatible (Phase structure aligns)
+  Modified principles: N/A (first ratification)
 
-Follow-up TODOs: None
-================================================================================
+  Added sections:
+    - Core Principles (8 principles: I–VIII)
+    - Technology Stack (locked stack with amendment requirements)
+    - Quality Gates (tiered CI/CD gates)
+    - Governance (amendment procedure and compliance)
+
+  Removed sections: N/A
+
+  Templates requiring updates:
+    - .specify/templates/plan-template.md — ✅ compatible
+      (Constitution Check section already references constitution file)
+    - .specify/templates/spec-template.md — ✅ compatible
+      (User scenarios and requirements align with principles)
+    - .specify/templates/tasks-template.md — ✅ compatible
+      (Phase structure supports tiered testing and layered implementation)
+    - .specify/templates/checklist-template.md — ✅ compatible
+      (Generic template, no constitution-specific references needed)
+    - .specify/templates/agent-file-template.md — ✅ compatible
+      (Technology sections align with locked stack)
+
+  Follow-up TODOs: None
 -->
 
 # Artifact Keeper Constitution
 
 ## Core Principles
 
-### I. API-First Design
+### I. Layered Architecture
 
-All features MUST begin with API contract definition before implementation.
+All backend code MUST follow the four-layer separation:
 
-- Contracts MUST be defined in OpenAPI/Swagger format for REST endpoints
-- API schemas MUST be versioned and documented before coding begins
-- Breaking changes MUST follow semantic versioning (MAJOR version bump)
-- Frontend and backend development MAY proceed in parallel once contracts are approved
+1. **HTTP Layer** — Axum route definitions, middleware, request/response
+   serialization. Handlers MUST be thin: extract parameters, call a
+   service, return a response.
+2. **Service Layer** — Business logic, validation, orchestration.
+   Services MUST NOT depend on HTTP types (StatusCode, Json extractors).
+3. **Model Layer** — Data structures with sqlx derive macros. Models
+   MUST NOT contain business logic beyond field-level validation.
+4. **Storage/Repository Layer** — Database queries and external storage
+   operations. MUST be the only layer that issues SQL or storage calls.
 
-**Rationale**: Contract-first development enables parallel workstreams, reduces integration friction, and ensures clear boundaries between system components.
+Cross-layer imports flow strictly downward: handlers → services →
+models → storage. Upward or lateral imports are prohibited.
 
-### II. Security by Default
+### II. Type Safety
 
-Security MUST be a foundational consideration in all architectural and implementation decisions.
+- Rust code MUST compile with zero warnings under `cargo clippy -D warnings`.
+- TypeScript code MUST pass `tsc --strict` with no suppressions
+  (`@ts-ignore`, `@ts-expect-error`) unless documented with a linked
+  issue explaining why the suppression is necessary.
+- All API boundaries (request/response bodies, query parameters) MUST
+  use strongly typed structs or interfaces — no `any`, no untyped JSON
+  pass-through.
+- Errors MUST use the centralized `AppError` enum (backend) or typed
+  error interfaces (frontend). Raw string errors are prohibited at API
+  boundaries.
 
-- Authentication and authorization MUST be implemented for all protected endpoints
-- User input MUST be validated and sanitized at system boundaries
-- Secrets MUST NOT be committed to version control; use environment variables or secret management
-- Dependencies MUST be regularly audited for known vulnerabilities
-- HTTPS MUST be enforced for all production traffic
+### III. Tiered Testing
 
-**Rationale**: Security retrofitting is costly and error-prone. Building security in from the start reduces attack surface and compliance risk.
+Testing follows a three-tier gate model enforced by CI:
 
-### III. Simplicity & YAGNI
+| Tier | Trigger | Scope | Max Duration |
+|------|---------|-------|-------------|
+| 1 | Every push/PR | Lint (`fmt`, `clippy`, `eslint`), type-check, unit tests | 5 min |
+| 2 | Merge to main | Full integration tests (requires PostgreSQL) | 15 min |
+| 3 | Release tag / manual | E2E (Playwright), native client tests, stress, failure injection | 30 min |
 
-Start with the simplest solution that meets current requirements. Complexity MUST be justified.
+- Tier 1 failures MUST block PR merge.
+- Tier 2 failures MUST block release promotion.
+- Tier 3 failures MUST block release publication.
+- New backend services MUST include unit tests in inline `#[cfg(test)]`
+  modules.
+- New frontend components MUST include Vitest test files.
+- New API endpoints MUST be covered by integration tests.
 
-- New abstractions MUST solve an immediate, demonstrated need
-- Premature optimization is prohibited; optimize only when measurements indicate necessity
-- Each component SHOULD have a single, clear responsibility
-- Code duplication is acceptable when abstraction would obscure intent
-- Feature flags and configuration SHOULD be minimal; prefer direct implementation
+### IV. API-First Design
 
-**Rationale**: Simple systems are easier to understand, test, debug, and maintain. Unused complexity becomes technical debt.
+- All HTTP endpoints MUST be versioned under `/api/v1/`.
+- Breaking changes MUST increment the API version prefix (e.g., `/api/v2/`).
+- Error responses MUST use the structured JSON format:
+  `{ "code": "ERROR_CODE", "message": "Human-readable message" }`.
+- Health (`/health`), readiness (`/ready`), and metrics (`/metrics`)
+  endpoints MUST remain unauthenticated and outside API versioning.
+- New endpoints MUST define request/response types before implementation
+  (contract-first). OpenAPI definitions in `specs/` contracts are
+  the source of truth when present.
 
-### IV. Documentation Standards
+### V. Format Modularity
 
-Code and APIs MUST be documented to enable independent understanding.
+- Each package format (Maven, PyPI, NPM, Docker, etc.) MUST be
+  implemented as an independent module under `backend/src/formats/`.
+- Format handlers MUST NOT depend on other format handlers.
+- Adding or removing a format MUST NOT require changes to core
+  services, routing infrastructure, or other format modules.
+- Format-specific metadata parsing and validation MUST live within the
+  format module, not in shared services.
 
-- Public APIs MUST have complete documentation including examples
-- Complex business logic MUST include inline comments explaining "why" not "what"
-- README files MUST provide setup, usage, and contribution guidelines
-- Architecture decisions MUST be recorded (ADRs recommended for significant choices)
-- Documentation MUST be updated when related code changes
+### VI. Security by Default
 
-**Rationale**: Documentation enables onboarding, reduces knowledge silos, and serves as a contract between system components.
-
-### V. Accessibility Standards
-
-User interfaces MUST be accessible to users with disabilities.
-
-- Web interfaces MUST conform to WCAG 2.1 Level AA guidelines
-- All interactive elements MUST be keyboard accessible
-- Images MUST have appropriate alt text; decorative images MUST be marked as such
-- Color MUST NOT be the sole means of conveying information
-- Forms MUST have associated labels and clear error messaging
-
-**Rationale**: Accessibility is a legal requirement in many jurisdictions and extends product reach to all users regardless of ability.
-
-### VI. Test Coverage
-
-Critical paths MUST have automated test coverage.
-
-- API endpoints MUST have contract tests validating request/response schemas
-- Business logic MUST have unit tests for core functionality
-- User journeys MUST have integration tests for critical flows
-- Tests SHOULD be written before or alongside implementation (TDD encouraged)
-- Test coverage MUST NOT decrease without explicit justification
-
-**Rationale**: Automated tests catch regressions early, enable confident refactoring, and serve as executable documentation.
+- Authentication MUST use JWT with short-lived access tokens and
+  separate refresh tokens.
+- Passwords MUST be hashed with bcrypt; raw passwords MUST NOT appear
+  in logs, error messages, or API responses.
+- Administrative endpoints (`/admin`, `/users`, `/permissions`,
+  `/webhooks`, `/migrations`) MUST require authentication middleware.
+- Secrets (JWT secret, S3 credentials, OIDC secrets) MUST be loaded
+  from environment variables, never committed to source control.
+- All dependencies MUST pass `cargo audit` and `npm audit` with no
+  critical or high severity vulnerabilities. Known exceptions MUST be
+  documented in an allow-list with justification.
 
 ### VII. Observability
 
-Production systems MUST be observable and debuggable.
+- All request errors MUST be logged via `tracing::error!` with
+  structured fields (error type, error code).
+- Services MUST use the `tracing` crate for structured logging — no
+  `println!` or `eprintln!` in production code paths.
+- Prometheus-compatible metrics MUST be exposed at `/metrics`.
+- Audit-sensitive operations (create, delete, permission changes) MUST
+  produce audit log entries.
 
-- Structured logging MUST be implemented for all significant operations
-- Error responses MUST include correlation IDs for tracing
-- Health check endpoints MUST be available for all services
-- Performance metrics SHOULD be collected for critical operations
-- Alerts SHOULD be configured for error rate and latency thresholds
+### VIII. Simplicity
 
-**Rationale**: Observable systems reduce mean time to detection and resolution of production issues.
+- YAGNI: features MUST NOT be implemented until a spec in `specs/`
+  defines the requirement.
+- New abstractions MUST justify their existence — three concrete use
+  cases minimum before extracting a shared utility.
+- Configuration MUST use environment variables with sensible defaults.
+  No configuration file formats unless a spec explicitly requires it.
+- Dependencies MUST be justified. Adding a new crate or npm package
+  requires confirming no existing dependency covers the use case.
 
-## Development Standards
+## Technology Stack
 
-### Code Quality
+The following stack is locked. Changes require a constitution amendment
+(MAJOR version bump) with migration plan.
 
-- All code MUST pass linting and formatting checks before merge
-- Pull requests MUST include a description of changes and testing approach
-- Commits SHOULD be atomic and include meaningful messages
-- Dead code MUST be removed, not commented out
+| Layer | Technology | Version Floor |
+|-------|-----------|--------------|
+| Backend runtime | Rust | 1.75+ |
+| Backend framework | Axum | 0.7+ |
+| Async runtime | Tokio | 1.35+ |
+| Database | PostgreSQL | 16+ |
+| Database driver | sqlx | 0.8+ |
+| Plugin runtime | wasmtime | 21.0+ |
+| Frontend language | TypeScript | 5.3+ |
+| Frontend framework | React | 19+ |
+| UI components | Ant Design | 6+ |
+| Build tool | Vite | 7+ |
+| Data fetching | TanStack Query | 5+ |
+| E2E testing | Playwright | 1.41+ |
+| Unit testing (FE) | Vitest | 4+ |
+| CI/CD | GitHub Actions | N/A |
+| Containerization | Docker + Compose | N/A |
 
-### Dependency Management
+**Permitted without amendment**: Patch and minor version upgrades that
+do not change public APIs or require migration.
 
-- Dependencies MUST be pinned to specific versions
-- Major version upgrades MUST be evaluated for breaking changes
-- Unused dependencies MUST be removed
-- License compatibility MUST be verified before adding dependencies
+**Requires amendment**: Major version upgrades, replacing a technology
+(e.g., switching from Axum to Actix), or adding a new infrastructure
+dependency (e.g., Redis, message queue).
 
 ## Quality Gates
 
-### Pre-Merge Requirements
+### PR Merge Gate (Tier 1)
 
-1. All automated tests MUST pass
-2. Linting and formatting checks MUST pass
-3. Security scans MUST show no new high/critical vulnerabilities
-4. Documentation MUST be updated for user-facing changes
-5. Accessibility checks MUST pass for UI changes
+All of the following MUST pass before a PR can be merged:
 
-### Pre-Release Requirements
+```
+cargo fmt --check
+cargo clippy --workspace -- -D warnings
+cargo test --workspace --lib
+cd frontend && npm run lint
+cd frontend && npm run type-check
+cd frontend && npm run test:run
+```
 
-1. All quality gates above MUST be satisfied
-2. Manual QA verification MUST be completed for affected features
-3. Performance testing MUST be completed for performance-sensitive changes
-4. Rollback procedure MUST be documented
+### Main Branch Gate (Tier 2)
+
+After merge to main, the following MUST pass:
+
+```
+cargo test --workspace          # Full integration tests
+```
+
+Failures at this tier MUST be treated as P0 and fixed before further
+merges.
+
+### Release Gate (Tier 3)
+
+Before publishing a release, the following MUST pass:
+
+```
+./scripts/run-e2e-tests.sh --profile all
+./scripts/run-e2e-tests.sh --stress --failure
+```
+
+Failures at this tier MUST block the release.
+
+### Security Gate (Continuous)
+
+```
+cargo audit
+npm audit --audit-level=high
+```
+
+Critical and high vulnerabilities MUST be resolved or documented in an
+allow-list within 7 days of detection.
 
 ## Governance
 
-### Amendment Process
+1. **Supremacy**: This constitution supersedes all other development
+   practices. Conflicting guidance in READMEs, comments, or external
+   docs MUST defer to this document.
 
-1. Proposed amendments MUST be documented with rationale
-2. Amendments MUST be reviewed by project stakeholders
-3. Breaking changes to principles require migration plan
-4. Version MUST be incremented according to semantic versioning:
-   - MAJOR: Principle removal or incompatible redefinition
-   - MINOR: New principle or significant expansion
-   - PATCH: Clarifications and non-semantic changes
+2. **Amendment procedure**:
+   - Propose changes via a PR modifying this file.
+   - PR description MUST include: rationale, impact assessment, and
+     migration plan (if breaking).
+   - Version bump follows semver:
+     - **MAJOR**: Principle removal, redefinition, or stack change.
+     - **MINOR**: New principle or section added.
+     - **PATCH**: Clarification, wording, or typo fix.
 
-### Compliance
+3. **Compliance review**: All PRs and code reviews MUST verify that
+   changes comply with the principles above. Reviewers SHOULD reference
+   the specific principle number (e.g., "Principle III requires...") when
+   requesting changes.
 
-- All pull requests MUST verify compliance with applicable principles
-- Constitution violations MUST be resolved before merge
-- Exceptions require documented justification and stakeholder approval
+4. **Complexity justification**: Any deviation from these principles
+   MUST be documented in the relevant spec's `plan.md` under
+   "Complexity Tracking" with: the violation, why it is needed, and
+   why the simpler alternative was rejected.
 
-### Versioning Policy
+5. **Spec-driven development**: All features MUST have a specification
+   in `specs/` before implementation begins. The spec framework
+   (`/speckit.*` commands) is the standard tool for creating and
+   managing specifications.
 
-This constitution follows semantic versioning. The version number indicates the nature of changes since the last ratified version.
-
-**Version**: 1.0.0 | **Ratified**: 2026-01-14 | **Last Amended**: 2026-01-14
+**Version**: 1.0.0 | **Ratified**: 2026-01-30 | **Last Amended**: 2026-01-30
