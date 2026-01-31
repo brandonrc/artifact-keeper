@@ -124,6 +124,7 @@ impl ScanResultService {
     pub async fn list_scans(
         &self,
         repository_id: Option<Uuid>,
+        artifact_id: Option<Uuid>,
         status: Option<&str>,
         offset: i64,
         limit: i64,
@@ -136,11 +137,13 @@ impl ScanResultService {
                    scanner_version, error_message, started_at, completed_at, created_at
             FROM scan_results
             WHERE ($1::uuid IS NULL OR repository_id = $1)
-              AND ($2::text IS NULL OR status = $2)
+              AND ($2::uuid IS NULL OR artifact_id = $2)
+              AND ($3::text IS NULL OR status = $3)
             ORDER BY created_at DESC
-            LIMIT $3 OFFSET $4
+            LIMIT $4 OFFSET $5
             "#,
             repository_id,
+            artifact_id,
             status,
             limit,
             offset,
@@ -154,9 +157,11 @@ impl ScanResultService {
             SELECT COUNT(*) as "count!"
             FROM scan_results
             WHERE ($1::uuid IS NULL OR repository_id = $1)
-              AND ($2::text IS NULL OR status = $2)
+              AND ($2::uuid IS NULL OR artifact_id = $2)
+              AND ($3::text IS NULL OR status = $3)
             "#,
             repository_id,
+            artifact_id,
             status,
         )
         .fetch_one(&self.db)

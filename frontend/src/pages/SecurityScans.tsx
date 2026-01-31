@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Card, Table, Tag, Select, Button, Typography, Space, Modal, Form, Input } from 'antd';
+import { Card, Table, Tag, Select, Button, Typography, Space, Modal, Form } from 'antd';
 import { ScanOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { securityApi } from '../api';
+import apiClient from '../api/client';
 import type { ScanResult } from '../types/security';
 
 const { Title } = Typography;
@@ -30,8 +31,29 @@ export default function SecurityScans() {
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(undefined);
   const [form] = Form.useForm();
   const perPage = 20;
+
+  const { data: repos } = useQuery({
+    queryKey: ['repositories'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/api/v1/repositories');
+      return data;
+    },
+  });
+
+  const { data: repoArtifacts } = useQuery({
+    queryKey: ['repository-artifacts', selectedRepoId],
+    queryFn: async () => {
+      if (!selectedRepoId) return [];
+      const repo = (repos || []).find((r: any) => r.id === selectedRepoId);
+      if (!repo) return [];
+      const { data } = await apiClient.get(`/api/v1/repositories/${repo.key}/artifacts`);
+      return data?.items || data || [];
+    },
+    enabled: !!selectedRepoId && !!repos,
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ['security', 'scans', page, statusFilter],
@@ -208,17 +230,40 @@ export default function SecurityScans() {
         >
           <Form.Item
             name="repository_id"
-            label="Repository ID"
+            label="Repository"
             extra="Scan all artifacts in a repository"
           >
-            <Input placeholder="Enter repository UUID" />
+            <Select
+              showSearch
+              allowClear
+              placeholder="Select a repository"
+              optionFilterProp="label"
+              onChange={(val) => {
+                setSelectedRepoId(val);
+                form.setFieldValue('artifact_id', undefined);
+              }}
+              options={(repos || []).map((r: any) => ({
+                label: `${r.name || r.key} (${r.format})`,
+                value: r.id,
+              }))}
+            />
           </Form.Item>
           <Form.Item
             name="artifact_id"
-            label="Artifact ID"
+            label="Artifact"
             extra="Or scan a single artifact"
           >
-            <Input placeholder="Enter artifact UUID" />
+            <Select
+              showSearch
+              allowClear
+              placeholder={selectedRepoId ? "Select an artifact" : "Select a repository first"}
+              disabled={!selectedRepoId}
+              optionFilterProp="label"
+              options={(repoArtifacts || []).map((a: any) => ({
+                label: `${a.name} ${a.version ? `(${a.version})` : ''}`,
+                value: a.id,
+              }))}
+            />
           </Form.Item>
         </Form>
       </Modal>

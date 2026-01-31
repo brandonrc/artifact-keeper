@@ -27,6 +27,7 @@ pub fn router() -> Router<SharedState> {
         .route("/scans", get(list_scans))
         .route("/scans/:id", get(get_scan))
         .route("/scans/:id/findings", get(list_findings))
+        .route("/artifacts/:artifact_id/scans", get(list_artifact_scans))
         // Finding acknowledgment
         .route("/findings/:id/acknowledge", post(acknowledge_finding))
         .route(
@@ -95,6 +96,7 @@ pub struct TriggerScanResponse {
 #[derive(Debug, Deserialize)]
 pub struct ListScansQuery {
     pub repository_id: Option<Uuid>,
+    pub artifact_id: Option<Uuid>,
     pub status: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
@@ -313,6 +315,7 @@ async fn list_scans(
     let (scans, total) = svc
         .list_scans(
             query.repository_id,
+            query.artifact_id,
             query.status.as_deref(),
             offset,
             per_page,
@@ -683,6 +686,44 @@ async fn update_repo_security(
     }))
 }
 
+async fn list_artifact_scans(
+    State(state): State<SharedState>,
+    Extension(_auth): Extension<AuthExtension>,
+    Path(artifact_id): Path<Uuid>,
+    Query(query): Query<ListScansQuery>,
+) -> Result<Json<ScanListResponse>> {
+    let svc = ScanResultService::new(state.db.clone());
+    let page = query.page.unwrap_or(1);
+    let per_page = query.per_page.unwrap_or(20).min(100);
+    let offset = (page - 1) * per_page;
+
+    let (scans, total) = svc
+        .list_scans(None, Some(artifact_id), query.status.as_deref(), offset, per_page)
+        .await?;
+
+    Ok(Json(ScanListResponse {
+        items: scans.into_iter().map(|s| ScanResponse {
+            id: s.id,
+            artifact_id: s.artifact_id,
+            repository_id: s.repository_id,
+            scan_type: s.scan_type,
+            status: s.status,
+            findings_count: s.findings_count,
+            critical_count: s.critical_count,
+            high_count: s.high_count,
+            medium_count: s.medium_count,
+            low_count: s.low_count,
+            info_count: s.info_count,
+            scanner_version: s.scanner_version,
+            error_message: s.error_message,
+            started_at: s.started_at,
+            completed_at: s.completed_at,
+            created_at: s.created_at,
+        }).collect(),
+        total,
+    }))
+}
+
 async fn list_repo_scans(
     State(state): State<SharedState>,
     Extension(_auth): Extension<AuthExtension>,
@@ -704,7 +745,7 @@ async fn list_repo_scans(
     let offset = (page - 1) * per_page;
 
     let (scans, total) = svc
-        .list_scans(Some(repo), query.status.as_deref(), offset, per_page)
+        .list_scans(Some(repo), None, query.status.as_deref(), offset, per_page)
         .await?;
 
     let items: Vec<ScanResponse> = scans

@@ -1,12 +1,13 @@
 import React from 'react';
 import { Tabs, Button, Space, Typography, Divider } from 'antd';
-import { DownloadOutlined, DeleteOutlined } from '@ant-design/icons';
+import { DownloadOutlined, DeleteOutlined, ScanOutlined } from '@ant-design/icons';
 import type { Artifact, Build, PermissionAssignment } from '../../../types';
 import { colors } from '../../../styles/tokens';
 import { GeneralTab } from './GeneralTab';
 import { PropertiesTab } from './PropertiesTab';
 import { BuildsTab } from './BuildsTab';
 import { PermissionsTab } from './PermissionsTab';
+import { SecurityTab } from './SecurityTab';
 
 const { Title, Text } = Typography;
 
@@ -84,6 +85,16 @@ export const ArtifactDetail: React.FC<ArtifactDetailProps> = ({
       key: 'permissions',
       label: 'Permissions',
       children: <PermissionsTab permissions={permissions} />,
+    },
+    {
+      key: 'security',
+      label: (
+        <Space size={4}>
+          <ScanOutlined />
+          Security
+        </Space>
+      ),
+      children: <SecurityTab artifactId={artifact.id} repositoryKey={artifact.repository_key} />,
     },
   ];
 
