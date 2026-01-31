@@ -172,7 +172,10 @@ impl RepositoryService {
         format_filter: Option<RepositoryFormat>,
         type_filter: Option<RepositoryType>,
         public_only: bool,
+        search_query: Option<&str>,
     ) -> Result<(Vec<Repository>, i64)> {
+        let search_pattern = search_query.map(|q| format!("%{}%", q.to_lowercase()));
+
         let repos = sqlx::query_as!(
             Repository,
             r#"
@@ -188,6 +191,7 @@ impl RepositoryService {
             WHERE ($1::repository_format IS NULL OR format = $1)
               AND ($2::repository_type IS NULL OR repo_type = $2)
               AND ($3 = false OR is_public = true)
+              AND ($6::text IS NULL OR LOWER(key) LIKE $6 OR LOWER(name) LIKE $6 OR LOWER(COALESCE(description, '')) LIKE $6)
             ORDER BY name
             OFFSET $4
             LIMIT $5
@@ -196,7 +200,8 @@ impl RepositoryService {
             type_filter.clone() as Option<RepositoryType>,
             public_only,
             offset,
-            limit
+            limit,
+            search_pattern.clone() as Option<String>,
         )
         .fetch_all(&self.db)
         .await
@@ -209,10 +214,12 @@ impl RepositoryService {
             WHERE ($1::repository_format IS NULL OR format = $1)
               AND ($2::repository_type IS NULL OR repo_type = $2)
               AND ($3 = false OR is_public = true)
+              AND ($4::text IS NULL OR LOWER(key) LIKE $4 OR LOWER(name) LIKE $4 OR LOWER(COALESCE(description, '')) LIKE $4)
             "#,
             format_filter.clone() as Option<RepositoryFormat>,
             type_filter.clone() as Option<RepositoryType>,
-            public_only
+            public_only,
+            search_pattern as Option<String>,
         )
         .fetch_one(&self.db)
         .await

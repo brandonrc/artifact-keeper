@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT COUNT(*)\n            FROM repositories\n            WHERE ($1::repository_format IS NULL OR format = $1)\n              AND ($2::repository_type IS NULL OR repo_type = $2)\n              AND ($3 = false OR is_public = true)\n            ",
+  "query": "\n            SELECT COUNT(*)\n            FROM repositories\n            WHERE ($1::repository_format IS NULL OR format = $1)\n              AND ($2::repository_type IS NULL OR repo_type = $2)\n              AND ($3 = false OR is_public = true)\n              AND ($4::text IS NULL OR LOWER(key) LIKE $4 OR LOWER(name) LIKE $4 OR LOWER(COALESCE(description, '')) LIKE $4)\n            ",
   "describe": {
     "columns": [
       {
@@ -81,12 +81,13 @@
             }
           }
         },
-        "Bool"
+        "Bool",
+        "Text"
       ]
     },
     "nullable": [
       null
     ]
   },
-  "hash": "e2be146bb020607da02ead349d74b1468412586fa9d71590b49d7533484d233b"
+  "hash": "d54bbea9b8a936d8ac779c4aaada5f853ecd1124989d98715f6ca7e531731c4f"
 }

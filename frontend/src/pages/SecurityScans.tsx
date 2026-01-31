@@ -32,13 +32,16 @@ export default function SecurityScans() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [scanModalOpen, setScanModalOpen] = useState(false);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(undefined);
+  const [repoSearch, setRepoSearch] = useState<string>('');
   const [form] = Form.useForm();
   const perPage = 20;
 
   const { data: repos } = useQuery({
-    queryKey: ['repositories'],
+    queryKey: ['repositories', repoSearch],
     queryFn: async () => {
-      const { data } = await apiClient.get('/api/v1/repositories');
+      const params = new URLSearchParams({ per_page: '100' });
+      if (repoSearch) params.set('q', repoSearch);
+      const { data } = await apiClient.get(`/api/v1/repositories?${params}`);
       return data?.items || data || [];
     },
   });
@@ -49,7 +52,7 @@ export default function SecurityScans() {
       if (!selectedRepoId) return [];
       const repo = (repos || []).find((r: any) => r.id === selectedRepoId);
       if (!repo) return [];
-      const { data } = await apiClient.get(`/api/v1/repositories/${repo.key}/artifacts`);
+      const { data } = await apiClient.get(`/api/v1/repositories/${repo.key}/artifacts?per_page=100`);
       return data?.items || data || [];
     },
     enabled: !!selectedRepoId && !!repos,
@@ -236,8 +239,9 @@ export default function SecurityScans() {
             <Select
               showSearch
               allowClear
-              placeholder="Select a repository"
-              optionFilterProp="label"
+              placeholder="Search and select a repository"
+              filterOption={false}
+              onSearch={(val) => setRepoSearch(val)}
               onChange={(val) => {
                 setSelectedRepoId(val);
                 form.setFieldValue('artifact_id', undefined);

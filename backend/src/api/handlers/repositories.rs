@@ -53,6 +53,7 @@ pub struct ListRepositoriesQuery {
     pub format: Option<String>,
     #[serde(rename = "type")]
     pub repo_type: Option<String>,
+    pub q: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,7 +199,7 @@ pub async fn list_repositories(
 
     let service = RepositoryService::new(state.db.clone());
     let (repos, total) = service
-        .list(offset, per_page as i64, format_filter, type_filter, false)
+        .list(offset, per_page as i64, format_filter, type_filter, false, query.q.as_deref())
         .await?;
 
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
