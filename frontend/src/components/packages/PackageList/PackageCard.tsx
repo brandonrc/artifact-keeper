@@ -3,21 +3,12 @@ import { Card, Typography, Space, Badge, Tooltip } from 'antd';
 import {
   DownloadOutlined,
   ClockCircleOutlined,
-  BuildOutlined,
-  BoxPlotOutlined,
-  CodeOutlined,
-  ContainerOutlined,
-  CloudServerOutlined,
-  AppstoreOutlined,
-  BlockOutlined,
-  DeploymentUnitOutlined,
-  SettingOutlined,
-  FileZipOutlined,
-  FileOutlined,
 } from '@ant-design/icons';
-import type { Package, PackageType } from '../../../types';
+import type { Package } from '../../../types';
 import { colors, spacing, borderRadius, shadows } from '../../../styles/tokens';
 import { formatDownloadCount, formatRelativeTimeShort } from '../../../utils';
+import { getFormatIcon } from '../../../constants/formatIcons';
+import { packageTypeLabels } from '../../../constants/packages';
 
 const { Text, Title } = Typography;
 
@@ -25,40 +16,6 @@ export interface PackageCardProps {
   package: Package;
   onClick?: (pkg: Package) => void;
 }
-
-const packageTypeIcons: Record<PackageType, React.ReactNode> = {
-  maven: <BuildOutlined />,
-  gradle: <BuildOutlined />,
-  npm: <BoxPlotOutlined />,
-  pypi: <CodeOutlined />,
-  nuget: <AppstoreOutlined />,
-  go: <DeploymentUnitOutlined />,
-  rubygems: <BlockOutlined />,
-  docker: <ContainerOutlined />,
-  helm: <CloudServerOutlined />,
-  rpm: <SettingOutlined />,
-  debian: <FileZipOutlined />,
-  conan: <BlockOutlined />,
-  cargo: <BlockOutlined />,
-  generic: <FileOutlined />,
-};
-
-const packageTypeLabels: Record<PackageType, string> = {
-  maven: 'Maven',
-  gradle: 'Gradle',
-  npm: 'npm',
-  pypi: 'PyPI',
-  nuget: 'NuGet',
-  go: 'Go',
-  rubygems: 'RubyGems',
-  docker: 'Docker',
-  helm: 'Helm',
-  rpm: 'RPM',
-  debian: 'Debian',
-  conan: 'Conan',
-  cargo: 'Cargo',
-  generic: 'Generic',
-};
 
 export const PackageCard: React.FC<PackageCardProps> = ({
   package: pkg,
@@ -70,8 +27,8 @@ export const PackageCard: React.FC<PackageCardProps> = ({
     }
   }, [pkg, onClick]);
 
-  const icon = packageTypeIcons[pkg.package_type] || <FileOutlined />;
-  const typeLabel = packageTypeLabels[pkg.package_type] || pkg.package_type;
+  const icon = getFormatIcon(pkg.package_type);
+  const typeLabel = packageTypeLabels[pkg.package_type as keyof typeof packageTypeLabels] || pkg.package_type;
 
   return (
     <Card

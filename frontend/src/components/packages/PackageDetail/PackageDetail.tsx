@@ -20,23 +20,14 @@ import {
   UserOutlined,
   GlobalOutlined,
   CopyOutlined,
-  BuildOutlined,
-  BoxPlotOutlined,
-  CodeOutlined,
-  ContainerOutlined,
-  CloudServerOutlined,
-  AppstoreOutlined,
-  BlockOutlined,
-  DeploymentUnitOutlined,
-  SettingOutlined,
-  FileZipOutlined,
-  FileOutlined,
 } from '@ant-design/icons';
-import type { Package, PackageVersion, PackageDependency, PackageType } from '../../../types';
+import type { Package, PackageVersion, PackageDependency } from '../../../types';
 import { VersionHistory } from './VersionHistory';
 import { DependencyTree } from './DependencyTree';
 import { colors, spacing, borderRadius } from '../../../styles/tokens';
 import { message } from 'antd';
+import { getFormatIcon } from '../../../constants/formatIcons';
+import { packageTypeLabels } from '../../../constants/packages';
 
 const { Title, Text, Paragraph, Link } = Typography;
 
@@ -48,40 +39,6 @@ export interface PackageDetailProps {
   onVersionSelect?: (version: PackageVersion) => void;
   onDependencySelect?: (dependency: PackageDependency) => void;
 }
-
-const packageTypeIcons: Record<PackageType, React.ReactNode> = {
-  maven: <BuildOutlined />,
-  gradle: <BuildOutlined />,
-  npm: <BoxPlotOutlined />,
-  pypi: <CodeOutlined />,
-  nuget: <AppstoreOutlined />,
-  go: <DeploymentUnitOutlined />,
-  rubygems: <BlockOutlined />,
-  docker: <ContainerOutlined />,
-  helm: <CloudServerOutlined />,
-  rpm: <SettingOutlined />,
-  debian: <FileZipOutlined />,
-  conan: <BlockOutlined />,
-  cargo: <BlockOutlined />,
-  generic: <FileOutlined />,
-};
-
-const packageTypeLabels: Record<PackageType, string> = {
-  maven: 'Maven',
-  gradle: 'Gradle',
-  npm: 'npm',
-  pypi: 'PyPI',
-  nuget: 'NuGet',
-  go: 'Go',
-  rubygems: 'RubyGems',
-  docker: 'Docker',
-  helm: 'Helm',
-  rpm: 'RPM',
-  debian: 'Debian',
-  conan: 'Conan',
-  cargo: 'Cargo',
-  generic: 'Generic',
-};
 
 const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 B';
@@ -126,8 +83,8 @@ export const PackageDetail: React.FC<PackageDetailProps> = ({
     }
   }, [pkg.name]);
 
-  const icon = packageTypeIcons[pkg.package_type] || <FileOutlined />;
-  const typeLabel = packageTypeLabels[pkg.package_type] || pkg.package_type;
+  const icon = getFormatIcon(pkg.package_type);
+  const typeLabel = packageTypeLabels[pkg.package_type as keyof typeof packageTypeLabels] || pkg.package_type;
 
   const tabItems: TabsProps['items'] = [
     {
