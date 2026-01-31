@@ -1,0 +1,67 @@
+# System Package E2E Tests — runs against existing local Docker Compose stack.
+#
+# Prerequisites:
+#   docker compose up -d   (starts backend + postgres on artifact-keeper-network)
+#
+# Usage:
+#   docker compose -f docker-compose.e2e-syspkg.yml --profile debian up --abort-on-container-exit
+#   docker compose -f docker-compose.e2e-syspkg.yml --profile all up --abort-on-container-exit
+#   ./scripts/e2e-syspkg/run.sh all
+#
+# Profiles: debian, rpm, alpine, conda, maven, all
+
+services:
+  debian-e2e:
+    image: debian:bookworm-slim
+    container_name: e2e-syspkg-debian
+    environment:
+      BACKEND_URL: http://artifact-keeper-backend:8080
+    volumes:
+      - ./scripts/e2e-syspkg:/scripts:ro
+    command: ["bash", "/scripts/test-debian.sh"]
+    profiles: ["debian", "all"]
+
+  rpm-e2e:
+    image: rockylinux/rockylinux:9
+    container_name: e2e-syspkg-rpm
+    environment:
+      BACKEND_URL: http://artifact-keeper-backend:8080
+    volumes:
+      - ./scripts/e2e-syspkg:/scripts:ro
+    command: ["bash", "/scripts/test-rpm.sh"]
+    profiles: ["rpm", "all"]
+
+  alpine-e2e:
+    image: alpine:3.19
+    container_name: e2e-syspkg-alpine
+    environment:
+      BACKEND_URL: http://artifact-keeper-backend:8080
+    volumes:
+      - ./scripts/e2e-syspkg:/scripts:ro
+    command: ["sh", "-c", "apk add --no-cache bash > /dev/null 2>&1 && bash /scripts/test-alpine.sh"]
+    profiles: ["alpine", "all"]
+
+  conda-e2e:
+    image: continuumio/miniconda3:latest
+    container_name: e2e-syspkg-conda
+    environment:
+      BACKEND_URL: http://artifact-keeper-backend:8080
+    volumes:
+      - ./scripts/e2e-syspkg:/scripts:ro
+    command: ["bash", "/scripts/test-conda.sh"]
+    profiles: ["conda", "all"]
+
+  maven-e2e:
+    image: maven:3.9-eclipse-temurin-21
+    container_name: e2e-syspkg-maven
+    environment:
+      BACKEND_URL: http://artifact-keeper-backend:8080
+    volumes:
+      - ./scripts/e2e-syspkg:/scripts:ro
+    command: ["bash", "/scripts/test-maven.sh"]
+    profiles: ["maven", "all"]
+
+networks:
+  default:
+    name: artifact-keeper-network
+    external: true
