@@ -23,6 +23,55 @@ pub enum RepositoryFormat {
     Conan,
     Cargo,
     Generic,
+    // OCI-based aliases
+    Podman,
+    Buildx,
+    Oras,
+    #[sqlx(rename = "wasm_oci")]
+    WasmOci,
+    #[sqlx(rename = "helm_oci")]
+    HelmOci,
+    // PyPI-based aliases
+    Poetry,
+    Conda,
+    // npm-based aliases
+    Yarn,
+    Bower,
+    Pnpm,
+    // NuGet-based aliases
+    Chocolatey,
+    Powershell,
+    // Native format handlers
+    Terraform,
+    Opentofu,
+    Alpine,
+    #[sqlx(rename = "conda_native")]
+    CondaNative,
+    Composer,
+    // Language-specific
+    Hex,
+    Cocoapods,
+    Swift,
+    Pub,
+    Sbt,
+    // Config management
+    Chef,
+    Puppet,
+    Ansible,
+    // Git LFS
+    Gitlfs,
+    // Editor extensions
+    Vscode,
+    Jetbrains,
+    // ML/AI
+    Huggingface,
+    Mlmodel,
+    // Miscellaneous
+    Cran,
+    Vagrant,
+    Opkg,
+    P2,
+    Bazel,
 }
 
 /// Repository type enum
