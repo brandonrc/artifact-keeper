@@ -26,6 +26,7 @@ export interface FindingListResponse {
 
 export interface ListScansParams {
   repository_id?: string;
+  artifact_id?: string;
   status?: string;
   page?: number;
   per_page?: number;
@@ -119,6 +120,11 @@ const securityApi = {
 
   listRepoScans: async (repoKey: string, params?: ListScansParams): Promise<ScanListResponse> => {
     const { data } = await apiClient.get(`/api/v1/repositories/${repoKey}/security/scans`, { params });
+    return data;
+  },
+
+  listArtifactScans: async (artifactId: string, params?: ListScansParams): Promise<ScanListResponse> => {
+    const { data } = await apiClient.get(`/api/v1/security/artifacts/${artifactId}/scans`, { params });
     return data;
   },
 };
