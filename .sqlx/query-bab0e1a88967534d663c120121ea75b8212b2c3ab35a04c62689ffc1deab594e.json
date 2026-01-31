@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                created_at, updated_at\n            FROM repositories\n            WHERE ($1::repository_format IS NULL OR format = $1)\n              AND ($2::repository_type IS NULL OR repo_type = $2)\n              AND ($3 = false OR is_public = true)\n            ORDER BY name\n            OFFSET $4\n            LIMIT $5\n            ",
+  "query": "\n            SELECT\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                created_at, updated_at\n            FROM repositories\n            WHERE ($1::repository_format IS NULL OR format = $1)\n              AND ($2::repository_type IS NULL OR repo_type = $2)\n              AND ($3 = false OR is_public = true)\n              AND ($6::text IS NULL OR LOWER(key) LIKE $6 OR LOWER(name) LIKE $6 OR LOWER(COALESCE(description, '')) LIKE $6)\n            ORDER BY name\n            OFFSET $4\n            LIMIT $5\n            ",
   "describe": {
     "columns": [
       {
@@ -228,7 +228,8 @@
         },
         "Bool",
         "Int8",
-        "Int8"
+        "Int8",
+        "Text"
       ]
     },
     "nullable": [
@@ -248,5 +249,5 @@
       false
     ]
   },
-  "hash": "5fd0c2e7df5e71fbb66281ca0edc7be83add44362b8bf6724dbf071c0ed14755"
+  "hash": "bab0e1a88967534d663c120121ea75b8212b2c3ab35a04c62689ffc1deab594e"
 }
