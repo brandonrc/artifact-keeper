@@ -26,12 +26,11 @@ import {
   EyeOutlined,
   DatabaseOutlined,
   CloudDownloadOutlined,
-  CloudServerOutlined,
-  AppstoreOutlined,
-  CodeOutlined,
 } from '@ant-design/icons';
 import type { Repository, RepositoryType, RepositoryFormat } from '../../../types';
 import { colors, spacing } from '../../../styles/tokens';
+import { getFormatIcon } from '../../../constants/formatIcons';
+import { packageTypeLabels } from '../../../constants/packages';
 
 const { Text } = Typography;
 
@@ -56,20 +55,6 @@ const typeLabels: Record<RepositoryType, string> = {
   local: 'Local',
   remote: 'Remote',
   virtual: 'Virtual',
-};
-
-const formatIcons: Record<RepositoryFormat, React.ReactNode> = {
-  maven: <CodeOutlined />,
-  pypi: <CodeOutlined />,
-  npm: <AppstoreOutlined />,
-  docker: <DatabaseOutlined />,
-  helm: <CloudServerOutlined />,
-  rpm: <AppstoreOutlined />,
-  debian: <AppstoreOutlined />,
-  go: <CodeOutlined />,
-  nuget: <AppstoreOutlined />,
-  cargo: <CodeOutlined />,
-  generic: <AppstoreOutlined />,
 };
 
 const formatStorageBytes = (bytes: number): string => {
@@ -254,8 +239,8 @@ export const RepositoryTable: React.FC<RepositoryTableProps> = ({
         sortOrder: sortedInfo.columnKey === 'format' ? sortedInfo.order : null,
         render: (format: RepositoryFormat) => (
           <Space size={4}>
-            {formatIcons[format]}
-            <Text>{format.toUpperCase()}</Text>
+            {getFormatIcon(format, 16)}
+            <Text>{packageTypeLabels[format as keyof typeof packageTypeLabels] || format}</Text>
           </Space>
         ),
       },
@@ -399,7 +384,7 @@ export const RepositoryTable: React.FC<RepositoryTableProps> = ({
               { value: 'all', label: 'All Formats' },
               ...uniqueFormats.map((format) => ({
                 value: format,
-                label: format.toUpperCase(),
+                label: packageTypeLabels[format as keyof typeof packageTypeLabels] || format,
               })),
             ]}
           />

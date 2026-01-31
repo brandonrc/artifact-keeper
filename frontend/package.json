@@ -17,6 +17,7 @@
     "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
+    "@icons-pack/react-simple-icons": "^13.8.0",
     "@tanstack/react-query": "^5.90.18",
     "antd": "^6.2.0",
     "axios": "^1.6.5",
