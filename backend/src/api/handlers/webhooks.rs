@@ -258,13 +258,11 @@ pub async fn delete_webhook(
     Ok(())
 }
 
-/// Enable webhook
-pub async fn enable_webhook(
-    State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
-    Path(id): Path<Uuid>,
-) -> Result<()> {
-    let result = sqlx::query!("UPDATE webhooks SET is_enabled = true WHERE id = $1", id)
+/// Set webhook enabled state, returning NotFound if the webhook does not exist.
+async fn set_webhook_enabled(state: &SharedState, id: Uuid, enabled: bool) -> Result<()> {
+    let result = sqlx::query("UPDATE webhooks SET is_enabled = $2 WHERE id = $1")
+        .bind(id)
+        .bind(enabled)
         .execute(&state.db)
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -276,22 +274,22 @@ pub async fn enable_webhook(
     Ok(())
 }
 
+/// Enable webhook
+pub async fn enable_webhook(
+    State(state): State<SharedState>,
+    Extension(_auth): Extension<AuthExtension>,
+    Path(id): Path<Uuid>,
+) -> Result<()> {
+    set_webhook_enabled(&state, id, true).await
+}
+
 /// Disable webhook
 pub async fn disable_webhook(
     State(state): State<SharedState>,
     Extension(_auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<()> {
-    let result = sqlx::query!("UPDATE webhooks SET is_enabled = false WHERE id = $1", id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Webhook not found".to_string()));
-    }
-
-    Ok(())
+    set_webhook_enabled(&state, id, false).await
 }
 
 #[derive(Debug, Serialize)]

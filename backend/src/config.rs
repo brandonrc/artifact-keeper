@@ -3,6 +3,14 @@
 use crate::error::{AppError, Result};
 use std::env;
 
+/// Read an environment variable and parse it, falling back to a default on missing or invalid values.
+fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
+    env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -89,18 +97,9 @@ impl Config {
             s3_endpoint: env::var("S3_ENDPOINT").ok(),
             jwt_secret: env::var("JWT_SECRET")
                 .map_err(|_| AppError::Config("JWT_SECRET not set".into()))?,
-            jwt_expiration_secs: env::var("JWT_EXPIRATION_SECS")
-                .unwrap_or_else(|_| "86400".into())
-                .parse()
-                .unwrap_or(86400),
-            jwt_access_token_expiry_minutes: env::var("JWT_ACCESS_TOKEN_EXPIRY_MINUTES")
-                .unwrap_or_else(|_| "30".into())
-                .parse()
-                .unwrap_or(30),
-            jwt_refresh_token_expiry_days: env::var("JWT_REFRESH_TOKEN_EXPIRY_DAYS")
-                .unwrap_or_else(|_| "7".into())
-                .parse()
-                .unwrap_or(7),
+            jwt_expiration_secs: env_parse("JWT_EXPIRATION_SECS", 86400),
+            jwt_access_token_expiry_minutes: env_parse("JWT_ACCESS_TOKEN_EXPIRY_MINUTES", 30),
+            jwt_refresh_token_expiry_days: env_parse("JWT_REFRESH_TOKEN_EXPIRY_DAYS", 7),
             oidc_issuer: env::var("OIDC_ISSUER").ok(),
             oidc_client_id: env::var("OIDC_CLIENT_ID").ok(),
             oidc_client_secret: env::var("OIDC_CLIENT_SECRET").ok(),
@@ -111,9 +110,7 @@ impl Config {
             meilisearch_api_key: env::var("MEILISEARCH_API_KEY").ok(),
             scan_workspace_path: env::var("SCAN_WORKSPACE_PATH")
                 .unwrap_or_else(|_| "/scan-workspace".into()),
-            demo_mode: env::var("DEMO_MODE")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
+            demo_mode: matches!(env::var("DEMO_MODE").as_deref(), Ok("true" | "1")),
         })
     }
 }

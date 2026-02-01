@@ -60,7 +60,6 @@ pub async fn get_artifact(
     State(state): State<SharedState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ArtifactResponse>> {
-    // Fetch artifact
     let artifact = sqlx::query!(
         r#"
         SELECT
@@ -101,7 +100,6 @@ pub async fn get_artifact_metadata(
     State(state): State<SharedState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ArtifactMetadataResponse>> {
-    // Verify artifact exists
     let exists = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = $1 AND is_deleted = false)",
         id
@@ -114,7 +112,6 @@ pub async fn get_artifact_metadata(
         return Err(AppError::NotFound("Artifact not found".to_string()));
     }
 
-    // Fetch metadata
     let metadata = sqlx::query!(
         r#"
         SELECT artifact_id, format, metadata, properties
@@ -141,7 +138,6 @@ pub async fn get_artifact_stats(
     State(state): State<SharedState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ArtifactStatsResponse>> {
-    // Verify artifact exists
     let exists = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = $1 AND is_deleted = false)",
         id
@@ -154,7 +150,6 @@ pub async fn get_artifact_stats(
         return Err(AppError::NotFound("Artifact not found".to_string()));
     }
 
-    // Get download stats
     let stats = sqlx::query!(
         r#"
         SELECT

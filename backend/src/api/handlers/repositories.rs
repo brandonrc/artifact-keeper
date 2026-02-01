@@ -24,6 +24,11 @@ use crate::services::repository_service::{
 };
 use crate::storage::filesystem::FilesystemStorage;
 
+/// Require that the request is authenticated, returning an error if not.
+fn require_auth(auth: Option<AuthExtension>) -> Result<AuthExtension> {
+    auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))
+}
+
 /// Create repository routes
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -233,9 +238,7 @@ pub async fn create_repository(
     Extension(auth): Extension<Option<AuthExtension>>,
     Json(payload): Json<CreateRepositoryRequest>,
 ) -> Result<Json<RepositoryResponse>> {
-    // Require authentication
-    let _auth =
-        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth = require_auth(auth)?;
     let format = parse_format(&payload.format)?;
     let repo_type = parse_repo_type(&payload.repo_type)?;
 
@@ -280,9 +283,7 @@ pub async fn update_repository(
     Path(key): Path<String>,
     Json(payload): Json<UpdateRepositoryRequest>,
 ) -> Result<Json<RepositoryResponse>> {
-    // Require authentication
-    let _auth =
-        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth = require_auth(auth)?;
     let service = state.create_repository_service();
 
     // Get existing repo by key
@@ -312,9 +313,7 @@ pub async fn delete_repository(
     Extension(auth): Extension<Option<AuthExtension>>,
     Path(key): Path<String>,
 ) -> Result<()> {
-    // Require authentication
-    let _auth =
-        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth = require_auth(auth)?;
     let service = state.create_repository_service();
     let repo = service.get_by_key(&key).await?;
     service.delete(repo.id).await?;
@@ -463,8 +462,7 @@ pub async fn upload_artifact(
     Path((key, path)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<ArtifactResponse>> {
-    let auth =
-        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let auth = require_auth(auth)?;
     let repo_service = RepositoryService::new(state.db.clone());
     let repo = repo_service.get_by_key(&key).await?;
 
@@ -570,9 +568,7 @@ pub async fn delete_artifact(
     Extension(auth): Extension<Option<AuthExtension>>,
     Path((key, path)): Path<(String, String)>,
 ) -> Result<()> {
-    // Require authentication
-    let _auth =
-        auth.ok_or_else(|| AppError::Authentication("Authentication required".to_string()))?;
+    let _auth = require_auth(auth)?;
     let repo_service = RepositoryService::new(state.db.clone());
     let repo = repo_service.get_by_key(&key).await?;
 

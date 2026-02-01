@@ -228,49 +228,37 @@ impl GrypeScanner {
 
     /// Convert Grype matches into `RawFinding` values.
     fn convert_findings(report: &GrypeReport) -> Vec<RawFinding> {
-        let mut findings = Vec::new();
+        report
+            .matches
+            .iter()
+            .map(|m| {
+                let affected_component = Some(match &m.artifact.artifact_type {
+                    Some(t) => format!("{} ({})", m.artifact.name, t),
+                    None => m.artifact.name.clone(),
+                });
 
-        for m in &report.matches {
-            let severity =
-                Severity::from_str_loose(&m.vulnerability.severity).unwrap_or(Severity::Info);
-
-            let title = format!("{} in {}", m.vulnerability.id, m.artifact.name);
-
-            let fixed_version = m
-                .vulnerability
-                .fix
-                .as_ref()
-                .and_then(|f| f.versions.first().cloned());
-
-            let source_url = m
-                .vulnerability
-                .urls
-                .as_ref()
-                .and_then(|u| u.first().cloned());
-
-            let affected_component = {
-                let comp = if let Some(ref t) = m.artifact.artifact_type {
-                    format!("{} ({})", m.artifact.name, t)
-                } else {
-                    m.artifact.name.clone()
-                };
-                Some(comp)
-            };
-
-            findings.push(RawFinding {
-                severity,
-                title,
-                description: m.vulnerability.description.clone(),
-                cve_id: Some(m.vulnerability.id.clone()),
-                affected_component,
-                affected_version: Some(m.artifact.version.clone()),
-                fixed_version,
-                source: Some("grype".to_string()),
-                source_url,
-            });
-        }
-
-        findings
+                RawFinding {
+                    severity: Severity::from_str_loose(&m.vulnerability.severity)
+                        .unwrap_or(Severity::Info),
+                    title: format!("{} in {}", m.vulnerability.id, m.artifact.name),
+                    description: m.vulnerability.description.clone(),
+                    cve_id: Some(m.vulnerability.id.clone()),
+                    affected_component,
+                    affected_version: Some(m.artifact.version.clone()),
+                    fixed_version: m
+                        .vulnerability
+                        .fix
+                        .as_ref()
+                        .and_then(|f| f.versions.first().cloned()),
+                    source: Some("grype".to_string()),
+                    source_url: m
+                        .vulnerability
+                        .urls
+                        .as_ref()
+                        .and_then(|u| u.first().cloned()),
+                }
+            })
+            .collect()
     }
 }
 

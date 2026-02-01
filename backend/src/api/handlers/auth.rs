@@ -108,7 +108,6 @@ pub async fn get_current_user(
     State(state): State<SharedState>,
     Extension(auth): Extension<AuthExtension>,
 ) -> Result<Json<UserResponse>> {
-    // Fetch full user details from database
     let user = sqlx::query!(
         r#"
         SELECT id, username, email, display_name, is_admin

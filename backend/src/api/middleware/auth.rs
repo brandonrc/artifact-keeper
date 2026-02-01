@@ -18,6 +18,7 @@ use axum::{
 };
 use uuid::Uuid;
 
+use crate::models::user::User;
 use crate::services::auth_service::{AuthService, Claims};
 
 /// Custom header name for API key
@@ -160,10 +161,19 @@ pub async fn auth_middleware(
     }
 }
 
-/// Helper function to validate API token and create AuthExtension
-///
-/// Note: Scopes are not loaded here for performance. Use TokenService
-/// if scope validation is needed in handlers.
+/// Create an AuthExtension from a validated User for API token authentication.
+fn auth_extension_from_api_user(user: User) -> AuthExtension {
+    AuthExtension {
+        user_id: user.id,
+        username: user.username,
+        email: user.email,
+        is_admin: user.is_admin,
+        is_api_token: true,
+        scopes: None, // Scopes loaded on-demand via TokenService
+    }
+}
+
+/// Validate an API token and create an AuthExtension.
 async fn validate_api_token_with_scopes(
     auth_service: &AuthService,
     token: &str,
@@ -173,14 +183,7 @@ async fn validate_api_token_with_scopes(
         .await
         .map_err(|_| ())?;
 
-    Ok(AuthExtension {
-        user_id: user.id,
-        username: user.username,
-        email: user.email,
-        is_admin: user.is_admin,
-        is_api_token: true,
-        scopes: None, // Scopes loaded on-demand via TokenService
-    })
+    Ok(auth_extension_from_api_user(user))
 }
 
 /// Optional authentication middleware - allows unauthenticated requests
@@ -196,36 +199,19 @@ pub async fn optional_auth_middleware(
 
     let auth_ext = match extracted {
         ExtractedToken::Bearer(token) => {
-            // Try JWT token first
             if let Ok(claims) = auth_service.validate_access_token(token) {
                 Some(AuthExtension::from(claims))
             } else if let Ok(user) = auth_service.validate_api_token(token).await {
-                Some(AuthExtension {
-                    user_id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    is_admin: user.is_admin,
-                    is_api_token: true,
-                    scopes: None,
-                })
+                Some(auth_extension_from_api_user(user))
             } else {
                 None
             }
         }
-        ExtractedToken::ApiKey(token) => {
-            if let Ok(user) = auth_service.validate_api_token(token).await {
-                Some(AuthExtension {
-                    user_id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    is_admin: user.is_admin,
-                    is_api_token: true,
-                    scopes: None,
-                })
-            } else {
-                None
-            }
-        }
+        ExtractedToken::ApiKey(token) => auth_service
+            .validate_api_token(token)
+            .await
+            .ok()
+            .map(auth_extension_from_api_user),
         ExtractedToken::None | ExtractedToken::Invalid => None,
     };
 
@@ -245,46 +231,21 @@ pub async fn admin_middleware(
     let extracted = extract_token(&request);
 
     let auth_ext = match extracted {
-        ExtractedToken::Bearer(token) => {
-            // Try JWT token first
-            match auth_service.validate_access_token(token) {
-                Ok(claims) => AuthExtension::from(claims),
+        ExtractedToken::Bearer(token) => match auth_service.validate_access_token(token) {
+            Ok(claims) => AuthExtension::from(claims),
+            Err(_) => match auth_service.validate_api_token(token).await {
+                Ok(user) => auth_extension_from_api_user(user),
                 Err(_) => {
-                    // Try API token
-                    match auth_service.validate_api_token(token).await {
-                        Ok(user) => AuthExtension {
-                            user_id: user.id,
-                            username: user.username,
-                            email: user.email,
-                            is_admin: user.is_admin,
-                            is_api_token: true,
-                            scopes: None,
-                        },
-                        Err(_) => {
-                            return (StatusCode::UNAUTHORIZED, "Invalid or expired token")
-                                .into_response()
-                        }
-                    }
+                    return (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response()
                 }
+            },
+        },
+        ExtractedToken::ApiKey(token) => match auth_service.validate_api_token(token).await {
+            Ok(user) => auth_extension_from_api_user(user),
+            Err(_) => {
+                return (StatusCode::UNAUTHORIZED, "Invalid or expired API token").into_response()
             }
-        }
-        ExtractedToken::ApiKey(token) => {
-            // ApiKey scheme is always an API token
-            match auth_service.validate_api_token(token).await {
-                Ok(user) => AuthExtension {
-                    user_id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    is_admin: user.is_admin,
-                    is_api_token: true,
-                    scopes: None,
-                },
-                Err(_) => {
-                    return (StatusCode::UNAUTHORIZED, "Invalid or expired API token")
-                        .into_response()
-                }
-            }
-        }
+        },
         ExtractedToken::None => {
             return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
         }

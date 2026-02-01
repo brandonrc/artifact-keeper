@@ -132,6 +132,110 @@ pub struct ScanResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+// ---------------------------------------------------------------------------
+// Model-to-response conversions
+// ---------------------------------------------------------------------------
+
+impl ScanResponse {
+    fn from_scan(s: ScanResult, artifact_name: Option<String>, artifact_version: Option<String>) -> Self {
+        Self {
+            id: s.id,
+            artifact_id: s.artifact_id,
+            artifact_name,
+            artifact_version,
+            repository_id: s.repository_id,
+            scan_type: s.scan_type,
+            status: s.status,
+            findings_count: s.findings_count,
+            critical_count: s.critical_count,
+            high_count: s.high_count,
+            medium_count: s.medium_count,
+            low_count: s.low_count,
+            info_count: s.info_count,
+            scanner_version: s.scanner_version,
+            error_message: s.error_message,
+            started_at: s.started_at,
+            completed_at: s.completed_at,
+            created_at: s.created_at,
+        }
+    }
+}
+
+impl From<crate::models::security::ScanFinding> for FindingResponse {
+    fn from(f: crate::models::security::ScanFinding) -> Self {
+        Self {
+            id: f.id,
+            scan_result_id: f.scan_result_id,
+            artifact_id: f.artifact_id,
+            severity: f.severity,
+            title: f.title,
+            description: f.description,
+            cve_id: f.cve_id,
+            affected_component: f.affected_component,
+            affected_version: f.affected_version,
+            fixed_version: f.fixed_version,
+            source: f.source,
+            source_url: f.source_url,
+            is_acknowledged: f.is_acknowledged,
+            acknowledged_by: f.acknowledged_by,
+            acknowledged_reason: f.acknowledged_reason,
+            acknowledged_at: f.acknowledged_at,
+            created_at: f.created_at,
+        }
+    }
+}
+
+impl From<crate::models::security::ScanPolicy> for PolicyResponse {
+    fn from(p: crate::models::security::ScanPolicy) -> Self {
+        Self {
+            id: p.id,
+            name: p.name,
+            repository_id: p.repository_id,
+            max_severity: p.max_severity,
+            block_unscanned: p.block_unscanned,
+            block_on_fail: p.block_on_fail,
+            is_enabled: p.is_enabled,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
+impl From<crate::models::security::RepoSecurityScore> for ScoreResponse {
+    fn from(s: crate::models::security::RepoSecurityScore) -> Self {
+        Self {
+            id: s.id,
+            repository_id: s.repository_id,
+            score: s.score,
+            grade: s.grade,
+            total_findings: s.total_findings,
+            critical_count: s.critical_count,
+            high_count: s.high_count,
+            medium_count: s.medium_count,
+            low_count: s.low_count,
+            acknowledged_count: s.acknowledged_count,
+            last_scan_at: s.last_scan_at,
+            calculated_at: s.calculated_at,
+        }
+    }
+}
+
+impl From<crate::models::security::ScanConfig> for ScanConfigResponse {
+    fn from(c: crate::models::security::ScanConfig) -> Self {
+        Self {
+            id: c.id,
+            repository_id: c.repository_id,
+            scan_enabled: c.scan_enabled,
+            scan_on_upload: c.scan_on_upload,
+            scan_on_proxy: c.scan_on_proxy,
+            block_on_policy_violation: c.block_on_policy_violation,
+            severity_threshold: c.severity_threshold,
+            created_at: c.created_at,
+            updated_at: c.updated_at,
+        }
+    }
+}
+
 /// Batch-lookup artifact name/version and enrich scan results into responses.
 async fn enrich_scans(db: &PgPool, scans: Vec<ScanResult>) -> Result<Vec<ScanResponse>> {
     let artifact_ids: Vec<Uuid> = scans.iter().map(|s| s.artifact_id).collect();
@@ -158,26 +262,7 @@ async fn enrich_scans(db: &PgPool, scans: Vec<ScanResult>) -> Result<Vec<ScanRes
                 .get(&s.artifact_id)
                 .map(|(n, v)| (Some(n.clone()), v.clone()))
                 .unwrap_or((None, None));
-            ScanResponse {
-                id: s.id,
-                artifact_id: s.artifact_id,
-                artifact_name,
-                artifact_version,
-                repository_id: s.repository_id,
-                scan_type: s.scan_type,
-                status: s.status,
-                findings_count: s.findings_count,
-                critical_count: s.critical_count,
-                high_count: s.high_count,
-                medium_count: s.medium_count,
-                low_count: s.low_count,
-                info_count: s.info_count,
-                scanner_version: s.scanner_version,
-                error_message: s.error_message,
-                started_at: s.started_at,
-                completed_at: s.completed_at,
-                created_at: s.created_at,
-            }
+            ScanResponse::from_scan(s, artifact_name, artifact_version)
         })
         .collect())
 }
@@ -303,25 +388,7 @@ async fn get_all_scores(
 ) -> Result<Json<Vec<ScoreResponse>>> {
     let svc = ScanResultService::new(state.db.clone());
     let scores = svc.get_all_scores().await?;
-
-    let response: Vec<ScoreResponse> = scores
-        .into_iter()
-        .map(|s| ScoreResponse {
-            id: s.id,
-            repository_id: s.repository_id,
-            score: s.score,
-            grade: s.grade,
-            total_findings: s.total_findings,
-            critical_count: s.critical_count,
-            high_count: s.high_count,
-            medium_count: s.medium_count,
-            low_count: s.low_count,
-            acknowledged_count: s.acknowledged_count,
-            last_scan_at: s.last_scan_at,
-            calculated_at: s.calculated_at,
-        })
-        .collect();
-
+    let response: Vec<ScoreResponse> = scores.into_iter().map(ScoreResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -334,12 +401,6 @@ async fn trigger_scan(
     Extension(_auth): Extension<AuthExtension>,
     Json(body): Json<TriggerScanRequest>,
 ) -> Result<Json<TriggerScanResponse>> {
-    if body.artifact_id.is_none() && body.repository_id.is_none() {
-        return Err(AppError::Validation(
-            "Either artifact_id or repository_id is required".to_string(),
-        ));
-    }
-
     let scanner = state
         .scanner_service
         .as_ref()
@@ -347,42 +408,41 @@ async fn trigger_scan(
         .clone();
 
     if let Some(artifact_id) = body.artifact_id {
-        let scanner = scanner.clone();
         tokio::spawn(async move {
             if let Err(e) = scanner.scan_artifact(artifact_id).await {
                 tracing::error!("Scan failed for artifact {}: {}", artifact_id, e);
             }
         });
-        Ok(Json(TriggerScanResponse {
+        return Ok(Json(TriggerScanResponse {
             message: format!("Scan queued for artifact {}", artifact_id),
             artifacts_queued: 1,
-        }))
-    } else if let Some(repository_id) = body.repository_id {
-        let scanner = scanner.clone();
-        // Count artifacts first so we can return the count immediately
-        let count: i64 = sqlx::query_scalar!(
-            "SELECT COUNT(*) as \"count!\" FROM artifacts WHERE repository_id = $1 AND is_deleted = false",
-            repository_id
-        )
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        tokio::spawn(async move {
-            if let Err(e) = scanner.scan_repository(repository_id).await {
-                tracing::error!("Repository scan failed for {}: {}", repository_id, e);
-            }
-        });
-        Ok(Json(TriggerScanResponse {
-            message: format!(
-                "Repository scan queued for {} ({} artifacts)",
-                repository_id, count
-            ),
-            artifacts_queued: count as u32,
-        }))
-    } else {
-        unreachable!()
+        }));
     }
+
+    let repository_id = body.repository_id.ok_or_else(|| {
+        AppError::Validation("Either artifact_id or repository_id is required".to_string())
+    })?;
+
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) as \"count!\" FROM artifacts WHERE repository_id = $1 AND is_deleted = false",
+        repository_id
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    tokio::spawn(async move {
+        if let Err(e) = scanner.scan_repository(repository_id).await {
+            tracing::error!("Repository scan failed for {}: {}", repository_id, e);
+        }
+    });
+    Ok(Json(TriggerScanResponse {
+        message: format!(
+            "Repository scan queued for {} ({} artifacts)",
+            repository_id, count
+        ),
+        artifacts_queued: count as u32,
+    }))
 }
 
 async fn list_scans(
@@ -438,29 +498,7 @@ async fn list_findings(
 
     let (findings, total) = svc.list_findings(scan_id, offset, per_page).await?;
 
-    let items: Vec<FindingResponse> = findings
-        .into_iter()
-        .map(|f| FindingResponse {
-            id: f.id,
-            scan_result_id: f.scan_result_id,
-            artifact_id: f.artifact_id,
-            severity: f.severity,
-            title: f.title,
-            description: f.description,
-            cve_id: f.cve_id,
-            affected_component: f.affected_component,
-            affected_version: f.affected_version,
-            fixed_version: f.fixed_version,
-            source: f.source,
-            source_url: f.source_url,
-            is_acknowledged: f.is_acknowledged,
-            acknowledged_by: f.acknowledged_by,
-            acknowledged_reason: f.acknowledged_reason,
-            acknowledged_at: f.acknowledged_at,
-            created_at: f.created_at,
-        })
-        .collect();
-
+    let items: Vec<FindingResponse> = findings.into_iter().map(FindingResponse::from).collect();
     Ok(Json(FindingListResponse { items, total }))
 }
 
@@ -477,25 +515,7 @@ async fn acknowledge_finding(
         .acknowledge_finding(finding_id, user_id, &body.reason)
         .await?;
 
-    Ok(Json(FindingResponse {
-        id: f.id,
-        scan_result_id: f.scan_result_id,
-        artifact_id: f.artifact_id,
-        severity: f.severity,
-        title: f.title,
-        description: f.description,
-        cve_id: f.cve_id,
-        affected_component: f.affected_component,
-        affected_version: f.affected_version,
-        fixed_version: f.fixed_version,
-        source: f.source,
-        source_url: f.source_url,
-        is_acknowledged: f.is_acknowledged,
-        acknowledged_by: f.acknowledged_by,
-        acknowledged_reason: f.acknowledged_reason,
-        acknowledged_at: f.acknowledged_at,
-        created_at: f.created_at,
-    }))
+    Ok(Json(FindingResponse::from(f)))
 }
 
 async fn revoke_acknowledgment(
@@ -506,25 +526,7 @@ async fn revoke_acknowledgment(
     let svc = ScanResultService::new(state.db.clone());
     let f = svc.revoke_acknowledgment(finding_id).await?;
 
-    Ok(Json(FindingResponse {
-        id: f.id,
-        scan_result_id: f.scan_result_id,
-        artifact_id: f.artifact_id,
-        severity: f.severity,
-        title: f.title,
-        description: f.description,
-        cve_id: f.cve_id,
-        affected_component: f.affected_component,
-        affected_version: f.affected_version,
-        fixed_version: f.fixed_version,
-        source: f.source,
-        source_url: f.source_url,
-        is_acknowledged: f.is_acknowledged,
-        acknowledged_by: f.acknowledged_by,
-        acknowledged_reason: f.acknowledged_reason,
-        acknowledged_at: f.acknowledged_at,
-        created_at: f.created_at,
-    }))
+    Ok(Json(FindingResponse::from(f)))
 }
 
 // ---------------------------------------------------------------------------
@@ -537,22 +539,7 @@ async fn list_policies(
 ) -> Result<Json<Vec<PolicyResponse>>> {
     let svc = PolicyService::new(state.db.clone());
     let policies = svc.list_policies().await?;
-
-    let response: Vec<PolicyResponse> = policies
-        .into_iter()
-        .map(|p| PolicyResponse {
-            id: p.id,
-            name: p.name,
-            repository_id: p.repository_id,
-            max_severity: p.max_severity,
-            block_unscanned: p.block_unscanned,
-            block_on_fail: p.block_on_fail,
-            is_enabled: p.is_enabled,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-        })
-        .collect();
-
+    let response: Vec<PolicyResponse> = policies.into_iter().map(PolicyResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -572,17 +559,7 @@ async fn create_policy(
         )
         .await?;
 
-    Ok(Json(PolicyResponse {
-        id: p.id,
-        name: p.name,
-        repository_id: p.repository_id,
-        max_severity: p.max_severity,
-        block_unscanned: p.block_unscanned,
-        block_on_fail: p.block_on_fail,
-        is_enabled: p.is_enabled,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-    }))
+    Ok(Json(PolicyResponse::from(p)))
 }
 
 async fn get_policy(
@@ -593,17 +570,7 @@ async fn get_policy(
     let svc = PolicyService::new(state.db.clone());
     let p = svc.get_policy(id).await?;
 
-    Ok(Json(PolicyResponse {
-        id: p.id,
-        name: p.name,
-        repository_id: p.repository_id,
-        max_severity: p.max_severity,
-        block_unscanned: p.block_unscanned,
-        block_on_fail: p.block_on_fail,
-        is_enabled: p.is_enabled,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-    }))
+    Ok(Json(PolicyResponse::from(p)))
 }
 
 async fn update_policy(
@@ -624,17 +591,7 @@ async fn update_policy(
         )
         .await?;
 
-    Ok(Json(PolicyResponse {
-        id: p.id,
-        name: p.name,
-        repository_id: p.repository_id,
-        max_severity: p.max_severity,
-        block_unscanned: p.block_unscanned,
-        block_on_fail: p.block_on_fail,
-        is_enabled: p.is_enabled,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-    }))
+    Ok(Json(PolicyResponse::from(p)))
 }
 
 async fn delete_policy(
@@ -670,31 +627,8 @@ async fn get_repo_security(
     let score = result_svc.get_score(repo).await?;
 
     Ok(Json(RepoSecurityResponse {
-        config: config.map(|c| ScanConfigResponse {
-            id: c.id,
-            repository_id: c.repository_id,
-            scan_enabled: c.scan_enabled,
-            scan_on_upload: c.scan_on_upload,
-            scan_on_proxy: c.scan_on_proxy,
-            block_on_policy_violation: c.block_on_policy_violation,
-            severity_threshold: c.severity_threshold,
-            created_at: c.created_at,
-            updated_at: c.updated_at,
-        }),
-        score: score.map(|s| ScoreResponse {
-            id: s.id,
-            repository_id: s.repository_id,
-            score: s.score,
-            grade: s.grade,
-            total_findings: s.total_findings,
-            critical_count: s.critical_count,
-            high_count: s.high_count,
-            medium_count: s.medium_count,
-            low_count: s.low_count,
-            acknowledged_count: s.acknowledged_count,
-            last_scan_at: s.last_scan_at,
-            calculated_at: s.calculated_at,
-        }),
+        config: config.map(ScanConfigResponse::from),
+        score: score.map(ScoreResponse::from),
     }))
 }
 
@@ -713,17 +647,7 @@ async fn update_repo_security(
     let svc = ScanConfigService::new(state.db.clone());
     let c = svc.upsert_config(repo, &body).await?;
 
-    Ok(Json(ScanConfigResponse {
-        id: c.id,
-        repository_id: c.repository_id,
-        scan_enabled: c.scan_enabled,
-        scan_on_upload: c.scan_on_upload,
-        scan_on_proxy: c.scan_on_proxy,
-        block_on_policy_violation: c.block_on_policy_violation,
-        severity_threshold: c.severity_threshold,
-        created_at: c.created_at,
-        updated_at: c.updated_at,
-    }))
+    Ok(Json(ScanConfigResponse::from(c)))
 }
 
 async fn list_artifact_scans(
