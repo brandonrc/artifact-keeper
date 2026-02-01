@@ -153,12 +153,10 @@ pub async fn get_tree(
         .into_values()
         .map(|entry| {
             let node_path = format!("{}/{}", full_prefix, entry.segment);
-            let node_id = if let Some(aid) = entry.artifact_id {
-                aid.to_string()
-            } else {
-                // Deterministic ID for folders based on path
-                format!("folder:{}", node_path)
-            };
+            let node_id = entry
+                .artifact_id
+                .map(|aid| aid.to_string())
+                .unwrap_or_else(|| format!("folder:{}", node_path));
 
             TreeNodeResponse {
                 id: node_id,

@@ -719,40 +719,25 @@ impl Scanner for DependencyScanner {
         );
 
         // Query both sources in parallel
-        let osv_deps = deps.clone();
-        let gh_deps = deps.clone();
-        let advisory = self.advisory.clone();
-        let advisory2 = self.advisory.clone();
-
         let (osv_results, gh_results) = tokio::join!(
-            advisory.query_osv(&osv_deps),
-            advisory2.query_github(&gh_deps),
+            self.advisory.query_osv(&deps),
+            self.advisory.query_github(&deps),
         );
 
         // Merge and deduplicate by CVE/GHSA ID
         let mut seen_ids = std::collections::HashSet::new();
         let mut findings = Vec::new();
 
-        for advisory_match in osv_results.into_iter().chain(gh_results.into_iter()) {
-            // Deduplicate: skip if we've seen the same advisory ID or any alias
-            if seen_ids.contains(&advisory_match.id) {
-                continue;
-            }
-            let mut dominated = false;
-            for alias in &advisory_match.aliases {
-                if seen_ids.contains(alias) {
-                    dominated = true;
-                    break;
-                }
-            }
+        for advisory_match in osv_results.into_iter().chain(gh_results) {
+            // Skip if we have already seen this advisory or any of its aliases
+            let dominated = seen_ids.contains(&advisory_match.id)
+                || advisory_match.aliases.iter().any(|a| seen_ids.contains(a));
             if dominated {
                 continue;
             }
 
             seen_ids.insert(advisory_match.id.clone());
-            for alias in &advisory_match.aliases {
-                seen_ids.insert(alias.clone());
-            }
+            seen_ids.extend(advisory_match.aliases.iter().cloned());
 
             let severity =
                 Severity::from_str_loose(&advisory_match.severity).unwrap_or(Severity::Medium);
@@ -955,23 +940,15 @@ impl ScannerService {
 
             match scanner.scan(&artifact, metadata.as_ref(), &content).await {
                 Ok(findings) => {
-                    let mut critical = 0i32;
-                    let mut high = 0i32;
-                    let mut medium = 0i32;
-                    let mut low = 0i32;
-                    let mut info = 0i32;
-
-                    for f in &findings {
-                        match f.severity {
-                            Severity::Critical => critical += 1,
-                            Severity::High => high += 1,
-                            Severity::Medium => medium += 1,
-                            Severity::Low => low += 1,
-                            Severity::Info => info += 1,
-                        }
-                    }
-
                     let total = findings.len() as i32;
+                    let count = |sev: Severity| -> i32 {
+                        findings.iter().filter(|f| f.severity == sev).count() as i32
+                    };
+                    let critical = count(Severity::Critical);
+                    let high = count(Severity::High);
+                    let medium = count(Severity::Medium);
+                    let low = count(Severity::Low);
+                    let info = count(Severity::Info);
 
                     // Persist findings
                     self.scan_result_service
@@ -1056,7 +1033,6 @@ impl ScannerService {
 
     /// Fetch artifact content from filesystem storage.
     async fn fetch_artifact_content(&self, artifact: &Artifact) -> Result<Bytes> {
-        // Look up the repository's storage_path
         let storage_path: String =
             sqlx::query_scalar("SELECT storage_path FROM repositories WHERE id = $1")
                 .bind(artifact.repository_id)
@@ -1069,16 +1045,13 @@ impl ScannerService {
                     ))
                 })?;
 
-        // Create a FilesystemStorage for this repository and read the artifact
         let storage = FilesystemStorage::new(&storage_path);
-        let content = storage.get(&artifact.storage_key).await.map_err(|e| {
+        storage.get(&artifact.storage_key).await.map_err(|e| {
             AppError::Storage(format!(
                 "Failed to read artifact {} (key={}): {}",
                 artifact.id, artifact.storage_key, e
             ))
-        })?;
-
-        Ok(content)
+        })
     }
 
     /// Prepare a scan workspace directory with the artifact content.

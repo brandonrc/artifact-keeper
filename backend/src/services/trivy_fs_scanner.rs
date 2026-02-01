@@ -253,34 +253,34 @@ impl TrivyFsScanner {
 
     /// Convert Trivy report vulnerabilities into `RawFinding` values.
     fn convert_findings(report: &TrivyReport) -> Vec<RawFinding> {
-        let mut findings = Vec::new();
-
-        for result in &report.results {
-            if let Some(ref vulns) = result.vulnerabilities {
-                for vuln in vulns {
-                    let severity =
-                        Severity::from_str_loose(&vuln.severity).unwrap_or(Severity::Info);
-
-                    let title = vuln.title.clone().unwrap_or_else(|| {
-                        format!("{} in {}", vuln.vulnerability_id, vuln.pkg_name)
-                    });
-
-                    findings.push(RawFinding {
-                        severity,
-                        title,
+        report
+            .results
+            .iter()
+            .flat_map(|result| {
+                result
+                    .vulnerabilities
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(move |vuln| RawFinding {
+                        severity: Severity::from_str_loose(&vuln.severity)
+                            .unwrap_or(Severity::Info),
+                        title: vuln.title.clone().unwrap_or_else(|| {
+                            format!("{} in {}", vuln.vulnerability_id, vuln.pkg_name)
+                        }),
                         description: vuln.description.clone(),
                         cve_id: Some(vuln.vulnerability_id.clone()),
-                        affected_component: Some(format!("{} ({})", vuln.pkg_name, result.target)),
+                        affected_component: Some(format!(
+                            "{} ({})",
+                            vuln.pkg_name, result.target
+                        )),
                         affected_version: Some(vuln.installed_version.clone()),
                         fixed_version: vuln.fixed_version.clone(),
                         source: Some("trivy-filesystem".to_string()),
                         source_url: vuln.primary_url.clone(),
-                    });
-                }
-            }
-        }
-
-        findings
+                    })
+            })
+            .collect()
     }
 }
 

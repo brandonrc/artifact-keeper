@@ -11,154 +11,113 @@ use thiserror::Error;
 /// Application result type alias
 pub type Result<T> = std::result::Result<T, AppError>;
 
-/// Application error types
+/// Application error types.
 #[derive(Error, Debug)]
 pub enum AppError {
-    /// Configuration error
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// Database error
     #[error("Database error: {0}")]
     Database(String),
 
-    /// SQLx error
     #[error("Database error: {0}")]
     Sqlx(#[from] sqlx::Error),
 
-    /// Migration error
     #[error("Migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
 
-    /// Authentication error
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
-    /// Unauthorized error (missing credentials)
+    /// Missing credentials
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
-    /// Authorization error
     #[error("Access denied: {0}")]
     Authorization(String),
 
-    /// Not found error
     #[error("Resource not found: {0}")]
     NotFound(String),
 
-    /// Conflict error (e.g., duplicate artifact version)
+    /// Duplicate resource (e.g., artifact version already exists)
     #[error("Conflict: {0}")]
     Conflict(String),
 
-    /// Validation error
     #[error("Validation error: {0}")]
     Validation(String),
 
-    /// Quota exceeded error
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
-    /// Storage error
     #[error("Storage error: {0}")]
     Storage(String),
 
-    /// IO error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Address parse error
     #[error("Address parse error: {0}")]
     AddrParse(#[from] std::net::AddrParseError),
 
-    /// JSON error
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// JWT error
     #[error("JWT error: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
 
-    /// Internal server error
     #[error("Internal error: {0}")]
     Internal(String),
 
-    /// WASM execution error
     #[error("WASM error: {0}")]
     Wasm(#[from] crate::services::wasm_runtime::WasmError),
 }
 
+impl AppError {
+    /// Map error variant to HTTP status code and machine-readable error code.
+    fn status_and_code(&self) -> (StatusCode, &'static str) {
+        match self {
+            Self::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR"),
+            Self::Database(_) | Self::Sqlx(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR")
+            }
+            Self::Migration(_) => (StatusCode::INTERNAL_SERVER_ERROR, "MIGRATION_ERROR"),
+            Self::Authentication(_) => (StatusCode::UNAUTHORIZED, "AUTH_ERROR"),
+            Self::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
+            Self::Authorization(_) => (StatusCode::FORBIDDEN, "FORBIDDEN"),
+            Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
+            Self::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
+            Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
+            Self::QuotaExceeded(_) => (StatusCode::INSUFFICIENT_STORAGE, "QUOTA_EXCEEDED"),
+            Self::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "STORAGE_ERROR"),
+            Self::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "IO_ERROR"),
+            Self::AddrParse(_) => (StatusCode::INTERNAL_SERVER_ERROR, "ADDR_PARSE_ERROR"),
+            Self::Json(_) => (StatusCode::BAD_REQUEST, "JSON_ERROR"),
+            Self::Jwt(_) => (StatusCode::UNAUTHORIZED, "JWT_ERROR"),
+            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+            Self::Wasm(_) => (StatusCode::INTERNAL_SERVER_ERROR, "WASM_ERROR"),
+        }
+    }
+
+    /// Return a user-facing message. Internal details are hidden for
+    /// wrapped foreign errors (Sqlx, Io, etc.) to avoid leaking internals.
+    fn user_message(&self) -> String {
+        match self {
+            Self::Sqlx(_) => "Database operation failed".to_string(),
+            Self::Migration(_) => "Database migration failed".to_string(),
+            Self::Io(_) => "IO operation failed".to_string(),
+            Self::AddrParse(_) => "Invalid address".to_string(),
+            Self::Json(_) => "Invalid JSON".to_string(),
+            Self::Jwt(_) => "Invalid token".to_string(),
+            // All other variants carry their own user-facing message
+            other => other.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            AppError::Config(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "CONFIG_ERROR",
-                msg.clone(),
-            ),
-            AppError::Database(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DATABASE_ERROR",
-                msg.clone(),
-            ),
-            AppError::Sqlx(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "DATABASE_ERROR",
-                "Database operation failed".to_string(),
-            ),
-            AppError::Migration(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "MIGRATION_ERROR",
-                "Database migration failed".to_string(),
-            ),
-            AppError::Authentication(msg) => (StatusCode::UNAUTHORIZED, "AUTH_ERROR", msg.clone()),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone()),
-            AppError::Authorization(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
-            AppError::QuotaExceeded(msg) => (
-                StatusCode::INSUFFICIENT_STORAGE,
-                "QUOTA_EXCEEDED",
-                msg.clone(),
-            ),
-            AppError::Storage(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
-                msg.clone(),
-            ),
-            AppError::Io(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "IO_ERROR",
-                "IO operation failed".to_string(),
-            ),
-            AppError::AddrParse(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "ADDR_PARSE_ERROR",
-                "Invalid address".to_string(),
-            ),
-            AppError::Json(_) => (
-                StatusCode::BAD_REQUEST,
-                "JSON_ERROR",
-                "Invalid JSON".to_string(),
-            ),
-            AppError::Jwt(_) => (
-                StatusCode::UNAUTHORIZED,
-                "JWT_ERROR",
-                "Invalid token".to_string(),
-            ),
-            AppError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg.clone(),
-            ),
-            AppError::Wasm(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "WASM_ERROR",
-                e.to_string(),
-            ),
-        };
+        let (status, code) = self.status_and_code();
+        let message = self.user_message();
 
-        // Log the error
         tracing::error!(error = %self, code = code, "Request error");
 
         let body = Json(json!({

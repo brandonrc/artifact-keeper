@@ -32,9 +32,31 @@ pub struct CheckStatus {
     pub message: Option<String>,
 }
 
+/// Probe an external service health endpoint and return a CheckStatus.
+async fn check_service_health(base_url: &str, health_path: &str, service_name: &str) -> CheckStatus {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{}{}", base_url.trim_end_matches('/'), health_path);
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => CheckStatus {
+            status: "healthy".to_string(),
+            message: None,
+        },
+        Ok(resp) => CheckStatus {
+            status: "unhealthy".to_string(),
+            message: Some(format!("{} returned status {}", service_name, resp.status())),
+        },
+        Err(e) => CheckStatus {
+            status: "unavailable".to_string(),
+            message: Some(format!("{} unreachable: {}", service_name, e)),
+        },
+    }
+}
+
 /// Health check endpoint - basic liveness check
 pub async fn health_check(State(state): State<SharedState>) -> impl IntoResponse {
-    // Check database connectivity
     let db_check = match sqlx::query("SELECT 1").fetch_one(&state.db).await {
         Ok(_) => CheckStatus {
             status: "healthy".to_string(),
@@ -46,54 +68,14 @@ pub async fn health_check(State(state): State<SharedState>) -> impl IntoResponse
         },
     };
 
-    // Check security scanner (Trivy) if configured
-    let scanner_check = if let Some(trivy_url) = &state.config.trivy_url {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
-        let health_url = format!("{}/healthz", trivy_url.trim_end_matches('/'));
-        match client.get(&health_url).send().await {
-            Ok(resp) if resp.status().is_success() => Some(CheckStatus {
-                status: "healthy".to_string(),
-                message: None,
-            }),
-            Ok(resp) => Some(CheckStatus {
-                status: "unhealthy".to_string(),
-                message: Some(format!("Trivy returned status {}", resp.status())),
-            }),
-            Err(e) => Some(CheckStatus {
-                status: "unavailable".to_string(),
-                message: Some(format!("Trivy unreachable: {}", e)),
-            }),
-        }
-    } else {
-        None
+    let scanner_check = match &state.config.trivy_url {
+        Some(url) => Some(check_service_health(url, "/healthz", "Trivy").await),
+        None => None,
     };
 
-    // Check Meilisearch if configured
-    let meili_check = if let Some(meili_url) = &state.config.meilisearch_url {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
-        let health_url = format!("{}/health", meili_url.trim_end_matches('/'));
-        match client.get(&health_url).send().await {
-            Ok(resp) if resp.status().is_success() => Some(CheckStatus {
-                status: "healthy".to_string(),
-                message: None,
-            }),
-            Ok(resp) => Some(CheckStatus {
-                status: "unhealthy".to_string(),
-                message: Some(format!("Meilisearch returned status {}", resp.status())),
-            }),
-            Err(e) => Some(CheckStatus {
-                status: "unavailable".to_string(),
-                message: Some(format!("Meilisearch unreachable: {}", e)),
-            }),
-        }
-    } else {
-        None
+    let meili_check = match &state.config.meilisearch_url {
+        Some(url) => Some(check_service_health(url, "/health", "Meilisearch").await),
+        None => None,
     };
 
     let overall_status = if db_check.status == "healthy" {

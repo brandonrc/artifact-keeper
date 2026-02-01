@@ -12,6 +12,15 @@ use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
 use crate::models::format_handler::{FormatHandlerResponse, FormatHandlerType};
+use crate::services::wasm_plugin_service::WasmPluginService;
+
+/// Get the WASM plugin service from shared state, returning an error if unavailable.
+fn wasm_service(state: &SharedState) -> Result<&WasmPluginService> {
+    state
+        .wasm_plugin_service
+        .as_deref()
+        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))
+}
 
 /// Create plugin routes
 pub fn router() -> Router<SharedState> {
@@ -477,12 +486,7 @@ pub async fn install_from_git(
     Extension(_auth): Extension<AuthExtension>,
     Json(payload): Json<InstallFromGitRequest>,
 ) -> Result<Json<PluginInstallResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let result = wasm_service
+    let result = wasm_service(&state)?
         .install_from_git(&payload.url, payload.git_ref.as_deref())
         .await?;
 
@@ -523,12 +527,7 @@ pub async fn install_from_zip(
 
     let zip_data = zip_data.ok_or_else(|| AppError::Validation("Missing ZIP file".to_string()))?;
 
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let result = wasm_service.install_from_zip(&zip_data).await?;
+    let result = wasm_service(&state)?.install_from_zip(&zip_data).await?;
 
     Ok(Json(PluginInstallResponse {
         plugin_id: result.plugin_id,
@@ -545,12 +544,7 @@ pub async fn get_plugin_events(
     Path(id): Path<Uuid>,
     Query(query): Query<EventsQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let events = wasm_service.get_plugin_events(id, query.limit).await?;
+    let events = wasm_service(&state)?.get_plugin_events(id, query.limit).await?;
 
     Ok(Json(events))
 }
@@ -566,12 +560,7 @@ pub async fn reload_plugin(
     Extension(_auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WasmPluginResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let plugin = wasm_service.reload_plugin(id).await?;
+    let plugin = wasm_service(&state)?.reload_plugin(id).await?;
 
     Ok(Json(WasmPluginResponse::from(plugin)))
 }
@@ -646,10 +635,7 @@ pub async fn list_format_handlers(
     State(state): State<SharedState>,
     Query(query): Query<ListFormatsQuery>,
 ) -> Result<Json<Vec<FormatHandlerResponse>>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
+    let svc = wasm_service(&state)?;
 
     let handler_type = query
         .handler_type
@@ -660,9 +646,7 @@ pub async fn list_format_handlers(
             _ => None,
         });
 
-    let handlers = wasm_service
-        .list_format_handlers(handler_type, query.enabled)
-        .await?;
+    let handlers = svc.list_format_handlers(handler_type, query.enabled).await?;
 
     Ok(Json(handlers))
 }
@@ -672,12 +656,7 @@ pub async fn get_format_handler(
     State(state): State<SharedState>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let handler = wasm_service.get_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?.get_format_handler(&format_key).await?;
 
     Ok(Json(handler))
 }
@@ -688,12 +667,7 @@ pub async fn enable_format_handler(
     Extension(_auth): Extension<AuthExtension>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let handler = wasm_service.enable_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?.enable_format_handler(&format_key).await?;
 
     Ok(Json(handler))
 }
@@ -704,12 +678,7 @@ pub async fn disable_format_handler(
     Extension(_auth): Extension<AuthExtension>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
-
-    let handler = wasm_service.disable_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?.disable_format_handler(&format_key).await?;
 
     Ok(Json(handler))
 }
@@ -759,10 +728,7 @@ pub async fn test_format_handler(
     Path(format_key): Path<String>,
     Json(request): Json<TestFormatRequest>,
 ) -> Result<Json<TestFormatResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
+    let svc = wasm_service(&state)?;
 
     // Decode content
     let content = if request.base64 {
@@ -774,8 +740,7 @@ pub async fn test_format_handler(
         request.content.into_bytes()
     };
 
-    // Test the format handler
-    let result = wasm_service
+    let result = svc
         .test_format_handler(&format_key, &request.path, &content)
         .await;
 
@@ -828,10 +793,7 @@ pub async fn install_from_local(
     Extension(_auth): Extension<AuthExtension>,
     Json(request): Json<InstallFromLocalRequest>,
 ) -> Result<Json<PluginInstallResponse>> {
-    let wasm_service = state
-        .wasm_plugin_service
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("WASM plugin service not available".to_string()))?;
+    let svc = wasm_service(&state)?;
 
     // Verify path exists and is a directory
     let path = std::path::Path::new(&request.path);
@@ -848,7 +810,7 @@ pub async fn install_from_local(
         )));
     }
 
-    let result = wasm_service.install_from_local(&request.path).await?;
+    let result = svc.install_from_local(&request.path).await?;
 
     Ok(Json(PluginInstallResponse {
         plugin_id: result.plugin_id,

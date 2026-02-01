@@ -195,9 +195,6 @@ pub async fn create_user(
     // Hash password
     let password_hash = AuthService::hash_password(&password)?;
 
-    // Set must_change_password=true if password was auto-generated
-    let must_change = auto_generated;
-
     let user = sqlx::query_as!(
         User,
         r#"
@@ -214,7 +211,7 @@ pub async fn create_user(
         password_hash,
         payload.display_name,
         payload.is_admin.unwrap_or(false),
-        must_change
+        auto_generated
     )
     .fetch_one(&state.db)
     .await
