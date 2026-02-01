@@ -1,0 +1,86 @@
+version: '3.8'
+
+# Demo deployment for demo.artifactkeeper.com
+# All write operations are blocked via DEMO_MODE.
+# Reset daily with: ./reset-demo.sh
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: artifact_registry
+      POSTGRES_USER: registry
+      POSTGRES_PASSWORD: registry-demo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registry -d artifact_registry"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.backend
+    environment:
+      DATABASE_URL: postgres://registry:registry-demo@postgres:5432/artifact_registry
+      BIND_ADDRESS: 0.0.0.0:8080
+      STORAGE_BACKEND: filesystem
+      STORAGE_PATH: /data/artifacts
+      JWT_SECRET: demo-instance-jwt-secret-not-for-production
+      DEMO_MODE: "true"
+      TRIVY_URL: http://trivy:8090
+      LOG_LEVEL: info
+    ports:
+      - "8080:8080"
+    volumes:
+      - artifact_data:/data/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  trivy:
+    image: aquasec/trivy:latest
+    command: ["server", "--listen", "0.0.0.0:8090"]
+    volumes:
+      - trivy_cache:/root/.cache/trivy
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.frontend
+      args:
+        VITE_DEMO_MODE: "true"
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # Seed container — runs once then exits
+  seed:
+    image: postgres:15-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./seed-demo-data.sql:/seed.sql:ro
+    entrypoint: >
+      sh -c "
+        sleep 5 &&
+        PGPASSWORD=registry-demo psql -h postgres -U registry -d artifact_registry -f /seed.sql &&
+        echo 'Demo data seeded successfully'
+      "
+
+  # Landing page (static marketing site)
+  landing:
+    build:
+      context: ../..
+      dockerfile: landing/Dockerfile
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  artifact_data:
+  trivy_cache:
