@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { Layout, Spin, message } from 'antd'
+import { Spin, message } from 'antd'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { repositoriesApi, artifactsApi, treeApi } from '../api'
 import type { Artifact, Repository, TreeNode } from '../types'
@@ -13,7 +13,6 @@ import {
 } from '../components/repository'
 import { colors } from '../styles/tokens'
 
-const { Sider, Content } = Layout
 
 const Artifacts = () => {
   useDocumentTitle('Artifacts')
@@ -187,7 +186,7 @@ const Artifacts = () => {
   }, [siderWidth])
 
   return (
-    <Layout style={{ height: 'calc(100vh - 112px)', background: colors.bgLayout }}>
+    <div style={{ height: 'calc(100vh - 112px)', display: 'flex', background: colors.bgLayout }}>
       {/* Left Panel: Repository Tree */}
       <div
         style={{
@@ -228,12 +227,13 @@ const Artifacts = () => {
       />
 
       {/* Middle Panel: Artifact List */}
-      <Content
+      <div
         style={{
+          flex: 1,
           background: colors.bgContainer,
           borderRight: selectedArtifact ? `1px solid ${colors.border}` : undefined,
           overflow: 'auto',
-          minWidth: 400,
+          minWidth: 300,
         }}
       >
         <div style={{ padding: 16 }}>
@@ -277,15 +277,17 @@ const Artifacts = () => {
             />
           )}
         </div>
-      </Content>
+      </div>
 
       {/* Right Panel: Artifact Detail */}
       {selectedArtifact && (
-        <Sider
-          width={400}
+        <div
           style={{
+            width: 400,
+            flexShrink: 0,
             background: colors.bgContainer,
             overflow: 'auto',
+            borderLeft: `1px solid ${colors.border}`,
           }}
         >
           <ArtifactDetail
@@ -294,9 +296,9 @@ const Artifacts = () => {
             onDelete={handleDelete}
             canDelete
           />
-        </Sider>
+        </div>
       )}
-    </Layout>
+    </div>
   )
 }
 
