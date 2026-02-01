@@ -270,10 +270,7 @@ impl TrivyFsScanner {
                         }),
                         description: vuln.description.clone(),
                         cve_id: Some(vuln.vulnerability_id.clone()),
-                        affected_component: Some(format!(
-                            "{} ({})",
-                            vuln.pkg_name, result.target
-                        )),
+                        affected_component: Some(format!("{} ({})", vuln.pkg_name, result.target)),
                         affected_version: Some(vuln.installed_version.clone()),
                         fixed_version: vuln.fixed_version.clone(),
                         source: Some("trivy-filesystem".to_string()),

@@ -544,7 +544,9 @@ pub async fn get_plugin_events(
     Path(id): Path<Uuid>,
     Query(query): Query<EventsQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>> {
-    let events = wasm_service(&state)?.get_plugin_events(id, query.limit).await?;
+    let events = wasm_service(&state)?
+        .get_plugin_events(id, query.limit)
+        .await?;
 
     Ok(Json(events))
 }
@@ -646,7 +648,9 @@ pub async fn list_format_handlers(
             _ => None,
         });
 
-    let handlers = svc.list_format_handlers(handler_type, query.enabled).await?;
+    let handlers = svc
+        .list_format_handlers(handler_type, query.enabled)
+        .await?;
 
     Ok(Json(handlers))
 }
@@ -656,7 +660,9 @@ pub async fn get_format_handler(
     State(state): State<SharedState>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let handler = wasm_service(&state)?.get_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?
+        .get_format_handler(&format_key)
+        .await?;
 
     Ok(Json(handler))
 }
@@ -667,7 +673,9 @@ pub async fn enable_format_handler(
     Extension(_auth): Extension<AuthExtension>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let handler = wasm_service(&state)?.enable_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?
+        .enable_format_handler(&format_key)
+        .await?;
 
     Ok(Json(handler))
 }
@@ -678,7 +686,9 @@ pub async fn disable_format_handler(
     Extension(_auth): Extension<AuthExtension>,
     Path(format_key): Path<String>,
 ) -> Result<Json<FormatHandlerResponse>> {
-    let handler = wasm_service(&state)?.disable_format_handler(&format_key).await?;
+    let handler = wasm_service(&state)?
+        .disable_format_handler(&format_key)
+        .await?;
 
     Ok(Json(handler))
 }
