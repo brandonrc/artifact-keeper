@@ -1,9 +1,9 @@
 ---
 const badges = [
-  "40+ Package Formats",
-  "Security Scanning Included",
-  "MIT Licensed",
-  "Artifactory Migration Built-in",
+  { label: "40+ Package Formats", href: "https://artifactkeeper.com/docs/package-formats/" },
+  { label: "Security Scanning Included", href: "https://artifactkeeper.com/docs/security/vulnerability-scanning/" },
+  { label: "MIT Licensed", href: "https://github.com/artifact-keeper/artifact-keeper/blob/main/LICENSE" },
+  { label: "Artifactory Migration Built-in", href: "https://artifactkeeper.com/docs/migration/from-artifactory/" },
 ];
 ---
 
@@ -40,9 +40,9 @@ const badges = [
     <!-- Trust Badges -->
     <div class="flex flex-wrap items-center justify-center gap-3">
       {badges.map((badge) => (
-        <span class="inline-block px-4 py-1.5 rounded-full text-xs font-medium bg-white/10 text-white/90 border border-white/20">
-          {badge}
-        </span>
+        <a href={badge.href} class="inline-block px-4 py-1.5 rounded-full text-xs font-medium bg-white/10 text-white/90 border border-white/20 hover:bg-white/20 hover:text-white transition-colors duration-200 no-underline">
+          {badge.label}
+        </a>
       ))}
     </div>
   </div>
