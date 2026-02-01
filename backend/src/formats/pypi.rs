@@ -389,9 +389,7 @@ impl FormatHandler for PypiHandler {
         metadata["is_package_index"] = serde_json::Value::Bool(info.is_package_index);
 
         // If it's a package file, try to extract metadata
-        if !content.is_empty() && info.filename.is_some() {
-            let filename = info.filename.as_ref().unwrap();
-
+        if let Some(filename) = info.filename.as_ref().filter(|_| !content.is_empty()) {
             let pkg_info_result = if filename.ends_with(".whl") {
                 Self::extract_wheel_metadata(content)
             } else if filename.ends_with(".tar.gz") {
@@ -412,8 +410,7 @@ impl FormatHandler for PypiHandler {
         let info = Self::parse_path(path)?;
 
         // Validate package files
-        if !content.is_empty() && info.filename.is_some() {
-            let filename = info.filename.as_ref().unwrap();
+        if let Some(filename) = info.filename.as_ref().filter(|_| !content.is_empty()) {
 
             // Validate wheel files
             if filename.ends_with(".whl") {
