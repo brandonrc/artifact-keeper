@@ -33,7 +33,11 @@ pub struct CheckStatus {
 }
 
 /// Probe an external service health endpoint and return a CheckStatus.
-async fn check_service_health(base_url: &str, health_path: &str, service_name: &str) -> CheckStatus {
+async fn check_service_health(
+    base_url: &str,
+    health_path: &str,
+    service_name: &str,
+) -> CheckStatus {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -46,7 +50,11 @@ async fn check_service_health(base_url: &str, health_path: &str, service_name: &
         },
         Ok(resp) => CheckStatus {
             status: "unhealthy".to_string(),
-            message: Some(format!("{} returned status {}", service_name, resp.status())),
+            message: Some(format!(
+                "{} returned status {}",
+                service_name,
+                resp.status()
+            )),
         },
         Err(e) => CheckStatus {
             status: "unavailable".to_string(),

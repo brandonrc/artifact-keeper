@@ -137,7 +137,11 @@ pub struct ScanResponse {
 // ---------------------------------------------------------------------------
 
 impl ScanResponse {
-    fn from_scan(s: ScanResult, artifact_name: Option<String>, artifact_version: Option<String>) -> Self {
+    fn from_scan(
+        s: ScanResult,
+        artifact_name: Option<String>,
+        artifact_version: Option<String>,
+    ) -> Self {
         Self {
             id: s.id,
             artifact_id: s.artifact_id,
