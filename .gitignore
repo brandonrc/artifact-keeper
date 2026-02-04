@@ -71,6 +71,7 @@ credentials/
 # Local development
 .local/
 *.local.md
+nginx.conf
 
 # Claude Code local config
 .claude/
