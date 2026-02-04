@@ -1,0 +1,13 @@
+FROM fedora:41
+
+RUN dnf install -y openscap-scanner scap-security-guide python3 && \
+    dnf clean all
+
+COPY scripts/openscap-wrapper.py /usr/local/bin/openscap-wrapper.py
+
+EXPOSE 8091
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')" || exit 1
+
+CMD ["python3", "/usr/local/bin/openscap-wrapper.py"]
