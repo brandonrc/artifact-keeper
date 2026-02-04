@@ -18,9 +18,7 @@ services:
     restart: unless-stopped
 
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
+    image: ghcr.io/artifact-keeper/artifact-keeper-backend:latest
     container_name: artifact-keeper-backend
     depends_on:
       postgres:
@@ -37,8 +35,6 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       TRIVY_URL: http://trivy:8090
-      OPENSCAP_URL: http://openscap:8091
-      OPENSCAP_PROFILE: ${OPENSCAP_PROFILE:-xccdf_org.ssgproject.content_profile_standard}
       SCAN_WORKSPACE_PATH: /scan-workspace
       MEILISEARCH_URL: http://meilisearch:7700
       MEILISEARCH_API_KEY: ${MEILI_MASTER_KEY:-artifact-keeper-dev-key}
@@ -97,22 +93,6 @@ services:
       BACKEND_URL: http://backend:8080
     ports:
       - "3000:3000"
-    restart: unless-stopped
-
-  openscap:
-    build:
-      context: .
-      dockerfile: Dockerfile.openscap
-    container_name: artifact-keeper-openscap
-    ports:
-      - "8091:8091"
-    volumes:
-      - scan_workspace:/scan-workspace:ro
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
     restart: unless-stopped
 
 volumes:
