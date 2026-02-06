@@ -206,7 +206,7 @@ impl GcsBackend {
         let signed_headers = "host";
 
         // Build canonical query string (alphabetically sorted)
-        let query_params = vec![
+        let query_params = [
             ("X-Goog-Algorithm", "GOOG4-RSA-SHA256".to_string()),
             ("X-Goog-Credential", credential.clone()),
             ("X-Goog-Date", request_timestamp.clone()),
