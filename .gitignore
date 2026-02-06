@@ -93,3 +93,6 @@ docker-compose.override.yml
 
 # SSO E2E test generated files
 scripts/sso-e2e/sso-config-ids.env
+
+# Astro build cache
+.astro/

@@ -1,0 +1,24 @@
+version: 2
+
+secret:
+  # Paths to ignore (test files with intentional test credentials)
+  ignored-paths:
+    - "**/tests/**"
+    - "**/test_*.rs"
+    - "**/test-*.sh"
+    - "scripts/native-tests/**"
+    - "**/.astro/**"
+    
+  # Specific patterns to ignore
+  ignored-matches:
+    # Test RSA keys for unit testing (GCS backend)
+    - match: "BEGIN PRIVATE KEY"
+      name: "Test RSA key for unit tests"
+      
+    # Default test password used in examples and integration tests
+    - match: "admin123"
+      name: "Default test password"
+      
+    # Astro build cache hashes
+    - match: "data-store.json"
+      name: "Astro build cache"
