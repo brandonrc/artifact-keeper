@@ -62,6 +62,9 @@ cargo test --workspace
 
 ### gRPC SBOM Tests
 ```bash
+# Run SBOM JSON structure validation unit tests (no database required)
+cargo test sbom_service::tests --lib
+
 # Run gRPC integration tests (requires PostgreSQL at localhost:30432)
 DATABASE_URL="postgresql://registry:registry@localhost:30432/artifact_registry" \
   cargo test --test grpc_sbom_tests -- --ignored
