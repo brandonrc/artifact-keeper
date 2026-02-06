@@ -19,11 +19,11 @@ use artifact_keeper_backend::{
     error::Result,
     grpc::{
         generated::{
-            sbom_service_server::SbomServiceServer,
             cve_history_service_server::CveHistoryServiceServer,
+            sbom_service_server::SbomServiceServer,
             security_policy_service_server::SecurityPolicyServiceServer,
         },
-        sbom_server::{SbomGrpcServer, CveHistoryGrpcServer, SecurityPolicyGrpcServer},
+        sbom_server::{CveHistoryGrpcServer, SbomGrpcServer, SecurityPolicyGrpcServer},
     },
     services::{
         auth_service::AuthService,

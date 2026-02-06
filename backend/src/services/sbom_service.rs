@@ -172,10 +172,8 @@ impl SbomService {
             .await?
             .ok_or_else(|| AppError::NotFound("SBOM not found".into()))?;
 
-        let source_format =
-            SbomFormat::from_str(&source.format).ok_or_else(|| AppError::Validation(
-                "Unknown source format".into(),
-            ))?;
+        let source_format = SbomFormat::parse(&source.format)
+            .ok_or_else(|| AppError::Validation("Unknown source format".into()))?;
 
         if source_format == target_format {
             return Ok(source);
@@ -205,8 +203,13 @@ impl SbomService {
         }
 
         // Generate new SBOM in target format
-        self.generate_sbom(source.artifact_id, source.repository_id, target_format, deps)
-            .await
+        self.generate_sbom(
+            source.artifact_id,
+            source.repository_id,
+            target_format,
+            deps,
+        )
+        .await
     }
 
     /// Delete SBOM.
@@ -221,6 +224,7 @@ impl SbomService {
     // === CVE History ===
 
     /// Record a CVE finding in history.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_cve(
         &self,
         artifact_id: Uuid,
@@ -379,7 +383,7 @@ impl SbomService {
                     affected_component: e.affected_component.unwrap_or_default(),
                     cve_published_at: e.cve_published_at,
                     first_detected_at: e.first_detected_at,
-                    status: CveStatus::from_str(&e.status).unwrap_or(CveStatus::Open),
+                    status: CveStatus::parse(&e.status).unwrap_or(CveStatus::Open),
                     days_exposed,
                 }
             })
@@ -473,10 +477,7 @@ impl SbomService {
                 if policy.allow_unknown {
                     warnings.push(format!("License '{}' is not in approved list", license));
                 } else {
-                    violations.push(format!(
-                        "License '{}' is not in approved list",
-                        license
-                    ));
+                    violations.push(format!("License '{}' is not in approved list", license));
                 }
             }
         }

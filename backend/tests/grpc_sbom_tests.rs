@@ -6,15 +6,13 @@ mod common;
 
 use artifact_keeper_backend::grpc::{
     generated::{
-        sbom_service_client::SbomServiceClient,
         cve_history_service_client::CveHistoryServiceClient,
-        security_policy_service_client::SecurityPolicyServiceClient,
-        sbom_service_server::SbomServiceServer,
         cve_history_service_server::CveHistoryServiceServer,
-        security_policy_service_server::SecurityPolicyServiceServer,
-        CheckLicenseComplianceRequest, GenerateSbomRequest, GetCveTrendsRequest,
-        ListLicensePoliciesRequest, SbomFormat,
-        UpsertLicensePolicyRequest, LicensePolicy as ProtoLicensePolicy, PolicyAction,
+        sbom_service_client::SbomServiceClient, sbom_service_server::SbomServiceServer,
+        security_policy_service_client::SecurityPolicyServiceClient,
+        security_policy_service_server::SecurityPolicyServiceServer, CheckLicenseComplianceRequest,
+        GenerateSbomRequest, GetCveTrendsRequest, LicensePolicy as ProtoLicensePolicy,
+        ListLicensePoliciesRequest, PolicyAction, SbomFormat, UpsertLicensePolicyRequest,
     },
     sbom_server::{CveHistoryGrpcServer, SbomGrpcServer, SecurityPolicyGrpcServer},
 };

@@ -30,8 +30,14 @@ pub fn router() -> Router<SharedState> {
         .route("/cve/status/:id", post(update_cve_status))
         .route("/cve/trends", get(get_cve_trends))
         // License policies
-        .route("/license-policies", get(list_license_policies).post(upsert_license_policy))
-        .route("/license-policies/:id", get(get_license_policy).delete(delete_license_policy))
+        .route(
+            "/license-policies",
+            get(list_license_policies).post(upsert_license_policy),
+        )
+        .route(
+            "/license-policies/:id",
+            get(get_license_policy).delete(delete_license_policy),
+        )
         .route("/check-compliance", post(check_license_compliance))
 }
 
@@ -239,22 +245,24 @@ async fn generate_sbom(
     Json(body): Json<GenerateSbomRequest>,
 ) -> Result<Json<SbomResponse>> {
     let service = SbomService::new(state.db.clone());
-    let format = SbomFormat::from_str(&body.format)
+    let format = SbomFormat::parse(&body.format)
         .ok_or_else(|| AppError::Validation(format!("Unknown format: {}", body.format)))?;
 
     // Get artifact and repository
-    let (_, repository_id): (Uuid, Uuid) = sqlx::query_as(
-        "SELECT id, repository_id FROM artifacts WHERE id = $1",
-    )
-    .bind(body.artifact_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e: sqlx::Error| AppError::Database(e.to_string()))?
-    .ok_or_else(|| AppError::NotFound("Artifact not found".into()))?;
+    let (_, repository_id): (Uuid, Uuid) =
+        sqlx::query_as("SELECT id, repository_id FROM artifacts WHERE id = $1")
+            .bind(body.artifact_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e: sqlx::Error| AppError::Database(e.to_string()))?
+            .ok_or_else(|| AppError::NotFound("Artifact not found".into()))?;
 
     // If force_regenerate, delete existing SBOM first
     if body.force_regenerate {
-        if let Some(existing) = service.get_sbom_by_artifact(body.artifact_id, format).await? {
+        if let Some(existing) = service
+            .get_sbom_by_artifact(body.artifact_id, format)
+            .await?
+        {
             service.delete_sbom(existing.id).await?;
         }
     }
@@ -327,10 +335,7 @@ async fn list_sboms(
                     .await?
             }
         } else if let Some(fmt) = &query.format {
-            sqlx::query_as(&sql)
-                .bind(fmt)
-                .fetch_all(&state.db)
-                .await?
+            sqlx::query_as(&sql).bind(fmt).fetch_all(&state.db).await?
         } else {
             sqlx::query_as("SELECT * FROM sbom_documents ORDER BY created_at DESC LIMIT 100")
                 .fetch_all(&state.db)
@@ -367,7 +372,7 @@ async fn get_sbom_by_artifact(
     let format = query
         .format
         .as_ref()
-        .and_then(|f| SbomFormat::from_str(f))
+        .and_then(|f| SbomFormat::parse(f))
         .unwrap_or(SbomFormat::CycloneDX);
 
     let doc = service
@@ -395,7 +400,10 @@ async fn get_sbom_components(
 ) -> Result<Json<Vec<ComponentResponse>>> {
     let service = SbomService::new(state.db.clone());
     let components = service.get_sbom_components(id).await?;
-    let responses: Vec<ComponentResponse> = components.into_iter().map(ComponentResponse::from).collect();
+    let responses: Vec<ComponentResponse> = components
+        .into_iter()
+        .map(ComponentResponse::from)
+        .collect();
     Ok(Json(responses))
 }
 
@@ -406,7 +414,7 @@ async fn convert_sbom(
     Json(body): Json<ConvertSbomRequest>,
 ) -> Result<Json<SbomResponse>> {
     let service = SbomService::new(state.db.clone());
-    let target_format = SbomFormat::from_str(&body.target_format)
+    let target_format = SbomFormat::parse(&body.target_format)
         .ok_or_else(|| AppError::Validation(format!("Unknown format: {}", body.target_format)))?;
 
     let doc = service.convert_sbom(id, target_format).await?;
@@ -432,7 +440,7 @@ async fn update_cve_status(
     Json(body): Json<UpdateCveStatusRequest>,
 ) -> Result<Json<crate::models::sbom::CveHistoryEntry>> {
     let service = SbomService::new(state.db.clone());
-    let status = CveStatus::from_str(&body.status)
+    let status = CveStatus::parse(&body.status)
         .ok_or_else(|| AppError::Validation(format!("Unknown status: {}", body.status)))?;
 
     let entry = service
@@ -463,8 +471,10 @@ async fn list_license_policies(
             .fetch_all(&state.db)
             .await?;
 
-    let responses: Vec<LicensePolicyResponse> =
-        policies.into_iter().map(LicensePolicyResponse::from).collect();
+    let responses: Vec<LicensePolicyResponse> = policies
+        .into_iter()
+        .map(LicensePolicyResponse::from)
+        .collect();
     Ok(Json(responses))
 }
 
@@ -473,12 +483,11 @@ async fn get_license_policy(
     Extension(_auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<LicensePolicyResponse>> {
-    let policy: LicensePolicy =
-        sqlx::query_as("SELECT * FROM license_policies WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .ok_or_else(|| AppError::NotFound("License policy not found".into()))?;
+    let policy: LicensePolicy = sqlx::query_as("SELECT * FROM license_policies WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("License policy not found".into()))?;
 
     Ok(Json(LicensePolicyResponse::from(policy)))
 }
@@ -488,7 +497,7 @@ async fn upsert_license_policy(
     Extension(_auth): Extension<AuthExtension>,
     Json(body): Json<UpsertLicensePolicyRequest>,
 ) -> Result<Json<LicensePolicyResponse>> {
-    let action = PolicyAction::from_str(&body.action)
+    let action = PolicyAction::parse(&body.action)
         .ok_or_else(|| AppError::Validation(format!("Unknown action: {}", body.action)))?;
 
     let policy: LicensePolicy = sqlx::query_as(

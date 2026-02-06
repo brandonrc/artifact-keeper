@@ -1,17 +1,16 @@
 //! gRPC server implementations for SBOM services.
 
-use crate::services::sbom_service::{DependencyInfo, SbomService};
 use crate::models::sbom::{CveStatus, SbomFormat};
+use crate::services::sbom_service::{DependencyInfo, SbomService};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use super::generated::{
-    sbom_service_server::SbomService as SbomServiceTrait,
     cve_history_service_server::CveHistoryService as CveHistoryServiceTrait,
-    security_policy_service_server::SecurityPolicyService as SecurityPolicyServiceTrait,
-    *,
+    sbom_service_server::SbomService as SbomServiceTrait,
+    security_policy_service_server::SecurityPolicyService as SecurityPolicyServiceTrait, *,
 };
 
 /// gRPC server for SBOM operations.
@@ -247,7 +246,9 @@ impl SbomServiceTrait for SbomGrpcServer {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found("No license policy configured"))?;
 
-        let result = self.service.check_license_compliance(&policy, &req.licenses);
+        let result = self
+            .service
+            .check_license_compliance(&policy, &req.licenses);
 
         Ok(Response::new(LicenseComplianceResponse {
             compliant: result.compliant,
@@ -285,10 +286,8 @@ impl CveHistoryServiceTrait for CveHistoryGrpcServer {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let proto_entries: Vec<CveHistoryEntry> = entries
-            .into_iter()
-            .map(cve_entry_to_proto)
-            .collect();
+        let proto_entries: Vec<CveHistoryEntry> =
+            entries.into_iter().map(cve_entry_to_proto).collect();
 
         Ok(Response::new(GetCveHistoryResponse {
             entries: proto_entries,
@@ -410,7 +409,9 @@ impl SecurityPolicyServiceTrait for SecurityPolicyGrpcServer {
         request: Request<UpsertLicensePolicyRequest>,
     ) -> Result<Response<LicensePolicy>, Status> {
         let req = request.into_inner();
-        let policy = req.policy.ok_or_else(|| Status::invalid_argument("Policy required"))?;
+        let policy = req
+            .policy
+            .ok_or_else(|| Status::invalid_argument("Policy required"))?;
 
         let repo_id: Option<Uuid> = if policy.repository_id.is_empty() {
             None
@@ -490,10 +491,8 @@ impl SecurityPolicyServiceTrait for SecurityPolicyGrpcServer {
             .map_err(|e| Status::internal(e.to_string()))?
         };
 
-        let proto_policies: Vec<LicensePolicy> = policies
-            .into_iter()
-            .map(license_policy_to_proto)
-            .collect();
+        let proto_policies: Vec<LicensePolicy> =
+            policies.into_iter().map(license_policy_to_proto).collect();
 
         Ok(Response::new(ListLicensePoliciesResponse {
             policies: proto_policies,
@@ -503,6 +502,7 @@ impl SecurityPolicyServiceTrait for SecurityPolicyGrpcServer {
 
 // === Conversion helpers ===
 
+#[allow(clippy::result_large_err)]
 fn parse_uuid(s: &str) -> Result<Uuid, Status> {
     Uuid::parse_str(s).map_err(|_| Status::invalid_argument(format!("Invalid UUID: {}", s)))
 }
@@ -541,7 +541,9 @@ fn cve_status_to_proto(status: CveStatus) -> super::generated::CveStatus {
     }
 }
 
-fn proto_to_policy_action(action: super::generated::PolicyAction) -> crate::models::sbom::PolicyAction {
+fn proto_to_policy_action(
+    action: super::generated::PolicyAction,
+) -> crate::models::sbom::PolicyAction {
     match action {
         super::generated::PolicyAction::Allow => crate::models::sbom::PolicyAction::Allow,
         super::generated::PolicyAction::Warn => crate::models::sbom::PolicyAction::Warn,
@@ -549,7 +551,6 @@ fn proto_to_policy_action(action: super::generated::PolicyAction) -> crate::mode
         _ => crate::models::sbom::PolicyAction::Warn,
     }
 }
-
 
 fn datetime_to_proto(dt: chrono::DateTime<chrono::Utc>) -> prost_types::Timestamp {
     prost_types::Timestamp {
@@ -564,8 +565,9 @@ fn sbom_doc_to_proto(doc: crate::models::sbom::SbomDocument) -> SbomDocument {
         artifact_id: doc.artifact_id.to_string(),
         repository_id: doc.repository_id.to_string(),
         format: sbom_format_to_proto(
-            SbomFormat::from_str(&doc.format).unwrap_or(SbomFormat::CycloneDX)
-        ).into(),
+            SbomFormat::parse(&doc.format).unwrap_or(SbomFormat::CycloneDX),
+        )
+        .into(),
         format_version: doc.format_version,
         spec_version: doc.spec_version.unwrap_or_default(),
         content: doc.content.to_string().into_bytes(),
@@ -582,7 +584,7 @@ fn sbom_doc_to_proto(doc: crate::models::sbom::SbomDocument) -> SbomDocument {
 }
 
 fn cve_entry_to_proto(entry: crate::models::sbom::CveHistoryEntry) -> CveHistoryEntry {
-    let status = CveStatus::from_str(&entry.status).unwrap_or(CveStatus::Open);
+    let status = CveStatus::parse(&entry.status).unwrap_or(CveStatus::Open);
     CveHistoryEntry {
         id: entry.id.to_string(),
         artifact_id: entry.artifact_id.to_string(),
@@ -596,7 +598,10 @@ fn cve_entry_to_proto(entry: crate::models::sbom::CveHistoryEntry) -> CveHistory
         first_detected_at: Some(datetime_to_proto(entry.first_detected_at)),
         last_detected_at: Some(datetime_to_proto(entry.last_detected_at)),
         status: cve_status_to_proto(status).into(),
-        acknowledged_by: entry.acknowledged_by.map(|u| u.to_string()).unwrap_or_default(),
+        acknowledged_by: entry
+            .acknowledged_by
+            .map(|u| u.to_string())
+            .unwrap_or_default(),
         acknowledged_at: entry.acknowledged_at.map(datetime_to_proto),
         acknowledged_reason: entry.acknowledged_reason.unwrap_or_default(),
     }
@@ -605,7 +610,10 @@ fn cve_entry_to_proto(entry: crate::models::sbom::CveHistoryEntry) -> CveHistory
 fn license_policy_to_proto(policy: crate::models::sbom::LicensePolicy) -> LicensePolicy {
     LicensePolicy {
         id: policy.id.to_string(),
-        repository_id: policy.repository_id.map(|u| u.to_string()).unwrap_or_default(),
+        repository_id: policy
+            .repository_id
+            .map(|u| u.to_string())
+            .unwrap_or_default(),
         name: policy.name,
         description: policy.description.unwrap_or_default(),
         allowed_licenses: policy.allowed_licenses,
@@ -618,7 +626,9 @@ fn license_policy_to_proto(policy: crate::models::sbom::LicensePolicy) -> Licens
     }
 }
 
-fn model_policy_action_to_proto(action: crate::models::sbom::PolicyAction) -> super::generated::PolicyAction {
+fn model_policy_action_to_proto(
+    action: crate::models::sbom::PolicyAction,
+) -> super::generated::PolicyAction {
     match action {
         crate::models::sbom::PolicyAction::Allow => super::generated::PolicyAction::Allow,
         crate::models::sbom::PolicyAction::Warn => super::generated::PolicyAction::Warn,

@@ -22,7 +22,7 @@ impl SbomFormat {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cyclonedx" | "cdx" => Some(SbomFormat::CycloneDX),
             "spdx" => Some(SbomFormat::SPDX),
@@ -151,7 +151,7 @@ impl CveStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "open" => Some(CveStatus::Open),
             "fixed" => Some(CveStatus::Fixed),
@@ -181,7 +181,7 @@ impl PolicyAction {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "allow" => Some(PolicyAction::Allow),
             "warn" => Some(PolicyAction::Warn),
@@ -236,7 +236,7 @@ impl From<SbomDocument> for SbomSummary {
         SbomSummary {
             id: doc.id,
             artifact_id: doc.artifact_id,
-            format: SbomFormat::from_str(&doc.format).unwrap_or(SbomFormat::CycloneDX),
+            format: SbomFormat::parse(&doc.format).unwrap_or(SbomFormat::CycloneDX),
             format_version: doc.format_version,
             component_count: doc.component_count,
             dependency_count: doc.dependency_count,
