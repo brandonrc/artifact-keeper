@@ -53,7 +53,11 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// Returns `Ok(Some(url))` if presigned URLs are supported and enabled,
     /// `Ok(None)` if not supported or disabled, or an error if generation fails.
-    async fn get_presigned_url(&self, key: &str, expires_in: Duration) -> Result<Option<PresignedUrl>> {
+    async fn get_presigned_url(
+        &self,
+        key: &str,
+        expires_in: Duration,
+    ) -> Result<Option<PresignedUrl>> {
         let _ = (key, expires_in); // Suppress unused warnings
         Ok(None)
     }

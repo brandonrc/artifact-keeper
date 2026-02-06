@@ -98,7 +98,11 @@ impl S3Config {
         let private_key = if let Ok(key_path) = std::env::var("CLOUDFRONT_PRIVATE_KEY_PATH") {
             std::fs::read_to_string(&key_path)
                 .map_err(|e| {
-                    tracing::warn!("Failed to read CloudFront private key from {}: {}", key_path, e);
+                    tracing::warn!(
+                        "Failed to read CloudFront private key from {}: {}",
+                        key_path,
+                        e
+                    );
                     e
                 })
                 .ok()?
@@ -316,7 +320,11 @@ impl super::StorageBackend for S3Backend {
         self.redirect_downloads
     }
 
-    async fn get_presigned_url(&self, key: &str, expires_in: Duration) -> Result<Option<PresignedUrl>> {
+    async fn get_presigned_url(
+        &self,
+        key: &str,
+        expires_in: Duration,
+    ) -> Result<Option<PresignedUrl>> {
         if !self.redirect_downloads {
             return Ok(None);
         }
@@ -345,7 +353,12 @@ impl super::StorageBackend for S3Backend {
             .bucket
             .presign_get(&full_key, expiry_secs, None)
             .await
-            .map_err(|e| AppError::Storage(format!("Failed to generate presigned URL for '{}': {}", key, e)))?;
+            .map_err(|e| {
+                AppError::Storage(format!(
+                    "Failed to generate presigned URL for '{}': {}",
+                    key, e
+                ))
+            })?;
 
         tracing::debug!(
             key = %key,
@@ -593,13 +606,18 @@ mod integration_tests {
             .with_redirect_downloads(true)
             .with_presign_expiry(Duration::from_secs(300));
 
-        let backend = S3Backend::new(config).await.expect("Failed to create S3 backend");
+        let backend = S3Backend::new(config)
+            .await
+            .expect("Failed to create S3 backend");
 
         // Upload a test file
-        let test_key = format!("test/presign-test-{}.txt", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs());
+        let test_key = format!(
+            "test/presign-test-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
         let test_content = Bytes::from("Test content for presigned URL");
 
         println!("Uploading test file: {}", test_key);
@@ -608,34 +626,50 @@ mod integration_tests {
             .expect("Failed to upload test file");
 
         // Check supports_redirect
-        assert!(StorageBackendTrait::supports_redirect(&backend), "Backend should support redirect");
+        assert!(
+            StorageBackendTrait::supports_redirect(&backend),
+            "Backend should support redirect"
+        );
 
         // Generate presigned URL
         println!("Generating presigned URL...");
-        let presigned = StorageBackendTrait::get_presigned_url(
-            &backend,
-            &test_key,
-            Duration::from_secs(300),
-        )
-        .await
-        .expect("Failed to generate presigned URL");
+        let presigned =
+            StorageBackendTrait::get_presigned_url(&backend, &test_key, Duration::from_secs(300))
+                .await
+                .expect("Failed to generate presigned URL");
 
         assert!(presigned.is_some(), "Should return presigned URL");
         let presigned = presigned.unwrap();
-        
-        println!("Presigned URL: {}...", &presigned.url[..80.min(presigned.url.len())]);
+
+        println!(
+            "Presigned URL: {}...",
+            &presigned.url[..80.min(presigned.url.len())]
+        );
         println!("Source: {:?}", presigned.source);
         println!("Expires in: {:?}", presigned.expires_in);
 
-        assert!(presigned.url.contains(&bucket), "URL should contain bucket name");
-        assert!(presigned.url.contains("X-Amz-Signature"), "URL should have signature");
+        assert!(
+            presigned.url.contains(&bucket),
+            "URL should contain bucket name"
+        );
+        assert!(
+            presigned.url.contains("X-Amz-Signature"),
+            "URL should have signature"
+        );
 
         // Verify URL works by downloading
         println!("Verifying presigned URL works...");
         let client = reqwest::Client::new();
-        let response = client.get(&presigned.url).send().await.expect("Failed to fetch presigned URL");
-        assert!(response.status().is_success(), "Presigned URL should return 200");
-        
+        let response = client
+            .get(&presigned.url)
+            .send()
+            .await
+            .expect("Failed to fetch presigned URL");
+        assert!(
+            response.status().is_success(),
+            "Presigned URL should return 200"
+        );
+
         let body = response.bytes().await.expect("Failed to read body");
         assert_eq!(body.as_ref(), test_content.as_ref(), "Content should match");
         println!("✓ Presigned URL works!");
