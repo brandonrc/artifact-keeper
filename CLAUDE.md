@@ -60,6 +60,16 @@ cargo test --workspace
 ./scripts/native-tests/test-pypi.sh       # Individual test
 ```
 
+### gRPC SBOM Tests
+```bash
+# Run gRPC integration tests (requires PostgreSQL at localhost:30432)
+DATABASE_URL="postgresql://registry:registry@localhost:30432/artifact_registry" \
+  cargo test --test grpc_sbom_tests -- --ignored
+
+# Run gRPC E2E tests with grpcurl (requires backend running with gRPC on port 9090)
+./scripts/native-tests/test-grpc-sbom.sh
+```
+
 ### Stress and Failure Tests
 ```bash
 # Stress tests (100 concurrent uploads)
