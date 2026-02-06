@@ -11,6 +11,9 @@
 //! AZURE_STORAGE_ACCESS_KEY=base64-encoded-key
 //! AZURE_REDIRECT_DOWNLOADS=true
 //! AZURE_SAS_EXPIRY=3600  # seconds, default 1 hour
+//!
+//! # For Artifactory migration:
+//! STORAGE_PATH_FORMAT=migration  # native, artifactory, or migration
 //! ```
 
 use async_trait::async_trait;
@@ -22,7 +25,7 @@ use sha2::Sha256;
 use std::time::Duration;
 
 use crate::error::{AppError, Result};
-use crate::storage::{PresignedUrl, PresignedUrlSource, StorageBackend};
+use crate::storage::{PresignedUrl, PresignedUrlSource, StorageBackend, StoragePathFormat};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -41,6 +44,8 @@ pub struct AzureConfig {
     pub redirect_downloads: bool,
     /// SAS URL expiry duration
     pub sas_expiry: Duration,
+    /// Storage path format (native, artifactory, or migration)
+    pub path_format: StoragePathFormat,
 }
 
 impl AzureConfig {
@@ -67,6 +72,8 @@ impl AzureConfig {
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(3600));
 
+        let path_format = StoragePathFormat::from_env();
+
         Ok(Self {
             account_name,
             container_name,
@@ -74,6 +81,7 @@ impl AzureConfig {
             endpoint,
             redirect_downloads,
             sas_expiry,
+            path_format,
         })
     }
 
@@ -95,6 +103,7 @@ pub struct AzureBackend {
     config: AzureConfig,
     client: reqwest::Client,
     decoded_key: Vec<u8>,
+    path_format: StoragePathFormat,
 }
 
 impl AzureBackend {
@@ -113,11 +122,33 @@ impl AzureBackend {
             .build()
             .map_err(|e| AppError::Storage(format!("Failed to create HTTP client: {}", e)))?;
 
+        let path_format = config.path_format;
+
+        if path_format != StoragePathFormat::Native {
+            tracing::info!(
+                path_format = %path_format,
+                "Azure storage path format configured"
+            );
+        }
+
         Ok(Self {
             config,
             client,
             decoded_key,
+            path_format,
         })
+    }
+
+    /// Try to generate an Artifactory fallback path from a native path
+    fn try_artifactory_fallback(&self, key: &str) -> Option<String> {
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() >= 3 {
+            let checksum = parts[parts.len() - 1];
+            if checksum.len() == 64 && checksum.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(format!("{}/{}", &checksum[..2], checksum));
+            }
+        }
+        None
     }
 
     /// Get the base URL for the storage account
@@ -262,6 +293,34 @@ impl StorageBackend for AzureBackend {
         if !response.status().is_success() {
             let status = response.status();
             if status == reqwest::StatusCode::NOT_FOUND {
+                // In migration mode, try Artifactory fallback path
+                if self.path_format.has_fallback() {
+                    if let Some(fallback_key) = self.try_artifactory_fallback(key) {
+                        tracing::debug!(
+                            original = %key,
+                            fallback = %fallback_key,
+                            "Trying Artifactory fallback path"
+                        );
+                        let fallback_url =
+                            self.generate_sas_url(&fallback_key, Duration::from_secs(300))?;
+                        let fallback_response =
+                            self.client.get(&fallback_url).send().await.map_err(|e| {
+                                AppError::Storage(format!("Azure fallback download failed: {}", e))
+                            })?;
+
+                        if fallback_response.status().is_success() {
+                            tracing::info!(
+                                key = %key,
+                                fallback = %fallback_key,
+                                "Found artifact at Artifactory fallback path"
+                            );
+                            let bytes = fallback_response.bytes().await.map_err(|e| {
+                                AppError::Storage(format!("Failed to read response: {}", e))
+                            })?;
+                            return Ok(bytes);
+                        }
+                    }
+                }
                 return Err(AppError::NotFound(format!("Blob not found: {}", key)));
             }
             let body = response.text().await.unwrap_or_default();
@@ -289,7 +348,29 @@ impl StorageBackend for AzureBackend {
             .await
             .map_err(|e| AppError::Storage(format!("Azure HEAD request failed: {}", e)))?;
 
-        Ok(response.status().is_success())
+        if response.status().is_success() {
+            return Ok(true);
+        }
+
+        // In migration mode, also check the Artifactory fallback path
+        if self.path_format.has_fallback() {
+            if let Some(fallback_key) = self.try_artifactory_fallback(key) {
+                let fallback_url = self.generate_sas_url(&fallback_key, Duration::from_secs(60))?;
+                let fallback_response = self.client.head(&fallback_url).send().await.ok();
+                if let Some(resp) = fallback_response {
+                    if resp.status().is_success() {
+                        tracing::debug!(
+                            key = %key,
+                            fallback = %fallback_key,
+                            "Found artifact at Artifactory fallback path"
+                        );
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -375,6 +456,7 @@ mod tests {
             endpoint: None,
             redirect_downloads: true,
             sas_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
         }
     }
 

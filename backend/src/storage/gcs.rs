@@ -14,6 +14,9 @@
 //! GCS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."
 //! GCS_REDIRECT_DOWNLOADS=true
 //! GCS_SIGNED_URL_EXPIRY=3600  # seconds, default 1 hour
+//!
+//! # For Artifactory migration:
+//! STORAGE_PATH_FORMAT=migration  # native, artifactory, or migration
 //! ```
 
 use async_trait::async_trait;
@@ -27,7 +30,7 @@ use sha2::Digest;
 use std::time::Duration;
 
 use crate::error::{AppError, Result};
-use crate::storage::{PresignedUrl, PresignedUrlSource, StorageBackend};
+use crate::storage::{PresignedUrl, PresignedUrlSource, StorageBackend, StoragePathFormat};
 
 /// Google Cloud Storage configuration
 #[derive(Debug, Clone)]
@@ -44,6 +47,8 @@ pub struct GcsConfig {
     pub redirect_downloads: bool,
     /// Signed URL expiry duration
     pub signed_url_expiry: Duration,
+    /// Storage path format (native, artifactory, or migration)
+    pub path_format: StoragePathFormat,
 }
 
 impl GcsConfig {
@@ -80,6 +85,8 @@ impl GcsConfig {
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(3600));
 
+        let path_format = StoragePathFormat::from_env();
+
         Ok(Self {
             bucket,
             project_id,
@@ -87,6 +94,7 @@ impl GcsConfig {
             private_key,
             redirect_downloads,
             signed_url_expiry,
+            path_format,
         })
     }
 
@@ -114,6 +122,7 @@ pub struct GcsBackend {
     config: GcsConfig,
     client: reqwest::Client,
     signing_key: Option<RsaPrivateKey>,
+    path_format: StoragePathFormat,
 }
 
 impl GcsBackend {
@@ -136,11 +145,33 @@ impl GcsBackend {
             .build()
             .map_err(|e| AppError::Storage(format!("Failed to create HTTP client: {}", e)))?;
 
+        let path_format = config.path_format;
+
+        if path_format != StoragePathFormat::Native {
+            tracing::info!(
+                path_format = %path_format,
+                "GCS storage path format configured"
+            );
+        }
+
         Ok(Self {
             config,
             client,
             signing_key,
+            path_format,
         })
+    }
+
+    /// Try to generate an Artifactory fallback path from a native path
+    fn try_artifactory_fallback(&self, key: &str) -> Option<String> {
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() >= 3 {
+            let checksum = parts[parts.len() - 1];
+            if checksum.len() == 64 && checksum.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(format!("{}/{}", &checksum[..2], checksum));
+            }
+        }
+        None
     }
 
     /// Get the GCS API URL for an object
@@ -273,6 +304,34 @@ impl StorageBackend for GcsBackend {
         if !response.status().is_success() {
             let status = response.status();
             if status == reqwest::StatusCode::NOT_FOUND {
+                // In migration mode, try Artifactory fallback path
+                if self.path_format.has_fallback() {
+                    if let Some(fallback_key) = self.try_artifactory_fallback(key) {
+                        tracing::debug!(
+                            original = %key,
+                            fallback = %fallback_key,
+                            "Trying Artifactory fallback path"
+                        );
+                        let fallback_url =
+                            self.generate_signed_url(&fallback_key, Duration::from_secs(300))?;
+                        let fallback_response =
+                            self.client.get(&fallback_url).send().await.map_err(|e| {
+                                AppError::Storage(format!("GCS fallback download failed: {}", e))
+                            })?;
+
+                        if fallback_response.status().is_success() {
+                            tracing::info!(
+                                key = %key,
+                                fallback = %fallback_key,
+                                "Found artifact at Artifactory fallback path"
+                            );
+                            let bytes = fallback_response.bytes().await.map_err(|e| {
+                                AppError::Storage(format!("Failed to read response: {}", e))
+                            })?;
+                            return Ok(bytes);
+                        }
+                    }
+                }
                 return Err(AppError::NotFound(format!("Object not found: {}", key)));
             }
             let body = response.text().await.unwrap_or_default();
@@ -300,7 +359,30 @@ impl StorageBackend for GcsBackend {
             .await
             .map_err(|e| AppError::Storage(format!("GCS HEAD request failed: {}", e)))?;
 
-        Ok(response.status().is_success())
+        if response.status().is_success() {
+            return Ok(true);
+        }
+
+        // In migration mode, also check the Artifactory fallback path
+        if self.path_format.has_fallback() {
+            if let Some(fallback_key) = self.try_artifactory_fallback(key) {
+                let fallback_url =
+                    self.generate_signed_url(&fallback_key, Duration::from_secs(60))?;
+                let fallback_response = self.client.head(&fallback_url).send().await.ok();
+                if let Some(resp) = fallback_response {
+                    if resp.status().is_success() {
+                        tracing::debug!(
+                            key = %key,
+                            fallback = %fallback_key,
+                            "Found artifact at Artifactory fallback path"
+                        );
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
@@ -401,6 +483,7 @@ mpzFW04qb46Uh1fAvnM0cg==
             private_key: Some(TEST_PRIVATE_KEY.to_string()),
             redirect_downloads: true,
             signed_url_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
         }
     }
 

@@ -3,7 +3,10 @@
 pub mod azure;
 pub mod filesystem;
 pub mod gcs;
+pub mod path_format;
 pub mod s3;
+
+pub use path_format::StoragePathFormat;
 
 use async_trait::async_trait;
 use bytes::Bytes;
