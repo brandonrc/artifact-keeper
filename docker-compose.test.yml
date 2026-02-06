@@ -97,21 +97,30 @@ services:
       - e2e-test-network
     profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all"]
 
-  # PKI service generates certificates and GPG keys on startup
+  # PKI service: uses pre-generated files from .pki/ if available (CI), otherwise generates them (local)
   pki:
     image: alpine:3.19
     container_name: e2e-test-pki
     command: >
       sh -c "
-        apk add --no-cache openssl gnupg bash curl &&
-        bash /scripts/pki/generate-certs.sh /pki &&
-        bash /scripts/pki/generate-gpg.sh /pki &&
+        if [ -f /host-pki/ca.crt ] && [ -f /host-pki/server.crt ]; then
+          echo 'Using pre-generated PKI files from host';
+          cp -r /host-pki/* /pki/ 2>/dev/null || true;
+          chmod 644 /pki/*.crt /pki/*.pub 2>/dev/null || true;
+          chmod 600 /pki/*.key 2>/dev/null || true;
+        else
+          echo 'Generating PKI files...';
+          apk add --no-cache openssl gnupg bash curl &&
+          bash /scripts/pki/generate-certs.sh /pki &&
+          bash /scripts/pki/generate-gpg.sh /pki;
+        fi &&
         echo 'PKI setup complete' &&
         touch /pki/.ready &&
         tail -f /dev/null
       "
     volumes:
       - ./scripts/pki:/scripts/pki:ro
+      - ./.pki:/host-pki:ro
       - pki-data:/pki
     healthcheck:
       test: ["CMD", "test", "-f", "/pki/.ready"]
