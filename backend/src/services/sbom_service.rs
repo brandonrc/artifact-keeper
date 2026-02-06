@@ -738,15 +738,13 @@ mod tests {
 
     #[test]
     fn test_cyclonedx_has_required_fields() {
-        let deps = vec![
-            DependencyInfo {
-                name: "lodash".to_string(),
-                version: Some("4.17.21".to_string()),
-                purl: Some("pkg:npm/lodash@4.17.21".to_string()),
-                license: Some("MIT".to_string()),
-                sha256: None,
-            },
-        ];
+        let deps = vec![DependencyInfo {
+            name: "lodash".to_string(),
+            version: Some("4.17.21".to_string()),
+            purl: Some("pkg:npm/lodash@4.17.21".to_string()),
+            license: Some("MIT".to_string()),
+            sha256: None,
+        }];
 
         let sbom = generate_test_cyclonedx(&deps);
 
@@ -794,15 +792,13 @@ mod tests {
 
     #[test]
     fn test_spdx_has_required_fields() {
-        let deps = vec![
-            DependencyInfo {
-                name: "lodash".to_string(),
-                version: Some("4.17.21".to_string()),
-                purl: None,
-                license: Some("MIT".to_string()),
-                sha256: None,
-            },
-        ];
+        let deps = vec![DependencyInfo {
+            name: "lodash".to_string(),
+            version: Some("4.17.21".to_string()),
+            purl: None,
+            license: Some("MIT".to_string()),
+            sha256: None,
+        }];
 
         let sbom = generate_test_spdx(&deps);
 
