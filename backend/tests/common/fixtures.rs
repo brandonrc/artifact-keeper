@@ -169,7 +169,10 @@ impl TestArtifact {
 
     pub fn cargo_crate() -> Self {
         let mut metadata = HashMap::new();
-        metadata.insert("authors".to_string(), "Test Author <test@test.local>".to_string());
+        metadata.insert(
+            "authors".to_string(),
+            "Test Author <test@test.local>".to_string(),
+        );
         metadata.insert("license".to_string(), "MIT".to_string());
 
         Self {

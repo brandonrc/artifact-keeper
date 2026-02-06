@@ -21,8 +21,9 @@ pub struct TestContext {
 impl TestContext {
     /// Create a new test context with database connection
     pub async fn new() -> Self {
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://registry:registry@localhost:5432/artifact_registry".to_string());
+        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgresql://registry:registry@localhost:5432/artifact_registry".to_string()
+        });
 
         let pool = PgPool::connect(&database_url)
             .await

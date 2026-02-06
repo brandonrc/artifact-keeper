@@ -42,6 +42,7 @@ pub mod remote_instances;
 pub mod repositories;
 pub mod rpm;
 pub mod rubygems;
+pub mod sbom;
 pub mod sbt;
 pub mod search;
 pub mod security;
