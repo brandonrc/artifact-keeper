@@ -1,5 +1,6 @@
 //! gRPC service implementations.
 
+pub mod auth_interceptor;
 pub mod sbom_server;
 
 #[allow(clippy::all)]
