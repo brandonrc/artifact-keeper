@@ -287,6 +287,14 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
                 auth_middleware,
             )),
         )
+        // Dependency-Track proxy routes with auth middleware
+        .nest(
+            "/dependency-track",
+            handlers::dependency_track::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
+        )
         // Remote instance management & proxy routes with auth middleware
         .nest(
             "/instances",

@@ -186,6 +186,147 @@ pub struct DtPolicy {
     pub violation_state: String,
 }
 
+/// Project-level metrics from Dependency-Track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtProjectMetrics {
+    pub critical: i64,
+    pub high: i64,
+    pub medium: i64,
+    pub low: i64,
+    pub unassigned: i64,
+    pub vulnerabilities: Option<i64>,
+    #[serde(rename = "findingsTotal")]
+    pub findings_total: i64,
+    #[serde(rename = "findingsAudited")]
+    pub findings_audited: i64,
+    #[serde(rename = "findingsUnaudited")]
+    pub findings_unaudited: i64,
+    pub suppressions: i64,
+    #[serde(rename = "inheritedRiskScore")]
+    pub inherited_risk_score: f64,
+    #[serde(rename = "policyViolationsFail")]
+    pub policy_violations_fail: i64,
+    #[serde(rename = "policyViolationsWarn")]
+    pub policy_violations_warn: i64,
+    #[serde(rename = "policyViolationsInfo")]
+    pub policy_violations_info: i64,
+    #[serde(rename = "policyViolationsTotal")]
+    pub policy_violations_total: i64,
+    #[serde(rename = "firstOccurrence")]
+    pub first_occurrence: Option<i64>,
+    #[serde(rename = "lastOccurrence")]
+    pub last_occurrence: Option<i64>,
+}
+
+/// Portfolio-level metrics from Dependency-Track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtPortfolioMetrics {
+    pub critical: i64,
+    pub high: i64,
+    pub medium: i64,
+    pub low: i64,
+    pub unassigned: i64,
+    pub vulnerabilities: Option<i64>,
+    #[serde(rename = "findingsTotal")]
+    pub findings_total: i64,
+    #[serde(rename = "findingsAudited")]
+    pub findings_audited: i64,
+    #[serde(rename = "findingsUnaudited")]
+    pub findings_unaudited: i64,
+    pub suppressions: i64,
+    #[serde(rename = "inheritedRiskScore")]
+    pub inherited_risk_score: f64,
+    #[serde(rename = "policyViolationsFail")]
+    pub policy_violations_fail: i64,
+    #[serde(rename = "policyViolationsWarn")]
+    pub policy_violations_warn: i64,
+    #[serde(rename = "policyViolationsInfo")]
+    pub policy_violations_info: i64,
+    #[serde(rename = "policyViolationsTotal")]
+    pub policy_violations_total: i64,
+    pub projects: i64,
+}
+
+/// Full component representation from Dependency-Track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtComponentFull {
+    pub uuid: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub group: Option<String>,
+    pub purl: Option<String>,
+    pub cpe: Option<String>,
+    #[serde(rename = "resolvedLicense")]
+    pub resolved_license: Option<DtLicense>,
+    #[serde(rename = "isInternal")]
+    pub is_internal: Option<bool>,
+}
+
+/// License information from Dependency-Track
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtLicense {
+    pub uuid: Option<String>,
+    #[serde(rename = "licenseId")]
+    pub license_id: Option<String>,
+    pub name: String,
+}
+
+/// Full policy representation with conditions and projects
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtPolicyFull {
+    pub uuid: String,
+    pub name: String,
+    #[serde(rename = "violationState")]
+    pub violation_state: String,
+    #[serde(rename = "includeChildren")]
+    pub include_children: Option<bool>,
+    #[serde(rename = "policyConditions")]
+    pub policy_conditions: Vec<DtPolicyConditionFull>,
+    pub projects: Vec<DtProject>,
+    pub tags: Vec<serde_json::Value>,
+}
+
+/// Full policy condition with all fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtPolicyConditionFull {
+    pub uuid: String,
+    pub subject: String,
+    pub operator: String,
+    pub value: String,
+}
+
+/// Request to update analysis state for a finding
+#[derive(Debug, Serialize)]
+pub struct UpdateAnalysisRequest {
+    pub project: String,
+    pub component: String,
+    pub vulnerability: String,
+    #[serde(rename = "analysisState")]
+    pub analysis_state: String,
+    #[serde(
+        rename = "analysisJustification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub analysis_justification: Option<String>,
+    #[serde(rename = "analysisDetails", skip_serializing_if = "Option::is_none")]
+    pub analysis_details: Option<String>,
+    #[serde(rename = "isSuppressed")]
+    pub is_suppressed: bool,
+}
+
+/// Response from analysis update
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DtAnalysisResponse {
+    #[serde(rename = "analysisState")]
+    pub analysis_state: String,
+    #[serde(rename = "analysisJustification")]
+    pub analysis_justification: Option<String>,
+    #[serde(rename = "analysisDetails")]
+    pub analysis_details: Option<String>,
+    #[serde(rename = "isSuppressed")]
+    pub is_suppressed: bool,
+}
+
 impl DependencyTrackService {
     /// Create a new Dependency-Track service
     pub fn new(config: DependencyTrackConfig) -> Result<Self> {
@@ -553,6 +694,265 @@ impl DependencyTrackService {
 
         Ok(())
     }
+
+    /// Get current metrics for a project
+    pub async fn get_project_metrics(&self, project_uuid: &str) -> Result<DtProjectMetrics> {
+        let url = format!(
+            "{}/api/v1/metrics/project/{}/current",
+            self.config.base_url, project_uuid
+        );
+
+        let response: reqwest::Response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("DT get project metrics failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT get project metrics failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let metrics = response
+            .json::<DtProjectMetrics>()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse project metrics: {}", e)))?;
+
+        Ok(metrics)
+    }
+
+    /// Get project metrics history for a number of days
+    pub async fn get_project_metrics_history(
+        &self,
+        project_uuid: &str,
+        days: u32,
+    ) -> Result<Vec<DtProjectMetrics>> {
+        let url = format!(
+            "{}/api/v1/metrics/project/{}/days/{}",
+            self.config.base_url, project_uuid, days
+        );
+
+        let response: reqwest::Response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("DT get project metrics history failed: {}", e))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT get project metrics history failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let metrics = response
+            .json::<Vec<DtProjectMetrics>>()
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("Failed to parse project metrics history: {}", e))
+            })?;
+
+        Ok(metrics)
+    }
+
+    /// Get current portfolio-wide metrics
+    pub async fn get_portfolio_metrics(&self) -> Result<DtPortfolioMetrics> {
+        let url = format!("{}/api/v1/metrics/portfolio/current", self.config.base_url);
+
+        let response: reqwest::Response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("DT get portfolio metrics failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT get portfolio metrics failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let metrics = response
+            .json::<DtPortfolioMetrics>()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse portfolio metrics: {}", e)))?;
+
+        Ok(metrics)
+    }
+
+    /// Refresh metrics for a project (fire-and-forget)
+    pub async fn refresh_project_metrics(&self, project_uuid: &str) -> Result<()> {
+        let url = format!(
+            "{}/api/v1/metrics/project/{}/refresh",
+            self.config.base_url, project_uuid
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    warn!(
+                        project_uuid = %project_uuid,
+                        status = %resp.status(),
+                        "DT refresh project metrics returned non-success status"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    project_uuid = %project_uuid,
+                    error = %e,
+                    "DT refresh project metrics request failed"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update analysis state for a finding
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_analysis(
+        &self,
+        project_uuid: &str,
+        component_uuid: &str,
+        vulnerability_uuid: &str,
+        state: &str,
+        justification: Option<&str>,
+        details: Option<&str>,
+        suppressed: bool,
+    ) -> Result<DtAnalysisResponse> {
+        let url = format!("{}/api/v1/analysis", self.config.base_url);
+
+        let request = UpdateAnalysisRequest {
+            project: project_uuid.to_string(),
+            component: component_uuid.to_string(),
+            vulnerability: vulnerability_uuid.to_string(),
+            analysis_state: state.to_string(),
+            analysis_justification: justification.map(String::from),
+            analysis_details: details.map(String::from),
+            is_suppressed: suppressed,
+        };
+
+        let response: reqwest::Response = self
+            .client
+            .put(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("DT update analysis failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT update analysis failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let analysis = response
+            .json::<DtAnalysisResponse>()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse analysis response: {}", e)))?;
+
+        Ok(analysis)
+    }
+
+    /// Get all policies
+    pub async fn get_policies(&self) -> Result<Vec<DtPolicyFull>> {
+        let url = format!("{}/api/v1/policy", self.config.base_url);
+
+        let response: reqwest::Response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("DT get policies failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT get policies failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let policies = response
+            .json::<Vec<DtPolicyFull>>()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse policies: {}", e)))?;
+
+        Ok(policies)
+    }
+
+    /// Get components for a project
+    pub async fn get_components(&self, project_uuid: &str) -> Result<Vec<DtComponentFull>> {
+        let url = format!(
+            "{}/api/v1/component/project/{}",
+            self.config.base_url, project_uuid
+        );
+
+        let response: reqwest::Response = self
+            .client
+            .get(&url)
+            .header("X-Api-Key", &self.config.api_key)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("DT get components failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "DT get components failed: {} - {}",
+                status, body
+            )));
+        }
+
+        let components = response
+            .json::<Vec<DtComponentFull>>()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to parse components: {}", e)))?;
+
+        Ok(components)
+    }
+
+    /// Get the base URL of the Dependency-Track instance
+    pub fn base_url(&self) -> &str {
+        &self.config.base_url
+    }
+
+    /// Check if the integration is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
 }
 
 #[cfg(test)]
@@ -627,5 +1027,78 @@ mod tests {
         let violation: DtPolicyViolation = serde_json::from_str(json).unwrap();
         assert_eq!(violation.violation_type, "LICENSE");
         assert_eq!(violation.policy_condition.policy.name, "No GPL");
+    }
+
+    #[test]
+    fn test_dt_project_metrics_deserialize() {
+        let json = r#"{
+            "critical": 2,
+            "high": 5,
+            "medium": 12,
+            "low": 3,
+            "unassigned": 0,
+            "vulnerabilities": 22,
+            "findingsTotal": 22,
+            "findingsAudited": 4,
+            "findingsUnaudited": 18,
+            "suppressions": 1,
+            "inheritedRiskScore": 42.5,
+            "policyViolationsFail": 1,
+            "policyViolationsWarn": 2,
+            "policyViolationsInfo": 0,
+            "policyViolationsTotal": 3,
+            "firstOccurrence": 1700000000000,
+            "lastOccurrence": 1700100000000
+        }"#;
+
+        let metrics: DtProjectMetrics = serde_json::from_str(json).unwrap();
+        assert_eq!(metrics.critical, 2);
+        assert_eq!(metrics.high, 5);
+        assert_eq!(metrics.medium, 12);
+        assert_eq!(metrics.low, 3);
+        assert_eq!(metrics.unassigned, 0);
+        assert_eq!(metrics.vulnerabilities, Some(22));
+        assert_eq!(metrics.findings_total, 22);
+        assert_eq!(metrics.findings_audited, 4);
+        assert_eq!(metrics.findings_unaudited, 18);
+        assert_eq!(metrics.suppressions, 1);
+        assert!((metrics.inherited_risk_score - 42.5).abs() < f64::EPSILON);
+        assert_eq!(metrics.policy_violations_fail, 1);
+        assert_eq!(metrics.policy_violations_warn, 2);
+        assert_eq!(metrics.policy_violations_info, 0);
+        assert_eq!(metrics.policy_violations_total, 3);
+        assert_eq!(metrics.first_occurrence, Some(1700000000000));
+        assert_eq!(metrics.last_occurrence, Some(1700100000000));
+    }
+
+    #[test]
+    fn test_dt_component_full_deserialize() {
+        let json = r#"{
+            "uuid": "comp-uuid-123",
+            "name": "express",
+            "version": "4.18.2",
+            "group": "npm",
+            "purl": "pkg:npm/express@4.18.2",
+            "cpe": null,
+            "resolvedLicense": {
+                "uuid": "license-uuid",
+                "licenseId": "MIT",
+                "name": "MIT License"
+            },
+            "isInternal": false
+        }"#;
+
+        let component: DtComponentFull = serde_json::from_str(json).unwrap();
+        assert_eq!(component.uuid, "comp-uuid-123");
+        assert_eq!(component.name, "express");
+        assert_eq!(component.version, Some("4.18.2".to_string()));
+        assert_eq!(component.group, Some("npm".to_string()));
+        assert_eq!(component.purl, Some("pkg:npm/express@4.18.2".to_string()));
+        assert_eq!(component.cpe, None);
+        assert!(component.resolved_license.is_some());
+        let license = component.resolved_license.unwrap();
+        assert_eq!(license.license_id, Some("MIT".to_string()));
+        assert_eq!(license.name, "MIT License");
+        assert_eq!(component.is_internal, Some(false));
     }
 }
