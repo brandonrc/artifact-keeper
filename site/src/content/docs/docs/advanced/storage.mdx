@@ -180,6 +180,26 @@ The `X-Artifact-Storage` header indicates how the artifact was served:
 - Authentication is still enforced at the backend before generating URLs
 - S3 bucket should block public access; only presigned URLs work
 
+#### Presigned URL Credentials & STS Roles
+
+When using IAM roles (EC2, ECS, Lambda), AWS credentials are temporary (STS) and expire periodically. A presigned URL's effective lifetime is limited by the remaining lifetime of the credential that generated it — not just the configured expiry. For example, if your STS credentials expire in 60 seconds and you generate a 1-hour presigned URL, the URL is only valid for 60 seconds.
+
+Artifact Keeper automatically refreshes credentials before generating each presigned URL (Option A), ensuring URLs get the full requested lifetime. No configuration needed — this works transparently with any credential source.
+
+For maximum reliability, you can also configure dedicated long-lived IAM credentials specifically for URL signing (Option B):
+
+```bash
+S3_PRESIGN_ACCESS_KEY_ID=AKIAEXAMPLE...
+S3_PRESIGN_SECRET_ACCESS_KEY=wJalrXUtn...
+```
+
+The dedicated IAM user only needs `s3:GetObject` permission on your bucket. When set, these credentials are used exclusively for signing presigned URLs, avoiding any STS credential lifetime issues entirely.
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Auto-refresh (default) | Zero config, works with any credential source | Adds ~1 metadata API call per redirect |
+| Dedicated credentials | No expiry concerns, predictable | Requires managing a separate IAM user |
+
 ### CloudFront Integration
 
 For global distribution and even faster downloads, use CloudFront with signed URLs.
