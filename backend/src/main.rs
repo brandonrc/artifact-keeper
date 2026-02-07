@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::http::{header, Method};
 use axum::Router;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -201,12 +201,36 @@ async fn main() -> Result<()> {
                     ])
                     .allow_credentials(true)
             } else {
-                CorsLayer::new()
-                    .allow_origin(Any)
-                    .allow_methods(Any)
-                    .allow_headers(Any)
+                // Production: use CORS_ORIGINS env var if set, otherwise same-origin only
+                let origins_str = std::env::var("CORS_ORIGINS").unwrap_or_default();
+                if origins_str.is_empty() {
+                    CorsLayer::new()
+                } else {
+                    let origins: Vec<_> = origins_str
+                        .split(',')
+                        .map(|s| s.trim().parse().expect("invalid CORS origin"))
+                        .collect();
+                    CorsLayer::new()
+                        .allow_origin(AllowOrigin::list(origins))
+                        .allow_methods([
+                            Method::GET,
+                            Method::POST,
+                            Method::PUT,
+                            Method::PATCH,
+                            Method::DELETE,
+                            Method::OPTIONS,
+                        ])
+                        .allow_headers([
+                            header::CONTENT_TYPE,
+                            header::AUTHORIZATION,
+                            header::ACCEPT,
+                        ])
+                }
             }
         })
+        .layer(axum::middleware::from_fn(
+            artifact_keeper_backend::api::middleware::security_headers::security_headers_middleware,
+        ))
         .layer(TraceLayer::new_for_http());
 
     // Start HTTP server
@@ -225,19 +249,35 @@ async fn main() -> Result<()> {
     let cve_history_server = CveHistoryGrpcServer::new(grpc_db.clone());
     let security_policy_server = SecurityPolicyGrpcServer::new(grpc_db);
 
+    // gRPC auth interceptor — validates JWT Bearer tokens
+    let grpc_auth =
+        artifact_keeper_backend::grpc::auth_interceptor::AuthInterceptor::new(&config.jwt_secret);
+
     // Include file descriptor for gRPC reflection
     let reflection_service = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(include_bytes!("grpc/generated/sbom_descriptor.bin"))
         .build_v1()
         .expect("Failed to build reflection service");
 
+    let grpc_auth_sbom = grpc_auth.clone();
+    let grpc_auth_cve = grpc_auth.clone();
+    let grpc_auth_policy = grpc_auth;
     tokio::spawn(async move {
         tracing::info!("gRPC server listening on {}", grpc_addr);
         if let Err(e) = TonicServer::builder()
             .add_service(reflection_service)
-            .add_service(SbomServiceServer::new(sbom_server))
-            .add_service(CveHistoryServiceServer::new(cve_history_server))
-            .add_service(SecurityPolicyServiceServer::new(security_policy_server))
+            .add_service(SbomServiceServer::with_interceptor(
+                sbom_server,
+                move |req| grpc_auth_sbom.intercept(req),
+            ))
+            .add_service(CveHistoryServiceServer::with_interceptor(
+                cve_history_server,
+                move |req| grpc_auth_cve.intercept(req),
+            ))
+            .add_service(SecurityPolicyServiceServer::with_interceptor(
+                security_policy_server,
+                move |req| grpc_auth_policy.intercept(req),
+            ))
             .serve(grpc_addr)
             .await
         {

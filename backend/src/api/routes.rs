@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::handlers;
 use super::middleware::auth::{auth_middleware, optional_auth_middleware};
 use super::middleware::demo::demo_guard;
+use super::middleware::rate_limit::{rate_limit_middleware, RateLimiter};
 use super::middleware::setup::setup_guard;
 use super::SharedState;
 use crate::services::auth_service::AuthService;
@@ -16,7 +17,6 @@ pub fn create_router(state: SharedState) -> Router {
         // Health endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
-        .route("/metrics", get(handlers::health::metrics))
         // API v1 routes
         .nest("/api/v1", api_v1_routes(state.clone()))
         // Docker Registry V2 API (OCI Distribution Spec)
@@ -98,11 +98,21 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         Arc::new(state.config.clone()),
     ));
 
+    // Rate limiters: strict for auth (10 req/min), general for API (100 req/min)
+    let auth_rate_limiter = Arc::new(RateLimiter::new(10, 60));
+    let api_rate_limiter = Arc::new(RateLimiter::new(100, 60));
+
     Router::new()
         // Setup status (public, no auth)
         .nest("/setup", handlers::auth::setup_router())
-        // Auth routes - split into public and protected
-        .nest("/auth", handlers::auth::public_router())
+        // Auth routes - split into public and protected (rate limited)
+        .nest(
+            "/auth",
+            handlers::auth::public_router().layer(middleware::from_fn_with_state(
+                auth_rate_limiter,
+                rate_limit_middleware,
+            )),
+        )
         .nest("/auth/sso", handlers::sso::router())
         .nest(
             "/auth",
@@ -210,6 +220,7 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         .nest(
             "/admin",
             handlers::admin::router()
+                .route("/metrics", get(handlers::health::metrics))
                 .nest("/analytics", handlers::analytics::router())
                 .nest("/lifecycle", handlers::lifecycle::router())
                 .nest("/telemetry", handlers::telemetry::router())
@@ -292,4 +303,9 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
                 auth_middleware,
             )),
         )
+        // General API rate limiting (100 req/min per IP/user)
+        .layer(middleware::from_fn_with_state(
+            api_rate_limiter,
+            rate_limit_middleware,
+        ))
 }
