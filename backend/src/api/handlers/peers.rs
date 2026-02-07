@@ -65,6 +65,7 @@ pub struct PeerInstanceResponse {
     pub last_heartbeat_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_sync_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing)]
     pub api_key: String,
     pub is_local: bool,
 }
