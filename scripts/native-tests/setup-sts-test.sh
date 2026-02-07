@@ -18,15 +18,17 @@
 #   - PostgreSQL running locally (or via Docker)
 #
 # Optional environment variables:
-#   S3_BUCKET        - Use existing bucket instead of creating one
-#   S3_REGION        - AWS region (default: us-east-1)
-#   KEEP_RESOURCES   - Set to "true" to skip teardown (for debugging)
-#   DATABASE_URL     - PostgreSQL URL
+#   S3_BUCKET          - Use existing bucket instead of creating one
+#   S3_REGION          - AWS region (default: us-east-1)
+#   WAIT_FOR_EXPIRY    - Set to "true" for definitive expiry proof (~16 min)
+#   KEEP_RESOURCES     - Set to "true" to skip teardown (for debugging)
+#   DATABASE_URL       - PostgreSQL URL
 #
 # Usage:
-#   ./setup-sts-test.sh                          # Full IAM role test
-#   S3_BUCKET=my-bucket ./setup-sts-test.sh      # Use existing bucket
-#   KEEP_RESOURCES=true ./setup-sts-test.sh      # Don't cleanup (for debugging)
+#   ./setup-sts-test.sh                               # Quick IAM role test (~30s)
+#   WAIT_FOR_EXPIRY=true ./setup-sts-test.sh          # Full expiry proof (~16 min)
+#   S3_BUCKET=my-bucket ./setup-sts-test.sh           # Use existing bucket
+#   KEEP_RESOURCES=true ./setup-sts-test.sh           # Don't cleanup (for debugging)
 #
 # Cost: ~$0.05 (temp S3 bucket, a few API calls)
 #       All resources are deleted immediately after the test.
@@ -375,6 +377,7 @@ echo ""
 export S3_BUCKET S3_REGION DATABASE_URL
 export STS_ROLE_ARN="$ROLE_ARN"
 export SKIP_CLEANUP=true
+export WAIT_FOR_EXPIRY="${WAIT_FOR_EXPIRY:-false}"
 
 if [ "$IS_ROOT" = true ]; then
     # Run the test AS the temporary IAM user (so AssumeRole works)

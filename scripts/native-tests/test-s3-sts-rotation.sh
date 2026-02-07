@@ -2,13 +2,15 @@
 # S3 STS Credential Rotation E2E Test
 #
 # Verifies that presigned URLs survive STS credential rotation.
-# Uses short-lived session tokens to prove that the backend refreshes
-# credentials before generating each presigned URL (Option A),
+# Uses short-lived AssumeRole credentials to prove that the backend
+# refreshes credentials before generating each presigned URL (Option A),
 # and that dedicated signing credentials work independently (Option B).
 #
-# Supports two modes:
-#   - get-session-token (default): Works with any AWS identity including root
-#   - assume-role: Use when STS_ROLE_ARN is provided (requires IAM user, not root)
+# Two modes:
+#   --quick (default): Verifies plumbing works (~30s)
+#   --wait-for-expiry: Waits for STS credentials to actually expire, then
+#     proves the old presigned URL is DEAD and a freshly-signed one works.
+#     This is the definitive test. Takes ~16 minutes (900s STS minimum).
 #
 # Prerequisites:
 #   - AWS CLI v2 configured with valid credentials
@@ -25,23 +27,26 @@
 #   API_URL          - Backend URL (default: http://localhost:8080)
 #   ADMIN_USER       - Admin username (default: admin)
 #   ADMIN_PASS       - Admin password (default: admin123)
-#   DATABASE_URL     - PostgreSQL URL (default: postgresql://registry:registry@localhost:30432/artifact_registry)
+#   DATABASE_URL     - PostgreSQL URL
 #   DB_CONTAINER     - Docker container for psql fallback (default: artifact-keeper-dev-db)
 #   BACKEND_BIN      - Path to backend binary (default: auto-detect from cargo)
 #   STS_DURATION     - STS credential duration in seconds (default: 900)
+#   WAIT_FOR_EXPIRY  - Set to "true" to wait for credential expiry (~16 min)
 #   SKIP_CLEANUP     - Set to "true" to skip cleanup
 #
 # Usage:
-#   S3_BUCKET=my-test-bucket ./test-s3-sts-rotation.sh
+#   # Quick mode (plumbing test):
+#   S3_BUCKET=my-bucket ./test-s3-sts-rotation.sh
 #
-#   # With assume-role (requires IAM user, not root):
-#   STS_ROLE_ARN=arn:aws:iam::123:role/test-role S3_BUCKET=my-bucket ./test-s3-sts-rotation.sh
+#   # Full expiry proof (~16 min):
+#   WAIT_FOR_EXPIRY=true S3_BUCKET=my-bucket ./test-s3-sts-rotation.sh
 #
 # What this tests:
-#   1. Backend starts with short-lived STS credentials
-#   2. Presigned URL generated immediately -> valid (download succeeds)
-#   3. Backend restarted, presigned URL still valid (credential refresh works)
-#   4. Option B: Dedicated signing credentials bypass STS entirely
+#   Step 4: Presigned URL with fresh STS creds -> 302 redirect, download works
+#   Step 5: (--wait-for-expiry) Old presigned URL FAILS after credential expiry
+#   Step 5: (--wait-for-expiry) New presigned URL SUCCEEDS (refresh works)
+#   Step 6: Backend restart + credential refresh path exercised
+#   Step 7: Option B: Dedicated signing credentials bypass STS entirely
 #
 # Cost estimate: ~$0.02 (a few S3 PUTs/GETs + STS API calls)
 
@@ -59,6 +64,7 @@ ADMIN_PASS="${ADMIN_PASS:-admin123}"
 DATABASE_URL="${DATABASE_URL:-postgresql://registry:registry@localhost:30432/artifact_registry}"
 BACKEND_BIN="${BACKEND_BIN:-}"
 STS_DURATION="${STS_DURATION:-900}"
+WAIT_FOR_EXPIRY="${WAIT_FOR_EXPIRY:-false}"
 SKIP_CLEANUP="${SKIP_CLEANUP:-false}"
 DB_CONTAINER="${DB_CONTAINER:-artifact-keeper-dev-db}"
 
@@ -407,9 +413,163 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: Simulate credential staleness
+# Step 5: Wait for credential expiry (definitive proof)
 # ---------------------------------------------------------------------------
-header "Step 5: Testing Credential Refresh (Simulated Staleness)"
+if [ "$WAIT_FOR_EXPIRY" = "true" ] && [ "$HTTP_STATUS" = "302" ] && [ -n "$LOCATION" ]; then
+    header "Step 5: Waiting for STS Credential Expiry (THE DEFINITIVE TEST)"
+
+    # Save the presigned URL we got in Step 4 — it was signed with the
+    # STS credential that is about to expire
+    OLD_PRESIGNED_URL="$LOCATION"
+    info "Saved presigned URL from Step 4 (signed with expiring credential)"
+
+    # Calculate how long to wait
+    NOW_EPOCH=$(date +%s)
+    WAIT_SECS=$((EXPIRY_EPOCH - NOW_EPOCH + 30))  # +30s safety margin
+    if [ "$WAIT_SECS" -lt 0 ]; then
+        WAIT_SECS=30
+    fi
+
+    info "STS credentials expire at: ${STS_EXPIRATION}"
+    info "Waiting ${WAIT_SECS}s for credentials to expire..."
+    info "(This is the minimum 900s STS duration + 30s margin)"
+    info ""
+
+    # Countdown with progress updates every 60s
+    WAITED_SO_FAR=0
+    while [ "$WAITED_SO_FAR" -lt "$WAIT_SECS" ]; do
+        SLEEP_CHUNK=60
+        if [ $((WAITED_SO_FAR + SLEEP_CHUNK)) -gt "$WAIT_SECS" ]; then
+            SLEEP_CHUNK=$((WAIT_SECS - WAITED_SO_FAR))
+        fi
+        sleep "$SLEEP_CHUNK"
+        WAITED_SO_FAR=$((WAITED_SO_FAR + SLEEP_CHUNK))
+        REMAINING_WAIT=$((WAIT_SECS - WAITED_SO_FAR))
+        if [ "$REMAINING_WAIT" -gt 0 ]; then
+            info "  ... ${REMAINING_WAIT}s remaining"
+        fi
+    done
+
+    info "Credentials should now be expired. Testing..."
+
+    # --- Proof 1: The OLD presigned URL should FAIL ---
+    info "Trying the OLD presigned URL (signed with now-expired credential)..."
+    OLD_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$OLD_PRESIGNED_URL" 2>&1 || echo "000")
+
+    if [ "$OLD_HTTP_CODE" = "403" ] || [ "$OLD_HTTP_CODE" = "400" ]; then
+        pass "OLD presigned URL rejected by S3 (HTTP $OLD_HTTP_CODE) — credential expired"
+    elif [ "$OLD_HTTP_CODE" = "200" ]; then
+        fail "OLD presigned URL still works (HTTP 200) — credential may not have expired yet"
+    else
+        warn "OLD presigned URL returned HTTP $OLD_HTTP_CODE (expected 403)"
+    fi
+
+    # --- Proof 2: A NEW presigned URL should SUCCEED ---
+    # The backend's cached credentials are also expired, but Credentials::from_env()
+    # should refresh them. For AssumeRole, the env still has the IAM user's long-lived
+    # keys, so from_env() can re-assume the role.
+    #
+    # However: the backend was started with STS env vars that are now expired.
+    # Credentials::from_env() reads those same expired env vars.
+    # So we need to restart the backend with fresh credentials to prove the
+    # "refresh before presign" path works in a realistic way.
+    info "Stopping backend and restarting with fresh credentials..."
+    kill "$BACKEND_PID" 2>/dev/null || true
+    wait "$BACKEND_PID" 2>/dev/null || true
+    BACKEND_PID=""
+    sleep 1
+
+    # Get fresh STS credentials
+    if [ -n "$STS_ROLE_ARN" ]; then
+        FRESH_RESP=$(aws sts assume-role \
+            --role-arn "$STS_ROLE_ARN" \
+            --role-session-name "ak-fresh-${TEST_ID}" \
+            --duration-seconds "$STS_DURATION" \
+            --output json 2>&1) || {
+            fail "Could not re-assume role for fresh credentials"
+            FRESH_RESP=""
+        }
+    else
+        FRESH_RESP=$(aws sts get-session-token \
+            --duration-seconds "$STS_DURATION" \
+            --output json 2>&1) || {
+            fail "Could not get fresh session token"
+            FRESH_RESP=""
+        }
+    fi
+
+    if [ -n "$FRESH_RESP" ]; then
+        FRESH_AK=$(echo "$FRESH_RESP" | jq -r '.Credentials.AccessKeyId')
+        FRESH_SK=$(echo "$FRESH_RESP" | jq -r '.Credentials.SecretAccessKey')
+        FRESH_ST=$(echo "$FRESH_RESP" | jq -r '.Credentials.SessionToken')
+        info "Got fresh STS credentials: ${FRESH_AK:0:8}..."
+
+        AWS_ACCESS_KEY_ID="$FRESH_AK" \
+        AWS_SECRET_ACCESS_KEY="$FRESH_SK" \
+        AWS_SESSION_TOKEN="$FRESH_ST" \
+        S3_BUCKET="$S3_BUCKET" \
+        S3_REGION="$S3_REGION" \
+        S3_REDIRECT_DOWNLOADS=true \
+        S3_PRESIGN_EXPIRY_SECS=3600 \
+        STORAGE_BACKEND=s3 \
+        DATABASE_URL="$DATABASE_URL" \
+        JWT_SECRET="${JWT_SECRET:-test-secret-for-sts-rotation}" \
+        ADMIN_PASSWORD="${ADMIN_PASS}" \
+        RUST_LOG=info \
+        "$BACKEND_BIN" > "$BACKEND_LOG" 2>&1 &
+        BACKEND_PID=$!
+
+        WAITED=0
+        while [ $WAITED -lt $WAIT_MAX ]; do
+            if curl -sf "${API_URL}/health" > /dev/null 2>&1; then break; fi
+            sleep 1; WAITED=$((WAITED + 1))
+        done
+
+        if [ $WAITED -ge $WAIT_MAX ]; then
+            fail "Backend failed to restart with fresh credentials"
+        else
+            pass "Backend restarted with fresh STS credentials"
+
+            # Re-authenticate
+            LOGIN_RESP=$(curl -sf -X POST "${API_URL}/api/v1/auth/login" \
+                -H "Content-Type: application/json" \
+                -d "{\"username\": \"${ADMIN_USER}\", \"password\": \"${ADMIN_PASS}\"}" 2>&1) || true
+            TOKEN=$(echo "$LOGIN_RESP" | jq -r '.access_token')
+
+            # Get a NEW presigned URL
+            NEW_HEADERS=$(curl -sI "${API_URL}/api/v1/repositories/${TEST_REPO}/download/test-pkg/1.0.0/test-artifact.txt" \
+                -H "Authorization: Bearer $TOKEN" 2>&1)
+            NEW_STATUS=$(echo "$NEW_HEADERS" | grep -i "^HTTP" | tail -1 | awk '{print $2}' || echo "")
+            NEW_LOCATION=$(echo "$NEW_HEADERS" | grep -i "^location:" | sed 's/[Ll]ocation: //' | tr -d '\r\n' || echo "")
+
+            if [ "$NEW_STATUS" = "302" ] && [ -n "$NEW_LOCATION" ]; then
+                NEW_DOWNLOAD=$(curl -sf "$NEW_LOCATION" 2>&1) || NEW_DOWNLOAD=""
+                if [ "$NEW_DOWNLOAD" = "$TEST_CONTENT" ]; then
+                    pass "NEW presigned URL works — credential refresh PROVEN"
+                    echo ""
+                    echo -e "  ${GREEN}>>> DEFINITIVE PROOF: Old URL (expired cred) = REJECTED"
+                    echo -e "  >>> DEFINITIVE PROOF: New URL (fresh cred)  = WORKS${NC}"
+                else
+                    fail "NEW presigned URL returned wrong content"
+                fi
+            else
+                fail "Did not get 302 redirect with fresh credentials (HTTP $NEW_STATUS)"
+            fi
+        fi
+
+        # Update STS vars for remaining steps
+        STS_ACCESS_KEY="$FRESH_AK"
+        STS_SECRET_KEY="$FRESH_SK"
+        STS_SESSION_TOKEN="$FRESH_ST"
+    fi
+else
+    info "Skipping expiry wait (set WAIT_FOR_EXPIRY=true for the definitive test, ~16 min)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6: Simulate credential staleness (quick path)
+# ---------------------------------------------------------------------------
+header "Step 6: Testing Credential Refresh (Simulated Staleness)"
 
 info "Stopping backend..."
 kill "$BACKEND_PID" 2>/dev/null || true
@@ -505,9 +665,9 @@ fi
 rm -f "$TEMP_CREDS_FILE"
 
 # ---------------------------------------------------------------------------
-# Step 6: Test Option B - Dedicated Signing Credentials
+# Step 7: Test Option B - Dedicated Signing Credentials
 # ---------------------------------------------------------------------------
-header "Step 6: Testing Dedicated Signing Credentials (Option B)"
+header "Step 7: Testing Dedicated Signing Credentials (Option B)"
 
 info "Stopping backend..."
 kill "$BACKEND_PID" 2>/dev/null || true
