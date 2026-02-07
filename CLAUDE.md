@@ -150,6 +150,7 @@ Branch naming conventions:
 ### Other Git Rules
 
 - **Do NOT add Co-Authored-By lines** to commit messages
+- **Do NOT include "Generated with Claude" or similar AI attribution** in PR descriptions
 - **Always use `gh` CLI** for GitHub operations (PRs, issues, workflows, etc.)
   - Use `gh pr create` for pull requests
   - Use `gh issue` for issues

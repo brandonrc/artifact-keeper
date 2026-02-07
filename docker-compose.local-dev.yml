@@ -1,17 +1,26 @@
-# Local development stack
+# Local development stack with hot-reload
 #
-# Runs only infrastructure (Postgres) in Docker.
-# Backend runs natively on the host for fast iteration.
+# Runs all infrastructure in Docker + backend and web with source mounts.
+# Changes to source code trigger automatic rebuilds.
 #
 # Usage:
 #   docker compose -f docker-compose.local-dev.yml up -d
 #
-# Then:
-#   DATABASE_URL=postgresql://registry:registry@localhost:30432/artifact_registry cargo run -p artifact-keeper-backend
+# First time setup (installs cargo-watch in backend container):
+#   docker compose -f docker-compose.local-dev.yml up -d --build
+#
+# View logs:
+#   docker compose -f docker-compose.local-dev.yml logs -f backend web
 #
 # Ports:
-#   Postgres: 30432  (host) -> 5432 (container)
-#   Backend:  8080   (run natively)
+#   Backend API:    8080
+#   Backend gRPC:   9090
+#   Web UI:         3000
+#   Postgres:       30432
+#   Meilisearch:    7700
+#   Trivy:          8090
+#   OpenSCAP:       8091
+#   Dependency-Track: 8092
 
 services:
   postgres:
@@ -23,6 +32,7 @@ services:
       POSTGRES_DB: artifact_registry
     volumes:
       - dev_postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     ports:
       - "30432:5432"
     healthcheck:
@@ -32,9 +42,192 @@ services:
       retries: 5
     restart: unless-stopped
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: artifact-keeper-dev-meilisearch
+    environment:
+      MEILI_MASTER_KEY: artifact-keeper-dev-key
+      MEILI_ENV: development
+    volumes:
+      - dev_meilisearch_data:/meili_data
+    ports:
+      - "7700:7700"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: artifact-keeper-dev-trivy
+    command: ["server", "--listen", "0.0.0.0:8090"]
+    ports:
+      - "8090:8090"
+    volumes:
+      - dev_trivy_cache:/root/.cache/trivy
+      - dev_scan_workspace:/scan-workspace:ro
+    restart: unless-stopped
+
+  openscap:
+    image: ghcr.io/artifact-keeper/artifact-keeper-openscap:latest
+    container_name: artifact-keeper-dev-openscap
+    ports:
+      - "8091:8091"
+    volumes:
+      - dev_scan_workspace:/scan-workspace:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  dependency-track-apiserver:
+    image: dependencytrack/apiserver:4.11.4
+    container_name: artifact-keeper-dev-dtrack-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ALPINE_DATABASE_MODE: external
+      ALPINE_DATABASE_URL: jdbc:postgresql://postgres:5432/dependency_track
+      ALPINE_DATABASE_DRIVER: org.postgresql.Driver
+      ALPINE_DATABASE_USERNAME: registry
+      ALPINE_DATABASE_PASSWORD: registry
+      ALPINE_DATA_DIRECTORY: /data
+      ALPINE_ENFORCE_AUTHENTICATION: "true"
+      ALPINE_CORS_ENABLED: "true"
+      ALPINE_CORS_ALLOW_ORIGIN: "*"
+    volumes:
+      - dev_dtrack_data:/data
+    ports:
+      - "8092:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/version"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    restart: unless-stopped
+
+  dtrack-init:
+    image: alpine:3.20
+    container_name: artifact-keeper-dev-dtrack-init
+    depends_on:
+      dependency-track-apiserver:
+        condition: service_healthy
+    volumes:
+      - ./docker/init-dtrack.sh:/init-dtrack.sh:ro
+      - dev_shared_config:/shared
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl jq >/dev/null 2>&1 && /bin/sh /init-dtrack.sh"]
+    restart: "no"
+
+  # Backend with hot-reload using cargo-watch
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend.dev
+    container_name: artifact-keeper-dev-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -f /shared/dtrack-api-key ] && [ -s /shared/dtrack-api-key ]; then
+          export DEPENDENCY_TRACK_API_KEY="$$(cat /shared/dtrack-api-key)"
+        fi
+        cargo watch -x 'run --bin artifact-keeper'
+    environment:
+      DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
+      STORAGE_PATH: /data/storage
+      BACKUP_PATH: /data/backups
+      PLUGINS_DIR: /data/plugins
+      JWT_SECRET: dev-secret-change-in-production
+      ADMIN_PASSWORD: admin
+      RUST_LOG: info,artifact_keeper=debug
+      ENVIRONMENT: development
+      CORS_ORIGINS: http://localhost:3000,http://localhost:8080
+      TRIVY_URL: http://trivy:8090
+      OPENSCAP_URL: http://openscap:8091
+      SCAN_WORKSPACE_PATH: /scan-workspace
+      MEILISEARCH_URL: http://meilisearch:7700
+      MEILISEARCH_API_KEY: artifact-keeper-dev-key
+      DEPENDENCY_TRACK_URL: http://dependency-track-apiserver:8080
+      DEPENDENCY_TRACK_ENABLED: "true"
+      HOST: 0.0.0.0
+      PORT: 8080
+      SQLX_OFFLINE: "true"
+      CARGO_TARGET_DIR: /target
+    volumes:
+      # Mount source code for hot-reload
+      - ./backend:/app/backend:cached
+      - ./edge:/app/edge:cached
+      - ./Cargo.toml:/app/Cargo.toml:cached
+      - ./Cargo.lock:/app/Cargo.lock:cached
+      - ./.sqlx:/app/.sqlx:cached
+      # Persistent volumes for faster builds
+      - dev_cargo_registry:/usr/local/cargo/registry
+      - dev_cargo_target:/target
+      - dev_sccache:/sccache
+      - dev_artifact_storage:/data/storage
+      - dev_backup_storage:/data/backups
+      - dev_plugins_storage:/data/plugins
+      - dev_scan_workspace:/scan-workspace
+      - dev_shared_config:/shared:ro
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    restart: unless-stopped
+
+  # Web frontend with hot-reload using next dev
+  # Set WEB_PATH env var if artifact-keeper-web is not at ../artifact-keeper-web
+  web:
+    build:
+      context: ${WEB_PATH:-/Users/khan/artifact-keeper-web}
+      dockerfile: Dockerfile.dev
+    container_name: artifact-keeper-dev-web
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      BACKEND_URL: http://backend:8080
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+    volumes:
+      # Mount source code for hot-reload
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/src:/app/src:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/public:/app/public:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/next.config.ts:/app/next.config.ts:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/tailwind.config.ts:/app/tailwind.config.ts:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/tsconfig.json:/app/tsconfig.json:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/components.json:/app/components.json:cached
+      - ${WEB_PATH:-/Users/khan/artifact-keeper-web}/postcss.config.mjs:/app/postcss.config.mjs:cached
+      # Exclude node_modules (use container's own)
+      - dev_web_node_modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
 volumes:
   dev_postgres_data:
-    driver: local
+  dev_meilisearch_data:
+  dev_trivy_cache:
+  dev_dtrack_data:
+  dev_shared_config:
+  dev_cargo_registry:
+  dev_cargo_target:
+  dev_sccache:
+  dev_artifact_storage:
+  dev_backup_storage:
+  dev_plugins_storage:
+  dev_scan_workspace:
+  dev_web_node_modules:
 
 networks:
   default:

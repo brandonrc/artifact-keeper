@@ -27,6 +27,7 @@ use artifact_keeper_backend::{
     },
     services::{
         auth_service::AuthService,
+        dependency_track_service::DependencyTrackService,
         meili_service::MeiliService,
         metrics_service,
         plugin_registry::PluginRegistry,
@@ -157,6 +158,19 @@ async fn main() -> Result<()> {
     if let Some(meili) = meili_service {
         app_state.set_meili_service(meili);
     }
+    // Initialize Dependency-Track integration
+    if let Some(dt_result) = DependencyTrackService::from_env() {
+        match dt_result {
+            Ok(dt_service) => {
+                tracing::info!("Dependency-Track integration enabled");
+                app_state.set_dependency_track(Arc::new(dt_service));
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize Dependency-Track: {}", e);
+            }
+        }
+    }
+
     app_state.set_metrics_handle(metrics_handle);
     app_state
         .setup_required
