@@ -35,6 +35,8 @@ fn require_auth(auth: Option<AuthExtension>) -> Result<AuthExtension> {
 
 /// Create repository routes
 pub fn router() -> Router<SharedState> {
+    use axum::routing::delete;
+
     Router::new()
         .route("/", get(list_repositories).post(create_repository))
         .route(
@@ -43,6 +45,14 @@ pub fn router() -> Router<SharedState> {
                 .patch(update_repository)
                 .delete(delete_repository),
         )
+        // Virtual repository member management
+        .route(
+            "/:key/members",
+            get(list_virtual_members)
+                .post(add_virtual_member)
+                .put(update_virtual_members),
+        )
+        .route("/:key/members/:member_key", delete(remove_virtual_member))
         // Artifact routes nested under repository
         .route("/:key/artifacts", get(list_artifacts))
         .route(
@@ -661,4 +671,236 @@ pub async fn delete_artifact(
     artifact_service.delete(artifact).await?;
 
     Ok(())
+}
+
+// Virtual repository member management handlers
+
+#[derive(Debug, Deserialize)]
+pub struct AddVirtualMemberRequest {
+    pub member_key: String,
+    pub priority: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateVirtualMembersRequest {
+    pub members: Vec<VirtualMemberPriority>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VirtualMemberPriority {
+    pub member_key: String,
+    pub priority: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VirtualMemberResponse {
+    pub id: Uuid,
+    pub member_repo_id: Uuid,
+    pub member_repo_key: String,
+    pub member_repo_name: String,
+    pub member_repo_type: String,
+    pub priority: i32,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VirtualMembersListResponse {
+    pub items: Vec<VirtualMemberResponse>,
+}
+
+// Row type for virtual member queries
+#[derive(sqlx::FromRow)]
+struct VirtualMemberRow {
+    id: Uuid,
+    member_repo_id: Uuid,
+    priority: i32,
+    created_at: chrono::DateTime<chrono::Utc>,
+    member_key: String,
+    member_name: String,
+    repo_type: RepositoryType,
+}
+
+/// List virtual repository members
+pub async fn list_virtual_members(
+    State(state): State<SharedState>,
+    Path(key): Path<String>,
+) -> Result<Json<VirtualMembersListResponse>> {
+    let service = RepositoryService::new(state.db.clone());
+    let repo = service.get_by_key(&key).await?;
+
+    if repo.repo_type != RepositoryType::Virtual {
+        return Err(AppError::Validation(
+            "Only virtual repositories have members".to_string(),
+        ));
+    }
+
+    // Query members with their repository info
+    let members: Vec<VirtualMemberRow> = sqlx::query_as(
+        r#"
+        SELECT
+            vrm.id,
+            vrm.member_repo_id,
+            vrm.priority,
+            vrm.created_at,
+            r.key as member_key,
+            r.name as member_name,
+            r.repo_type
+        FROM virtual_repo_members vrm
+        INNER JOIN repositories r ON r.id = vrm.member_repo_id
+        WHERE vrm.virtual_repo_id = $1
+        ORDER BY vrm.priority
+        "#,
+    )
+    .bind(repo.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let items = members
+        .into_iter()
+        .map(|m| VirtualMemberResponse {
+            id: m.id,
+            member_repo_id: m.member_repo_id,
+            member_repo_key: m.member_key,
+            member_repo_name: m.member_name,
+            member_repo_type: format!("{:?}", m.repo_type).to_lowercase(),
+            priority: m.priority,
+            created_at: m.created_at,
+        })
+        .collect();
+
+    Ok(Json(VirtualMembersListResponse { items }))
+}
+
+/// Add a member to a virtual repository
+pub async fn add_virtual_member(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
+    Path(key): Path<String>,
+    Json(payload): Json<AddVirtualMemberRequest>,
+) -> Result<Json<VirtualMemberResponse>> {
+    let _auth = require_auth(auth)?;
+    let service = RepositoryService::new(state.db.clone());
+
+    let virtual_repo = service.get_by_key(&key).await?;
+    let member_repo = service.get_by_key(&payload.member_key).await?;
+
+    // Get current max priority if not specified
+    let priority = match payload.priority {
+        Some(p) => p,
+        None => {
+            let max: Option<i32> = sqlx::query_scalar(
+                "SELECT MAX(priority) FROM virtual_repo_members WHERE virtual_repo_id = $1",
+            )
+            .bind(virtual_repo.id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            max.unwrap_or(0) + 1
+        }
+    };
+
+    service
+        .add_virtual_member(virtual_repo.id, member_repo.id, priority)
+        .await?;
+
+    // Fetch the created member record
+    let member: VirtualMemberRow = sqlx::query_as(
+        r#"
+        SELECT
+            vrm.id,
+            vrm.member_repo_id,
+            vrm.priority,
+            vrm.created_at,
+            r.key as member_key,
+            r.name as member_name,
+            r.repo_type
+        FROM virtual_repo_members vrm
+        INNER JOIN repositories r ON r.id = vrm.member_repo_id
+        WHERE vrm.virtual_repo_id = $1 AND vrm.member_repo_id = $2
+        "#,
+    )
+    .bind(virtual_repo.id)
+    .bind(member_repo.id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(Json(VirtualMemberResponse {
+        id: member.id,
+        member_repo_id: member.member_repo_id,
+        member_repo_key: member.member_key,
+        member_repo_name: member.member_name,
+        member_repo_type: format!("{:?}", member.repo_type).to_lowercase(),
+        priority: member.priority,
+        created_at: member.created_at,
+    }))
+}
+
+/// Remove a member from a virtual repository
+pub async fn remove_virtual_member(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
+    Path((key, member_key)): Path<(String, String)>,
+) -> Result<()> {
+    let _auth = require_auth(auth)?;
+    let service = RepositoryService::new(state.db.clone());
+
+    let virtual_repo = service.get_by_key(&key).await?;
+    let member_repo = service.get_by_key(&member_key).await?;
+
+    if virtual_repo.repo_type != RepositoryType::Virtual {
+        return Err(AppError::Validation(
+            "Only virtual repositories have members".to_string(),
+        ));
+    }
+
+    sqlx::query(
+        "DELETE FROM virtual_repo_members WHERE virtual_repo_id = $1 AND member_repo_id = $2",
+    )
+    .bind(virtual_repo.id)
+    .bind(member_repo.id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Update priorities for all members (bulk reorder)
+pub async fn update_virtual_members(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
+    Path(key): Path<String>,
+    Json(payload): Json<UpdateVirtualMembersRequest>,
+) -> Result<Json<VirtualMembersListResponse>> {
+    let _auth = require_auth(auth)?;
+    let service = RepositoryService::new(state.db.clone());
+
+    let virtual_repo = service.get_by_key(&key).await?;
+
+    if virtual_repo.repo_type != RepositoryType::Virtual {
+        return Err(AppError::Validation(
+            "Only virtual repositories have members".to_string(),
+        ));
+    }
+
+    // Update priorities for each member
+    for member in &payload.members {
+        let member_repo = service.get_by_key(&member.member_key).await?;
+
+        sqlx::query(
+            "UPDATE virtual_repo_members SET priority = $1 WHERE virtual_repo_id = $2 AND member_repo_id = $3",
+        )
+        .bind(member.priority)
+        .bind(virtual_repo.id)
+        .bind(member_repo.id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    }
+
+    // Return updated list
+    list_virtual_members(State(state), Path(key)).await
 }
