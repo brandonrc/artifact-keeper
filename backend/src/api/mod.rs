@@ -8,6 +8,7 @@ pub mod routes;
 
 use crate::config::Config;
 use crate::services::artifact_service::ArtifactService;
+use crate::services::dependency_track_service::DependencyTrackService;
 use crate::services::meili_service::MeiliService;
 use crate::services::plugin_registry::PluginRegistry;
 use crate::services::repository_service::RepositoryService;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub wasm_plugin_service: Option<Arc<WasmPluginService>>,
     pub scanner_service: Option<Arc<ScannerService>>,
     pub meili_service: Option<Arc<MeiliService>>,
+    pub dependency_track: Option<Arc<DependencyTrackService>>,
     pub metrics_handle: Option<Arc<PrometheusHandle>>,
     /// When true, most API endpoints return 403 until the admin changes the default password.
     pub setup_required: Arc<AtomicBool>,
@@ -42,6 +44,7 @@ impl AppState {
             wasm_plugin_service: None,
             scanner_service: None,
             meili_service: None,
+            dependency_track: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
         }
@@ -61,6 +64,7 @@ impl AppState {
             wasm_plugin_service: Some(wasm_plugin_service),
             scanner_service: None,
             meili_service: None,
+            dependency_track: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
         }
@@ -74,6 +78,11 @@ impl AppState {
     /// Set the Meilisearch service for search indexing.
     pub fn set_meili_service(&mut self, meili_service: Arc<MeiliService>) {
         self.meili_service = Some(meili_service);
+    }
+
+    /// Set the Dependency-Track service for security analysis.
+    pub fn set_dependency_track(&mut self, dt: Arc<DependencyTrackService>) {
+        self.dependency_track = Some(dt);
     }
 
     /// Set the Prometheus metrics handle for rendering /metrics output.
