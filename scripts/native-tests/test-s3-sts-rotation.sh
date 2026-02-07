@@ -198,9 +198,14 @@ pass "Database accessible"
 # ---------------------------------------------------------------------------
 header "Step 1: Obtaining Short-Lived STS Credentials"
 
-# Save the caller's long-lived credentials for Option B testing later
-LONG_LIVED_ACCESS_KEY=$(aws configure get aws_access_key_id 2>/dev/null || echo "")
-LONG_LIVED_SECRET_KEY=$(aws configure get aws_secret_access_key 2>/dev/null || echo "")
+# Save the caller's long-lived credentials for Option B and S3 uploads.
+# Check env vars first (set by setup-sts-test.sh for temp IAM users),
+# then fall back to aws configure (for direct invocation).
+LONG_LIVED_ACCESS_KEY="${AWS_ACCESS_KEY_ID:-$(aws configure get aws_access_key_id 2>/dev/null || echo "")}"
+LONG_LIVED_SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-$(aws configure get aws_secret_access_key 2>/dev/null || echo "")}"
+if [ -n "$LONG_LIVED_ACCESS_KEY" ]; then
+    info "Long-lived credentials captured for S3 uploads and Option B (${LONG_LIVED_ACCESS_KEY:0:8}...)"
+fi
 
 if [ -n "$STS_ROLE_ARN" ]; then
     info "Assuming role: ${STS_ROLE_ARN} (duration: ${STS_DURATION}s)"
