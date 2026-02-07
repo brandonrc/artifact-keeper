@@ -18,6 +18,20 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Bootstrap Dependency-Track: change default password and extract API key.
+  # Writes the key to /shared/dtrack-api-key for the backend entrypoint wrapper.
+  dtrack-init:
+    image: alpine:3.20
+    container_name: artifact-keeper-dtrack-init
+    depends_on:
+      dependency-track-apiserver:
+        condition: service_healthy
+    volumes:
+      - ./docker/init-dtrack.sh:/init-dtrack.sh:ro
+      - shared_config:/shared
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache curl jq >/dev/null 2>&1 && /bin/sh /init-dtrack.sh"]
+    restart: "no"
+
   backend:
     image: ghcr.io/artifact-keeper/artifact-keeper-backend:latest
     container_name: artifact-keeper-backend
@@ -26,6 +40,16 @@ services:
         condition: service_healthy
       meilisearch:
         condition: service_healthy
+      dtrack-init:
+        condition: service_completed_successfully
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -f /shared/dtrack-api-key ] && [ -s /shared/dtrack-api-key ]; then
+          export DEPENDENCY_TRACK_API_KEY="$$(cat /shared/dtrack-api-key)"
+        fi
+        exec artifact-keeper
     environment:
       DATABASE_URL: postgresql://registry:registry@postgres:5432/artifact_registry
       STORAGE_PATH: /data/storage
@@ -44,9 +68,8 @@ services:
       SCAN_WORKSPACE_PATH: /scan-workspace
       MEILISEARCH_URL: http://meilisearch:7700
       MEILISEARCH_API_KEY: ${MEILI_MASTER_KEY:-artifact-keeper-dev-key}
-      # Dependency-Track integration
+      # Dependency-Track integration (API key auto-provisioned by dtrack-init)
       DEPENDENCY_TRACK_URL: http://dependency-track-apiserver:8080
-      DEPENDENCY_TRACK_API_KEY: ${DEPENDENCY_TRACK_API_KEY:-}
       DEPENDENCY_TRACK_ENABLED: ${DEPENDENCY_TRACK_ENABLED:-true}
       HOST: 0.0.0.0
       PORT: 8080
@@ -55,6 +78,7 @@ services:
       - backup_storage:/data/backups
       - plugins_storage:/data/plugins
       - scan_workspace:/scan-workspace
+      - shared_config:/shared:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -204,6 +228,8 @@ volumes:
   caddy_config:
     driver: local
   dtrack_data:
+    driver: local
+  shared_config:
     driver: local
 
 networks:
