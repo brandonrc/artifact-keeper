@@ -52,6 +52,10 @@ pub struct S3Config {
     pub cloudfront: Option<CloudFrontConfig>,
     /// Storage path format (native, artifactory, or migration)
     pub path_format: StoragePathFormat,
+    /// Dedicated access key for presigned URL signing (optional, overrides default credentials)
+    pub presign_access_key: Option<String>,
+    /// Dedicated secret key for presigned URL signing (optional, overrides default credentials)
+    pub presign_secret_key: Option<String>,
 }
 
 /// CloudFront CDN configuration for signed URLs
@@ -89,6 +93,10 @@ impl S3Config {
         // Storage path format (native, artifactory, or migration)
         let path_format = StoragePathFormat::from_env();
 
+        // Dedicated signing credentials for presigned URLs (Option B)
+        let presign_access_key = std::env::var("S3_PRESIGN_ACCESS_KEY_ID").ok();
+        let presign_secret_key = std::env::var("S3_PRESIGN_SECRET_ACCESS_KEY").ok();
+
         Ok(Self {
             bucket,
             region,
@@ -98,6 +106,8 @@ impl S3Config {
             presign_expiry: Duration::from_secs(presign_expiry_secs),
             cloudfront,
             path_format,
+            presign_access_key,
+            presign_secret_key,
         })
     }
 
@@ -154,6 +164,8 @@ impl S3Config {
             presign_expiry: Duration::from_secs(3600),
             cloudfront: None,
             path_format: StoragePathFormat::default(),
+            presign_access_key: None,
+            presign_secret_key: None,
         }
     }
 
@@ -194,6 +206,14 @@ pub struct S3Backend {
     cloudfront: Option<CloudFrontConfig>,
     /// Storage path format (for Artifactory compatibility)
     path_format: StoragePathFormat,
+    /// Pre-built signing bucket with dedicated credentials (Option B)
+    signing_bucket: Option<Box<Bucket>>,
+    /// Stored region for creating fresh signing buckets (Option A)
+    region: Region,
+    /// Stored bucket name for creating fresh signing buckets (Option A)
+    bucket_name: String,
+    /// Whether to use path-style access (for MinIO)
+    use_path_style: bool,
 }
 
 impl S3Backend {
@@ -215,15 +235,37 @@ impl S3Backend {
                 .map_err(|_| AppError::Config(format!("Invalid S3 region: {}", config.region)))?,
         };
 
+        let use_path_style = config.endpoint.is_some();
+
         // Create bucket handle
-        let bucket = Bucket::new(&config.bucket, region, credentials)
+        let bucket = Bucket::new(&config.bucket, region.clone(), credentials)
             .map_err(|e| AppError::Config(format!("Failed to create S3 bucket: {}", e)))?;
 
         // Enable path-style access for MinIO compatibility
-        let bucket = if config.endpoint.is_some() {
+        let bucket = if use_path_style {
             bucket.with_path_style()
         } else {
             bucket
+        };
+
+        // Build dedicated signing bucket if explicit presign credentials are provided
+        let signing_bucket = match (&config.presign_access_key, &config.presign_secret_key) {
+            (Some(ak), Some(sk)) => {
+                let signing_creds = Credentials::new(Some(ak), Some(sk), None, None, None)
+                    .map_err(|e| AppError::Config(format!("Invalid presign credentials: {}", e)))?;
+                let sb =
+                    Bucket::new(&config.bucket, region.clone(), signing_creds).map_err(|e| {
+                        AppError::Config(format!("Failed to create signing bucket: {}", e))
+                    })?;
+                let sb = if use_path_style {
+                    sb.with_path_style()
+                } else {
+                    sb
+                };
+                tracing::info!("Using dedicated credentials for presigned URL signing");
+                Some(sb)
+            }
+            _ => None,
         };
 
         if config.redirect_downloads {
@@ -231,6 +273,7 @@ impl S3Backend {
                 bucket = %config.bucket,
                 cloudfront = config.cloudfront.is_some(),
                 expiry_secs = config.presign_expiry.as_secs(),
+                dedicated_signing_creds = signing_bucket.is_some(),
                 "S3 redirect downloads enabled"
             );
         }
@@ -242,6 +285,8 @@ impl S3Backend {
             );
         }
 
+        let bucket_name = config.bucket;
+
         Ok(Self {
             bucket,
             prefix: config.prefix,
@@ -249,6 +294,10 @@ impl S3Backend {
             presign_expiry: config.presign_expiry,
             cloudfront: config.cloudfront,
             path_format: config.path_format,
+            signing_bucket,
+            region,
+            bucket_name,
+            use_path_style,
         })
     }
 
@@ -449,22 +498,57 @@ impl super::StorageBackend for S3Backend {
             }));
         }
 
-        // Fall back to S3 presigned URL
-        let url = self
-            .bucket
-            .presign_get(&full_key, expiry_secs, None)
-            .await
-            .map_err(|e| {
-                AppError::Storage(format!(
-                    "Failed to generate presigned URL for '{}': {}",
-                    key, e
-                ))
-            })?;
+        // Generate S3 presigned URL with fresh or dedicated credentials
+        let presign_result = if let Some(sb) = &self.signing_bucket {
+            // Option B: use dedicated signing credentials (long-lived, no STS expiry concern)
+            sb.presign_get(&full_key, expiry_secs, None).await
+        } else {
+            // Option A: refresh credentials from env/metadata before signing
+            // This ensures STS credentials are current, so the presigned URL
+            // gets the full requested lifetime instead of being limited by
+            // the remaining TTL of stale credentials.
+            match Credentials::from_env() {
+                Ok(fresh_creds) => {
+                    match Bucket::new(&self.bucket_name, self.region.clone(), fresh_creds) {
+                        Ok(fresh_bucket) => {
+                            let fresh_bucket = if self.use_path_style {
+                                fresh_bucket.with_path_style()
+                            } else {
+                                fresh_bucket
+                            };
+                            fresh_bucket.presign_get(&full_key, expiry_secs, None).await
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create fresh signing bucket, using cached credentials: {}",
+                                e
+                            );
+                            self.bucket.presign_get(&full_key, expiry_secs, None).await
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to refresh credentials for presigning, using cached credentials: {}",
+                        e
+                    );
+                    self.bucket.presign_get(&full_key, expiry_secs, None).await
+                }
+            }
+        };
+
+        let url = presign_result.map_err(|e| {
+            AppError::Storage(format!(
+                "Failed to generate presigned URL for '{}': {}",
+                key, e
+            ))
+        })?;
 
         tracing::debug!(
             key = %key,
             expires_in_secs = expiry_secs,
             source = "s3",
+            dedicated_creds = self.signing_bucket.is_some(),
             "Generated S3 presigned URL"
         );
 
@@ -678,6 +762,8 @@ mod tests {
         assert_eq!(config.endpoint, Some("http://localhost:9000".to_string()));
         assert_eq!(config.prefix, Some("prefix".to_string()));
         assert_eq!(config.path_format, StoragePathFormat::Native);
+        assert!(config.presign_access_key.is_none());
+        assert!(config.presign_secret_key.is_none());
     }
 
     #[test]
@@ -728,6 +814,22 @@ mod tests {
 
         assert_eq!(config.path_format, StoragePathFormat::Migration);
         assert!(config.path_format.has_fallback());
+    }
+
+    #[test]
+    fn test_s3_config_presign_credentials_default_none() {
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None);
+        assert!(config.presign_access_key.is_none());
+        assert!(config.presign_secret_key.is_none());
+    }
+
+    #[test]
+    fn test_s3_config_supports_redirect_requires_key() {
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
+            .with_redirect_downloads(true);
+        assert!(config.redirect_downloads);
+        // Without presign credentials, Option A (auto-refresh) will be used
+        assert!(config.presign_access_key.is_none());
     }
 }
 
