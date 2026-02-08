@@ -94,6 +94,9 @@ pub struct Config {
 
     /// API key for authenticating peer-to-peer requests
     pub peer_api_key: String,
+
+    /// Dependency-Track API URL for vulnerability management (optional)
+    pub dependency_track_url: Option<String>,
 }
 
 impl Config {
@@ -135,6 +138,7 @@ impl Config {
                 .unwrap_or_else(|_| "http://localhost:8080".into()),
             peer_api_key: env::var("PEER_API_KEY")
                 .unwrap_or_else(|_| "change-me-in-production".into()),
+            dependency_track_url: env::var("DEPENDENCY_TRACK_URL").ok(),
         })
     }
 }
