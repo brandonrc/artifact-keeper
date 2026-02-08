@@ -75,7 +75,6 @@ nginx.conf
 
 # Claude Code local config
 .claude/
-ARTIFACTORY_UI_UX_DEEP_DIVE.md
 
 # Agent tooling (internal, not for public repo)
 .beads/
