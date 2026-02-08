@@ -240,7 +240,10 @@ impl HealthMonitorService {
 
         // Dependency-Track
         if let Some(url) = &app_config.dependency_track_url {
-            results.push(self.check_service("dependency-track", url, "/api/version").await?);
+            results.push(
+                self.check_service("dependency-track", url, "/api/version")
+                    .await?,
+            );
         }
 
         Ok(results)
