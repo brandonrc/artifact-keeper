@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.3] - 2026-02-08
+
+Bug fix release resolving 9 issues found by automated stress testing, plus build hygiene improvements.
+
+### Fixed
+- **Promotion handler**: Fix storage_key bind using `artifact.path` instead of `artifact.storage_key`, causing promoted artifacts to be undownloadable (#65, #72)
+- **Promotion handler**: Replace direct `tokio::fs::copy` with `FilesystemStorage` abstraction to respect content-addressable sharding (#65, #72)
+- **Repository key validation**: Add strict allowlist rejecting path traversal, XSS, SQL injection chars, null bytes, and keys over 128 characters (#69, #70)
+- **Upload size limit**: Add `DefaultBodyLimit::max(512MB)` to repository router; Axum default 2MB was blocking legitimate uploads (#67)
+- **Rate limiting**: Increase API rate limit from 100 to 1000 req/min, auth from 10 to 30 req/min (#66, #68, #71, #73)
+- **Download panic**: Lowercase `X_ARTIFACT_STORAGE` header constant for `HeaderName::from_static()` compatibility
+- Correct `AuthExtension` type in promotion handlers (#62)
+- Remove extra blank lines in promotion handlers (#63)
+- Fix pre-release banner overlapping content on mobile (#64)
+- Use dev tag for main builds, latest only on release tags (#60)
+
+### Added
+- DevOps stress test agent script (12-phase, 71-test suite)
+
+### Changed
+- Documentation gaps filled for v1.0.0-a2 features (#61)
+
 ## [1.0.0-a2] - 2026-02-08
 
 Second alpha release with staging promotion workflow, Dependency-Track monitoring, red team security hardening, and landing page refresh.
