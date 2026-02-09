@@ -128,7 +128,7 @@ fn parse_type(s: &str) -> Option<PluginType> {
 /// List installed plugins
 #[utoipa::path(
     get,
-    path = "/",
+    path = "",
     context_path = "/api/v1/plugins",
     tag = "plugins",
     params(ListPluginsQuery),
@@ -200,7 +200,7 @@ struct PluginManifest {
 /// Install plugin from uploaded package
 #[utoipa::path(
     post,
-    path = "/",
+    path = "",
     context_path = "/api/v1/plugins",
     tag = "plugins",
     security(("bearer_auth" = [])),
@@ -798,7 +798,7 @@ pub struct ListFormatsQuery {
 /// List all format handlers (T039)
 #[utoipa::path(
     get,
-    path = "/",
+    path = "",
     context_path = "/api/v1/formats",
     tag = "plugins",
     params(ListFormatsQuery),

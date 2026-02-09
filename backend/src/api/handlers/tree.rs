@@ -64,7 +64,7 @@ struct FolderEntry {
 
 #[utoipa::path(
     get,
-    path = "/",
+    path = "",
     context_path = "/api/v1/tree",
     tag = "repositories",
     params(TreeQuery),

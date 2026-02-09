@@ -17,6 +17,9 @@ use utoipa::{Modify, OpenApi};
         license(name = "MIT", url = "https://opensource.org/licenses/MIT"),
         contact(name = "Artifact Keeper", url = "https://artifactkeeper.com")
     ),
+    servers(
+        (url = "/", description = "Current server"),
+    ),
     modifiers(&SecurityAddon),
     tags(
         (name = "auth", description = "Authentication and token management"),
