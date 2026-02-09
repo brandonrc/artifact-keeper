@@ -66,9 +66,16 @@
   const hamburger = navbar?.querySelector('.navbar-hamburger');
   const mobileMenuBtn = document.getElementById('mobile-menu-btn');
   const mobileMenu = document.getElementById('mobile-menu');
+  const banner = document.querySelector('.prerelease-banner') as HTMLElement | null;
 
   function updateNavbar() {
     if (!navbar) return;
+
+    // Position navbar below the pre-release banner
+    const bannerHeight = banner ? banner.offsetHeight : 0;
+    const navTop = Math.max(0, bannerHeight - window.scrollY);
+    navbar.style.top = navTop + 'px';
+
     const scrolled = window.scrollY > 50;
 
     if (scrolled) {
@@ -93,6 +100,7 @@
   }
 
   window.addEventListener('scroll', updateNavbar);
+  window.addEventListener('resize', updateNavbar);
   updateNavbar();
 
   mobileMenuBtn?.addEventListener('click', () => {
