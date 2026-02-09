@@ -570,6 +570,7 @@ pub async fn list_artifacts(
     path = "/{key}/artifacts/{path}",
     context_path = "/api/v1/repositories",
     tag = "repositories",
+    operation_id = "get_repository_artifact_metadata",
     params(
         ("key" = String, Path, description = "Repository key"),
         ("path" = String, Path, description = "Artifact path"),

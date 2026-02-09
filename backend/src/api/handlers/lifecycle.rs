@@ -62,6 +62,7 @@ pub struct ListPoliciesQuery {
     path = "",
     context_path = "/api/v1/admin/lifecycle",
     tag = "lifecycle",
+    operation_id = "list_lifecycle_policies",
     params(ListPoliciesQuery),
     responses(
         (status = 200, description = "List lifecycle policies", body = Vec<LifecyclePolicy>),
@@ -83,6 +84,7 @@ pub async fn list_policies(
     path = "",
     context_path = "/api/v1/admin/lifecycle",
     tag = "lifecycle",
+    operation_id = "create_lifecycle_policy",
     request_body = CreatePolicyRequest,
     responses(
         (status = 200, description = "Policy created successfully", body = LifecyclePolicy),
@@ -105,6 +107,7 @@ pub async fn create_policy(
     path = "/{id}",
     context_path = "/api/v1/admin/lifecycle",
     tag = "lifecycle",
+    operation_id = "get_lifecycle_policy",
     params(
         ("id" = Uuid, Path, description = "Policy ID"),
     ),
@@ -128,6 +131,7 @@ pub async fn get_policy(
     path = "/{id}",
     context_path = "/api/v1/admin/lifecycle",
     tag = "lifecycle",
+    operation_id = "update_lifecycle_policy",
     params(
         ("id" = Uuid, Path, description = "Policy ID"),
     ),
@@ -154,6 +158,7 @@ pub async fn update_policy(
     path = "/{id}",
     context_path = "/api/v1/admin/lifecycle",
     tag = "lifecycle",
+    operation_id = "delete_lifecycle_policy",
     params(
         ("id" = Uuid, Path, description = "Policy ID"),
     ),

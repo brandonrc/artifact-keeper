@@ -563,6 +563,7 @@ pub async fn toggle_saml(
     path = "/providers",
     context_path = "/api/v1/admin/sso",
     tag = "sso",
+    operation_id = "list_sso_providers_admin",
     responses(
         (status = 200, description = "List of enabled SSO providers", body = Vec<SsoProviderInfo>),
         (status = 401, description = "Unauthorized", body = crate::api::openapi::ErrorResponse),

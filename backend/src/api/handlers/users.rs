@@ -626,6 +626,7 @@ pub async fn list_user_tokens(
     path = "/{id}/tokens",
     context_path = "/api/v1/users",
     tag = "users",
+    operation_id = "create_user_api_token",
     params(
         ("id" = Uuid, Path, description = "User ID"),
     ),
@@ -667,6 +668,7 @@ pub async fn create_api_token(
     path = "/{id}/tokens/{token_id}",
     context_path = "/api/v1/users",
     tag = "users",
+    operation_id = "revoke_user_api_token",
     params(
         ("id" = Uuid, Path, description = "User ID"),
         ("token_id" = Uuid, Path, description = "API token ID"),

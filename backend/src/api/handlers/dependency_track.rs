@@ -357,6 +357,7 @@ async fn update_analysis(
     path = "/policies",
     context_path = "/api/v1/dependency-track",
     tag = "security",
+    operation_id = "list_dependency_track_policies",
     responses(
         (status = 200, description = "List of policies", body = Vec<DtPolicyFull>),
     ),

@@ -53,6 +53,7 @@ pub fn router() -> Router<SharedState> {
     path = "/settings",
     context_path = "/api/v1/admin/telemetry",
     tag = "telemetry",
+    operation_id = "get_telemetry_settings",
     responses(
         (status = 200, description = "Current telemetry settings", body = TelemetrySettings),
     ),
@@ -70,6 +71,7 @@ pub async fn get_settings(State(state): State<SharedState>) -> Result<Json<Telem
     path = "/settings",
     context_path = "/api/v1/admin/telemetry",
     tag = "telemetry",
+    operation_id = "update_telemetry_settings",
     request_body = TelemetrySettings,
     responses(
         (status = 200, description = "Settings updated", body = TelemetrySettings),

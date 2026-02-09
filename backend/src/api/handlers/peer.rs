@@ -131,6 +131,7 @@ fn parse_peer_status(s: &str) -> Option<PeerStatus> {
     path = "/{id}/connections",
     context_path = "/api/v1/peers",
     tag = "peers",
+    operation_id = "list_peer_connections",
     params(
         ("id" = Uuid, Path, description = "Peer instance ID"),
         ListPeersQuery,
