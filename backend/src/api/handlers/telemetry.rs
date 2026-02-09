@@ -33,7 +33,7 @@ use crate::services::crash_reporting_service::{
         SubmitResponse,
         TelemetrySettings,
         CrashReport,
-    )),
+    ))
 )]
 pub struct TelemetryApiDoc;
 

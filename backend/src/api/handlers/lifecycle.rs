@@ -34,7 +34,7 @@ use crate::services::lifecycle_service::{
         CreatePolicyRequest,
         UpdatePolicyRequest,
         PolicyExecutionResult,
-    )),
+    ))
 )]
 pub struct LifecycleApiDoc;
 

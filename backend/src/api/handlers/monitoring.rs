@@ -18,17 +18,8 @@ use crate::services::health_monitor_service::{
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(
-        get_health_log,
-        get_alert_states,
-        suppress_alert,
-        run_health_check,
-    ),
-    components(schemas(
-        SuppressRequest,
-        ServiceHealthEntry,
-        AlertState,
-    )),
+    paths(get_health_log, get_alert_states, suppress_alert, run_health_check,),
+    components(schemas(SuppressRequest, ServiceHealthEntry, AlertState,))
 )]
 pub struct MonitoringApiDoc;
 
