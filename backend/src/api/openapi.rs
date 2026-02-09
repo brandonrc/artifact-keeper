@@ -116,3 +116,98 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 
     doc
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openapi_spec_is_valid() {
+        let spec = build_openapi();
+
+        // Verify basic structure
+        assert_eq!(spec.info.title, "Artifact Keeper API");
+
+        // Verify we have a reasonable number of paths (catches missing module merges)
+        let path_count = spec.paths.paths.len();
+        assert!(
+            path_count >= 200,
+            "Expected at least 200 paths, got {path_count}. A module merge may be missing."
+        );
+
+        // Verify schemas are present
+        let schema_count = spec.components.as_ref().map_or(0, |c| c.schemas.len());
+        assert!(
+            schema_count >= 200,
+            "Expected at least 200 schemas, got {schema_count}."
+        );
+
+        // Verify security scheme is registered
+        let has_bearer = spec
+            .components
+            .as_ref()
+            .map_or(false, |c| c.security_schemes.contains_key("bearer_auth"));
+        assert!(has_bearer, "Bearer auth security scheme is missing.");
+
+        // Verify all expected tags are present
+        let tags: Vec<&str> = spec
+            .tags
+            .as_ref()
+            .map_or(vec![], |t| t.iter().map(|tag| tag.name.as_str()).collect());
+        for expected_tag in [
+            "auth",
+            "repositories",
+            "artifacts",
+            "users",
+            "groups",
+            "health",
+            "admin",
+            "search",
+        ] {
+            assert!(
+                tags.contains(&expected_tag),
+                "Missing expected tag: {expected_tag}"
+            );
+        }
+
+        // Verify the spec serializes to valid JSON
+        let json = serde_json::to_string(&spec).expect("Spec should serialize to JSON");
+        assert!(
+            json.len() > 100_000,
+            "Spec JSON seems too small: {} bytes",
+            json.len()
+        );
+    }
+
+    #[test]
+    fn test_openapi_spec_operation_count() {
+        let spec = build_openapi();
+        let mut op_count = 0;
+
+        for (_path, item) in &spec.paths.paths {
+            if item.get.is_some() {
+                op_count += 1;
+            }
+            if item.put.is_some() {
+                op_count += 1;
+            }
+            if item.post.is_some() {
+                op_count += 1;
+            }
+            if item.delete.is_some() {
+                op_count += 1;
+            }
+            if item.patch.is_some() {
+                op_count += 1;
+            }
+            if item.head.is_some() {
+                op_count += 1;
+            }
+        }
+
+        assert!(
+            op_count >= 250,
+            "Expected at least 250 operations, got {op_count}. Handler annotations may be missing."
+        );
+    }
+}

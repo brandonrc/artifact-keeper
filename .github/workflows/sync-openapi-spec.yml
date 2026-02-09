@@ -1,0 +1,150 @@
+name: Sync OpenAPI Spec
+
+on:
+  # Trigger after a release is published
+  release:
+    types: [published]
+  # Manual trigger for ad-hoc sync
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip pushing to API repo)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sync-spec:
+    name: Export & Sync OpenAPI Spec
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build backend
+        env:
+          SQLX_OFFLINE: true
+        run: cargo build --release
+
+      - name: Export OpenAPI spec
+        run: |
+          # Start backend briefly to export the spec
+          export DATABASE_URL="postgresql://unused:unused@localhost/unused"
+          export JWT_SECRET="ci-export-only"
+          export STORAGE_PATH="/tmp/ak-storage"
+          export BIND_ADDRESS="127.0.0.1:18080"
+          mkdir -p /tmp/ak-storage
+
+          # The spec is built at startup, we just need to GET it
+          ./target/release/artifact-keeper &
+          SERVER_PID=$!
+
+          # Wait for server to start (it will fail DB connection but spec is served before that)
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18080/api/v1/openapi.json -o /dev/null 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          # Export spec
+          curl -sf http://127.0.0.1:18080/api/v1/openapi.json | python3 -m json.tool > openapi.json
+          python3 -c "
+          import json, sys
+          try:
+              import yaml
+              with open('openapi.json') as f:
+                  spec = json.load(f)
+              with open('openapi.yaml', 'w') as f:
+                  yaml.dump(spec, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          except ImportError:
+              print('PyYAML not available, installing...')
+              sys.exit(1)
+          "
+          if [ $? -ne 0 ]; then
+            pip3 install pyyaml
+            python3 -c "
+          import json, yaml
+          with open('openapi.json') as f:
+              spec = json.load(f)
+          with open('openapi.yaml', 'w') as f:
+              yaml.dump(spec, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          "
+          fi
+
+          kill $SERVER_PID 2>/dev/null || true
+
+          echo "## Exported spec summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Paths: $(python3 -c "import json; print(len(json.load(open('openapi.json'))['paths']))")" >> $GITHUB_STEP_SUMMARY
+          echo "- Schemas: $(python3 -c "import json; print(len(json.load(open('openapi.json')).get('components',{}).get('schemas',{})))")" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload spec artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: |
+            openapi.json
+            openapi.yaml
+
+      - name: Checkout API repo
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v6
+        with:
+          repository: artifact-keeper/artifact-keeper-api
+          token: ${{ secrets.API_REPO_TOKEN }}
+          path: api-repo
+
+      - name: Update spec in API repo
+        if: ${{ !inputs.dry_run }}
+        run: |
+          cp openapi.json api-repo/openapi.json
+          cp openapi.yaml api-repo/openapi.yaml
+
+          cd api-repo
+          if git diff --quiet; then
+            echo "No spec changes detected"
+            echo "no_changes=true" >> $GITHUB_ENV
+          else
+            echo "Spec changes detected"
+            echo "no_changes=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create PR in API repo
+        if: ${{ !inputs.dry_run && env.no_changes == 'false' }}
+        env:
+          GH_TOKEN: ${{ secrets.API_REPO_TOKEN }}
+        run: |
+          cd api-repo
+
+          VERSION="${{ github.event.release.tag_name || 'manual' }}"
+          BRANCH="chore/sync-spec-${VERSION}"
+
+          git checkout -b "$BRANCH"
+          git add openapi.json openapi.yaml
+          git commit -m "chore: sync OpenAPI spec from backend ${VERSION}"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: sync OpenAPI spec from backend ${VERSION}" \
+            --body "$(cat <<EOF
+          ## Summary
+          - Auto-synced OpenAPI spec from backend release ${VERSION}
+          - Generated from utoipa annotations in the Rust backend
+
+          This PR was created automatically by the backend's sync-openapi-spec workflow.
+          EOF
+          )"
