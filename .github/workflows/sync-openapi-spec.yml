@@ -100,13 +100,16 @@ jobs:
             openapi.json
             openapi.yaml
 
+      - name: Setup SSH for API repo
+        if: ${{ !inputs.dry_run }}
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.API_REPO_DEPLOY_KEY }}
+
       - name: Checkout API repo
         if: ${{ !inputs.dry_run }}
-        uses: actions/checkout@v6
-        with:
-          repository: artifact-keeper/artifact-keeper-api
-          token: ${{ secrets.API_REPO_TOKEN }}
-          path: api-repo
+        run: |
+          git clone git@github.com:artifact-keeper/artifact-keeper-api.git api-repo
 
       - name: Update spec in API repo
         if: ${{ !inputs.dry_run }}
@@ -133,6 +136,8 @@ jobs:
           VERSION="${{ github.event.release.tag_name || 'manual' }}"
           BRANCH="chore/sync-spec-${VERSION}"
 
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add openapi.json openapi.yaml
           git commit -m "chore: sync OpenAPI spec from backend ${VERSION}"
