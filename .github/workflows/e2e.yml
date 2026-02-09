@@ -151,7 +151,7 @@ jobs:
     name: 🔥 Stress Tests
     runs-on: ubuntu-latest
     needs: [native-client-tests]
-    if: ${{ inputs.include_stress == true }}
+    if: ${{ inputs.include_stress == true || inputs.include_stress == 'true' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -188,7 +188,7 @@ jobs:
     name: 💥 Failure Tests
     runs-on: ubuntu-latest
     needs: [native-client-tests]
-    if: ${{ inputs.include_failure == true }}
+    if: ${{ inputs.include_failure == true || inputs.include_failure == 'true' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -245,10 +245,13 @@ jobs:
 
           # Stress Tests (only check if enabled)
           if [[ "${{ inputs.include_stress }}" == "true" ]]; then
-            if [[ "${{ needs.stress-tests.result }}" == "success" ]]; then
+            stress_result="${{ needs.stress-tests.result }}"
+            if [[ "$stress_result" == "success" ]]; then
               echo "✅ Stress Tests: Passed" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$stress_result" == "skipped" ]]; then
+              echo "⏭️ Stress Tests: Skipped (conditional)" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ Stress Tests: ${{ needs.stress-tests.result }}" >> $GITHUB_STEP_SUMMARY
+              echo "❌ Stress Tests: $stress_result" >> $GITHUB_STEP_SUMMARY
               overall_pass=false
             fi
           else
@@ -257,10 +260,13 @@ jobs:
 
           # Failure Tests (only check if enabled)
           if [[ "${{ inputs.include_failure }}" == "true" ]]; then
-            if [[ "${{ needs.failure-tests.result }}" == "success" ]]; then
+            failure_result="${{ needs.failure-tests.result }}"
+            if [[ "$failure_result" == "success" ]]; then
               echo "✅ Failure Tests: Passed" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$failure_result" == "skipped" ]]; then
+              echo "⏭️ Failure Tests: Skipped (conditional)" >> $GITHUB_STEP_SUMMARY
             else
-              echo "❌ Failure Tests: ${{ needs.failure-tests.result }}" >> $GITHUB_STEP_SUMMARY
+              echo "❌ Failure Tests: $failure_result" >> $GITHUB_STEP_SUMMARY
               overall_pass=false
             fi
           else
