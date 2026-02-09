@@ -28,7 +28,8 @@ services:
         openssl x509 -req -in /certs/server.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
           -CAcreateserial -out /certs/server.crt -days 365 -sha256 -extfile /certs/server.ext
         rm -f /certs/server.csr /certs/server.ext /certs/ca.srl
-        chmod 600 /certs/server.key /certs/ca.key
+        chown 70:70 /certs/server.key /certs/server.crt /certs/ca.crt
+        chmod 600 /certs/server.key
         chmod 644 /certs/server.crt /certs/ca.crt
         echo "pg-certs: done"
     volumes:
