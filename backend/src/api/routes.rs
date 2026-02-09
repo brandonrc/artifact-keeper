@@ -2,6 +2,7 @@
 
 use axum::{middleware, routing::get, Router};
 use std::sync::Arc;
+use utoipa_swagger_ui::SwaggerUi;
 
 use super::handlers;
 use super::middleware::auth::{auth_middleware, optional_auth_middleware};
@@ -13,10 +14,15 @@ use crate::services::auth_service::AuthService;
 
 /// Create the main API router
 pub fn create_router(state: SharedState) -> Router {
+    // Build OpenAPI spec once at startup
+    let openapi = super::openapi::build_openapi();
+
     let mut router = Router::new()
         // Health endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
+        // OpenAPI spec (served by SwaggerUi at /api/v1/openapi.json) and Swagger UI
+        .merge(SwaggerUi::new("/swagger-ui").url("/api/v1/openapi.json", openapi))
         // API v1 routes
         .nest("/api/v1", api_v1_routes(state.clone()))
         // Docker Registry V2 API (OCI Distribution Spec)
