@@ -149,7 +149,7 @@ mod tests {
         let has_bearer = spec
             .components
             .as_ref()
-            .map_or(false, |c| c.security_schemes.contains_key("bearer_auth"));
+            .is_some_and(|c| c.security_schemes.contains_key("bearer_auth"));
         assert!(has_bearer, "Bearer auth security scheme is missing.");
 
         // Verify all expected tags are present
@@ -187,7 +187,7 @@ mod tests {
         let spec = build_openapi();
         let mut op_count = 0;
 
-        for (_path, item) in &spec.paths.paths {
+        for item in spec.paths.paths.values() {
             if item.get.is_some() {
                 op_count += 1;
             }
