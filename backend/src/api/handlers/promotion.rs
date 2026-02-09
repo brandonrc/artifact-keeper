@@ -19,8 +19,6 @@ use crate::models::sbom::PolicyAction;
 use crate::services::promotion_policy_service::PromotionPolicyService;
 use crate::services::repository_service::RepositoryService;
 
-
-
 pub fn router() -> Router<SharedState> {
     Router::new()
         .route("/repositories/:key/promote", post(promote_artifacts_bulk))
