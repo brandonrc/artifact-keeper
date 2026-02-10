@@ -1,6 +1,6 @@
 //! Route definitions for the API.
 
-use axum::{middleware, routing::get, Router};
+use axum::{extract::DefaultBodyLimit, middleware, routing::get, Router};
 use std::sync::Arc;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -83,6 +83,12 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/ivy", handlers::sbt::router())
         // VS Code Extension Marketplace API
         .nest("/vscode", handlers::vscode::router());
+
+    // Disable the global body limit. This is an artifact registry — uploads
+    // can be multiple GB. Without this, Axum's 2 MB default silently truncates
+    // uploads on routes that lack an explicit limit. Individual format handlers
+    // set their own limits where appropriate (e.g. 512 MB for most formats).
+    router = router.layer(DefaultBodyLimit::disable());
 
     // Apply setup guard (locks API until admin password is changed)
     router = router.layer(middleware::from_fn_with_state(state.clone(), setup_guard));
