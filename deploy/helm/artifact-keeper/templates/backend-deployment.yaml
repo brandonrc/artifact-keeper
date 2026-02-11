@@ -1,3 +1,12 @@
+{{/*
+=============================================================================
+EXAMPLE CONFIGURATION - Getting Started Template
+=============================================================================
+This file is provided as a starting point for deployments. It should be
+reviewed and modified to match your specific infrastructure requirements,
+security policies, and operational needs before use in production.
+=============================================================================
+*/}}
 {{- if .Values.backend.enabled }}
 apiVersion: apps/v1
 kind: Deployment

@@ -1,3 +1,11 @@
+# =============================================================================
+# EXAMPLE CONFIGURATION - Getting Started Template
+# =============================================================================
+# This file is provided as a starting point for deployments. It should be
+# reviewed and modified to match your specific infrastructure requirements,
+# security policies, and operational needs before use in production.
+# =============================================================================
+
 output "db_instance_id" {
   description = "ID of the RDS instance"
   value       = aws_db_instance.this.id
