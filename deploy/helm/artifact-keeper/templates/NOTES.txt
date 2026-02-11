@@ -1,0 +1,31 @@
+=======================================================
+  Artifact Keeper has been deployed!
+=======================================================
+
+{{- if .Values.ingress.enabled }}
+  URL: {{ if .Values.ingress.tls.enabled }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}
+{{- end }}
+
+Backend API:
+  kubectl port-forward svc/{{ include "artifact-keeper.fullname" . }}-backend {{ .Values.backend.service.httpPort }}:{{ .Values.backend.service.httpPort }}
+
+Web UI:
+  kubectl port-forward svc/{{ include "artifact-keeper.fullname" . }}-web {{ .Values.web.service.port }}:{{ .Values.web.service.port }}
+
+{{- if .Values.postgres.enabled }}
+
+PostgreSQL (in-cluster):
+  kubectl port-forward svc/{{ include "artifact-keeper.fullname" . }}-postgres 5432:5432
+{{- end }}
+
+{{- if .Values.dependencyTrack.enabled }}
+
+DependencyTrack:
+  kubectl port-forward svc/{{ include "artifact-keeper.fullname" . }}-dtrack 8092:8080
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+
+Monitoring:
+  ServiceMonitor is enabled. Prometheus will scrape /metrics from the backend.
+{{- end }}

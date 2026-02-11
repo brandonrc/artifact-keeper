@@ -1,0 +1,18 @@
+{{- if .Values.edge.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-edge
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  type: {{ .Values.edge.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.edge.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artifact-keeper.edge.selectorLabels" . | nindent 4 }}
+{{- end }}

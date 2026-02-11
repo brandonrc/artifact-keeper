@@ -1,0 +1,227 @@
+{{- if .Values.dependencyTrack.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-dtrack
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dependency-track
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "artifact-keeper.dtrack.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "artifact-keeper.dtrack.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- if .Values.postgres.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h {{ include "artifact-keeper.fullname" . }}-postgres -p 5432 -U {{ .Values.postgres.auth.username }}; do
+                sleep 3
+              done
+              echo "PostgreSQL is ready"
+      {{- end }}
+      containers:
+        - name: dtrack-api
+          image: "{{ .Values.dependencyTrack.image.repository }}:{{ .Values.dependencyTrack.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ALPINE_DATABASE_MODE
+              value: "external"
+            - name: ALPINE_DATABASE_URL
+              {{- if .Values.postgres.enabled }}
+              value: "jdbc:postgresql://{{ include "artifact-keeper.fullname" . }}-postgres:5432/dependency_track"
+              {{- else }}
+              value: "jdbc:postgresql://{{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }}/dependency_track"
+              {{- end }}
+            - name: ALPINE_DATABASE_DRIVER
+              value: "org.postgresql.Driver"
+            - name: ALPINE_DATABASE_USERNAME
+              {{- if .Values.postgres.enabled }}
+              value: {{ .Values.postgres.auth.username | quote }}
+              {{- else }}
+              value: {{ .Values.externalDatabase.username | quote }}
+              {{- end }}
+            - name: ALPINE_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifact-keeper.fullname" . }}-secrets
+                  key: POSTGRES_PASSWORD
+            - name: ALPINE_DATA_DIRECTORY
+              value: "/data"
+            - name: ALPINE_ENFORCE_AUTHENTICATION
+              value: "true"
+            - name: ALPINE_CORS_ENABLED
+              value: "true"
+            - name: ALPINE_CORS_ALLOW_ORIGIN
+              value: "*"
+            - name: JAVA_OPTIONS
+              value: "-Xmx4g"
+          resources:
+            {{- toYaml .Values.dependencyTrack.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["wget", "-q", "--spider", "http://localhost:8080/api/version"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command: ["wget", "-q", "--spider", "http://localhost:8080/api/version"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: dtrack-data
+              mountPath: /data
+      volumes:
+        - name: dtrack-data
+          persistentVolumeClaim:
+            claimName: {{ include "artifact-keeper.fullname" . }}-dtrack
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-dtrack
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dependency-track
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.dependencyTrack.persistence.size }}
+  {{- if .Values.dependencyTrack.persistence.storageClass }}
+  storageClassName: {{ .Values.dependencyTrack.persistence.storageClass | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-dtrack
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dependency-track
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "artifact-keeper.dtrack.selectorLabels" . | nindent 4 }}
+---
+{{- if .Values.dependencyTrack.bootstrap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-dtrack-init
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dependency-track
+data:
+  init-dtrack.sh: |
+    #!/bin/sh
+    set -e
+    DT_URL="${DEPENDENCY_TRACK_URL:-http://{{ include "artifact-keeper.fullname" . }}-dtrack:8080}"
+    DT_ADMIN_USER="admin"
+    DT_DEFAULT_PASS="admin"
+    DT_NEW_PASS="${DEPENDENCY_TRACK_ADMIN_PASSWORD}"
+    API_KEY_FILE="/shared/dtrack-api-key"
+
+    echo "[dtrack-init] Waiting for Dependency-Track at $DT_URL ..."
+    for i in $(seq 1 60); do
+      if curl -sf "$DT_URL/api/version" > /dev/null 2>&1; then break; fi
+      if [ "$i" -eq 60 ]; then echo "[dtrack-init] ERROR: timeout"; exit 1; fi
+      sleep 5
+    done
+
+    if [ -f "$API_KEY_FILE" ] && [ -s "$API_KEY_FILE" ]; then
+      echo "[dtrack-init] API key already provisioned -- skipping"
+      exit 0
+    fi
+
+    TOKEN=$(curl -sf -X POST "$DT_URL/api/v1/user/login" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "username=${DT_ADMIN_USER}&password=${DT_NEW_PASS}" 2>/dev/null || true)
+
+    if [ -z "$TOKEN" ] || echo "$TOKEN" | grep -qi "FORCE_PASSWORD_CHANGE"; then
+      curl -sf -o /dev/null -X POST "$DT_URL/api/v1/user/forceChangePassword" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "username=${DT_ADMIN_USER}&password=${DT_DEFAULT_PASS}&newPassword=${DT_NEW_PASS}&confirmPassword=${DT_NEW_PASS}"
+      TOKEN=$(curl -sf -X POST "$DT_URL/api/v1/user/login" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "username=${DT_ADMIN_USER}&password=${DT_NEW_PASS}" 2>/dev/null || true)
+    fi
+
+    if [ -z "$TOKEN" ]; then echo "[dtrack-init] ERROR: auth failed"; exit 1; fi
+
+    API_KEY=$(curl -sf "$DT_URL/api/v1/team" \
+      -H "Authorization: Bearer $TOKEN" | \
+      jq -r '.[] | select(.name == "Automation") | .apiKeys[0].key // empty')
+
+    if [ -z "$API_KEY" ]; then echo "[dtrack-init] ERROR: no API key"; exit 1; fi
+
+    echo "$API_KEY" > "$API_KEY_FILE"
+    echo "[dtrack-init] Done"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-dtrack-init
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dependency-track
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "artifact-keeper.dtrack.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: dtrack-init
+          image: alpine:3.20
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache curl jq >/dev/null 2>&1
+              /bin/sh /scripts/init-dtrack.sh
+          env:
+            - name: DEPENDENCY_TRACK_URL
+              value: "http://{{ include "artifact-keeper.fullname" . }}-dtrack:8080"
+            - name: DEPENDENCY_TRACK_ADMIN_PASSWORD
+              value: {{ .Values.dependencyTrack.adminPassword | quote }}
+          volumeMounts:
+            - name: init-script
+              mountPath: /scripts
+              readOnly: true
+            - name: shared-config
+              mountPath: /shared
+      volumes:
+        - name: init-script
+          configMap:
+            name: {{ include "artifact-keeper.fullname" . }}-dtrack-init
+            defaultMode: 0755
+        - name: shared-config
+          persistentVolumeClaim:
+            claimName: {{ include "artifact-keeper.fullname" . }}-shared-config
+{{- end }}
+{{- end }}

@@ -1,0 +1,167 @@
+{{- if .Values.backend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-backend
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  {{- if not .Values.backend.autoscaling.enabled }}
+  replicas: {{ .Values.backend.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "artifact-keeper.backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "artifact-keeper.backend.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "artifact-keeper.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        {{- if .Values.postgres.enabled }}
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until pg_isready -h {{ include "artifact-keeper.fullname" . }}-postgres -p 5432 -U {{ .Values.postgres.auth.username }}; do
+                sleep 3
+              done
+              echo "PostgreSQL is ready"
+        {{- end }}
+        {{- if .Values.meilisearch.enabled }}
+        - name: wait-for-meilisearch
+          image: alpine:3.20
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache curl >/dev/null 2>&1
+              echo "Waiting for Meilisearch..."
+              until curl -sf http://{{ include "artifact-keeper.fullname" . }}-meilisearch:7700/health >/dev/null 2>&1; do
+                sleep 3
+              done
+              echo "Meilisearch is ready"
+        {{- end }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          {{- if .Values.dependencyTrack.enabled }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              if [ -f /shared/dtrack-api-key ] && [ -s /shared/dtrack-api-key ]; then
+                export DEPENDENCY_TRACK_API_KEY="$(cat /shared/dtrack-api-key)"
+              fi
+              exec /usr/local/bin/artifact-keeper
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.backend.service.grpcPort }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.backend.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              {{- if and (not .Values.postgres.enabled) .Values.externalDatabase.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDatabase.existingSecret }}
+                  key: {{ .Values.externalDatabase.existingSecretKey }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifact-keeper.fullname" . }}-secrets
+                  key: DATABASE_URL
+              {{- end }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "artifact-keeper.fullname" . }}-secrets
+                  key: JWT_SECRET
+            {{- if .Values.meilisearch.enabled }}
+            - name: MEILISEARCH_URL
+              value: "http://{{ include "artifact-keeper.fullname" . }}-meilisearch:7700"
+            - name: MEILISEARCH_API_KEY
+              value: {{ .Values.meilisearch.masterKey | quote }}
+            {{- end }}
+            {{- if .Values.trivy.enabled }}
+            - name: TRIVY_URL
+              value: "http://{{ include "artifact-keeper.fullname" . }}-trivy:8090"
+            - name: SCAN_WORKSPACE_PATH
+              value: "/scan-workspace"
+            {{- end }}
+            {{- if .Values.dependencyTrack.enabled }}
+            - name: DEPENDENCY_TRACK_URL
+              value: "http://{{ include "artifact-keeper.fullname" . }}-dtrack:8080"
+            - name: DEPENDENCY_TRACK_ENABLED
+              value: "true"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: storage
+              mountPath: /data/storage
+              subPath: storage
+            - name: storage
+              mountPath: /data/backups
+              subPath: backups
+            - name: storage
+              mountPath: /data/plugins
+              subPath: plugins
+            {{- if .Values.backend.scanWorkspace.enabled }}
+            - name: scan-workspace
+              mountPath: /scan-workspace
+            {{- end }}
+            {{- if .Values.dependencyTrack.enabled }}
+            - name: shared-config
+              mountPath: /shared
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: storage
+          {{- if .Values.backend.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "artifact-keeper.fullname" . }}-storage
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.backend.scanWorkspace.enabled }}
+        - name: scan-workspace
+          persistentVolumeClaim:
+            claimName: {{ include "artifact-keeper.fullname" . }}-scan-workspace
+        {{- end }}
+        {{- if .Values.dependencyTrack.enabled }}
+        - name: shared-config
+          persistentVolumeClaim:
+            claimName: {{ include "artifact-keeper.fullname" . }}-shared-config
+        {{- end }}
+{{- end }}

@@ -1,0 +1,224 @@
+# Default values for artifact-keeper (development profile)
+
+global:
+  imageRegistry: ghcr.io/artifact-keeper
+  imagePullPolicy: Always
+  storageClass: standard
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Backend API server
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-backend
+    tag: dev
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    httpPort: 8080
+    grpcPort: 9090
+  env:
+    RUST_LOG: "info,artifact_keeper=debug"
+    HOST: "0.0.0.0"
+    PORT: "8080"
+    STORAGE_PATH: "/data/storage"
+    BACKUP_PATH: "/data/backups"
+    PLUGINS_DIR: "/data/plugins"
+    ENVIRONMENT: "development"
+    ADMIN_PASSWORD: "admin"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+  scanWorkspace:
+    enabled: true
+    size: 2Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 70
+    targetMemoryUtilization: 80
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+# -- Next.js web frontend
+web:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-web
+    tag: dev
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 3000
+  env:
+    NEXT_PUBLIC_API_URL: ""
+    NODE_ENV: "production"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- Edge replication service
+edge:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/artifact-keeper/artifact-keeper-edge
+    tag: dev
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 8081
+  env:
+    RUST_LOG: "info,artifact_keeper_edge=debug"
+    EDGE_HOST: "0.0.0.0"
+    EDGE_PORT: "8081"
+    CACHE_SIZE_MB: "10240"
+    HEARTBEAT_INTERVAL_SECS: "30"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -- PostgreSQL (in-cluster, disable for external/RDS)
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  auth:
+    username: registry
+    password: registry
+    database: artifact_registry
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  initDb:
+    enabled: true
+
+# -- External database (used when postgres.enabled=false)
+externalDatabase:
+  host: ""
+  port: 5432
+  username: ""
+  password: ""
+  database: "artifact_registry"
+  existingSecret: ""
+  existingSecretKey: "DATABASE_URL"
+
+# -- Meilisearch (full-text search engine)
+meilisearch:
+  enabled: true
+  image:
+    repository: getmeili/meilisearch
+    tag: v1.12
+  masterKey: "artifact-keeper-dev-key"
+  env: "development"
+  persistence:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- Trivy vulnerability scanner
+trivy:
+  enabled: true
+  image:
+    repository: aquasec/trivy
+    tag: latest
+  persistence:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# -- DependencyTrack SBOM analysis
+dependencyTrack:
+  enabled: true
+  image:
+    repository: dependencytrack/apiserver
+    tag: "4.11.4"
+  adminPassword: "ArtifactKeeper2026!"
+  persistence:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+  bootstrap:
+    enabled: true
+
+# -- Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1024m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+  host: artifacts.example.com
+  tls:
+    enabled: false
+    secretName: artifact-keeper-tls
+
+# -- Secrets
+secrets:
+  jwtSecret: "dev-secret-change-in-production"
+  s3AccessKey: "minioadmin"
+  s3SecretKey: "minioadmin-secret"
+
+# -- Network policies
+networkPolicy:
+  enabled: false
+
+# -- Prometheus ServiceMonitor
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s

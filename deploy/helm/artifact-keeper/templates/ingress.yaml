@@ -1,0 +1,71 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.service.httpPort }}
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.service.httpPort }}
+          - path: /ready
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.service.httpPort }}
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.service.httpPort }}
+          {{- if .Values.dependencyTrack.enabled }}
+          - path: /dtrack
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-dtrack
+                port:
+                  number: 8080
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "artifact-keeper.fullname" . }}-web
+                port:
+                  number: {{ .Values.web.service.port }}
+{{- end }}

@@ -1,0 +1,14 @@
+{{- if and .Values.postgres.enabled .Values.postgres.initDb.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-init-db
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+data:
+  init-db.sql: |
+    -- Create Dependency-Track database
+    CREATE DATABASE dependency_track;
+    GRANT ALL PRIVILEGES ON DATABASE dependency_track TO {{ .Values.postgres.auth.username }};
+{{- end }}

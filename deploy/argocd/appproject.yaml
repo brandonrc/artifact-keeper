@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: artifact-keeper
+  namespace: argocd
+spec:
+  description: Artifact Keeper multi-environment deployment
+  sourceRepos:
+    - "https://github.com/artifact-keeper/artifact-keeper.git"
+  destinations:
+    - namespace: artifact-keeper-dev
+      server: https://kubernetes.default.svc
+    - namespace: artifact-keeper-staging
+      server: https://kubernetes.default.svc
+    - namespace: artifact-keeper-prod
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  roles:
+    - name: admin
+      description: Full access to all environments
+      policies:
+        - p, proj:artifact-keeper:admin, applications, *, artifact-keeper/*, allow
+    - name: developer
+      description: Read access + sync dev
+      policies:
+        - p, proj:artifact-keeper:developer, applications, get, artifact-keeper/*, allow
+        - p, proj:artifact-keeper:developer, applications, sync, artifact-keeper/*-dev, allow

@@ -1,0 +1,71 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-backend
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "artifact-keeper.backend.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "artifact-keeper.web.selectorLabels" . | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "artifact-keeper.edge.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.backend.service.httpPort }}
+          protocol: TCP
+        - port: {{ .Values.backend.service.grpcPort }}
+          protocol: TCP
+    # Allow ingress controller
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - port: {{ .Values.backend.service.httpPort }}
+          protocol: TCP
+    # Allow Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: {{ .Values.backend.service.httpPort }}
+          protocol: TCP
+  egress:
+    - {} # Allow all egress (DB, S3, external registries)
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "artifact-keeper.fullname" . }}-postgres
+  labels:
+    {{- include "artifact-keeper.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "artifact-keeper.postgres.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "artifact-keeper.backend.selectorLabels" . | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "artifact-keeper.dtrack.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: artifact-keeper
+description: Enterprise artifact registry supporting 45+ package formats
+type: application
+version: 0.1.0
+appVersion: "1.1.0"
+home: https://artifactkeeper.com
+sources:
+  - https://github.com/artifact-keeper/artifact-keeper
+maintainers:
+  - name: khan
+keywords:
+  - artifact-registry
+  - package-manager
+  - devops
+  - security-scanning
