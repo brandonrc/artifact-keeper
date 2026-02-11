@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.7] - 2026-02-10
+
+Bug fix release addressing admin login failures on fresh Docker installs and a startup race condition.
+
+### Fixed
+- **Admin login on fresh install**: Explicitly set `auth_provider = 'local'` when provisioning the admin user and use `ON CONFLICT DO UPDATE` so the password hash is refreshed if the admin row already exists from a stale volume (#93)
+- **Admin auth_provider repair**: On every startup, existing admin users with a non-local `auth_provider` are automatically corrected, preventing silent login failures (#93)
+- **Docker startup race condition**: Add `postgres: condition: service_healthy` to `dtrack-init` depends_on in both `docker-compose.yml` and `docker-compose.local-dev.yml`, preventing Dependency-Track from starting before PostgreSQL is ready (#93)
+
 ## [1.0.0-rc.3] - 2026-02-08
 
 Bug fix release resolving 9 issues found by automated stress testing, plus build hygiene improvements.
