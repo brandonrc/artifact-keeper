@@ -95,7 +95,6 @@ pub struct PeerSelector {
     #[serde(default)]
     pub all: bool,
     /// Label key-value pairs that must all match (AND semantics).
-    /// Note: peer labels are not yet implemented; this field is reserved.
     #[serde(default)]
     pub match_labels: HashMap<String, String>,
     /// Match peers in a specific region.
@@ -981,12 +980,44 @@ impl SyncPolicyService {
             return Ok(peers);
         }
 
-        // match_labels for peers is reserved for future use; for now, return empty
-        // if no selector matches
+        // Match by peer labels (AND semantics)
         if !selector.match_labels.is_empty() {
-            // Peer labels are not yet implemented — return empty for safety.
-            // When peer labels are added, this section should query them.
-            return Ok(vec![]);
+            let label_selectors: Vec<crate::services::repository_label_service::LabelEntry> =
+                selector
+                    .match_labels
+                    .iter()
+                    .map(
+                        |(k, v)| crate::services::repository_label_service::LabelEntry {
+                            key: k.clone(),
+                            value: v.clone(),
+                        },
+                    )
+                    .collect();
+
+            let label_service =
+                crate::services::peer_instance_label_service::PeerInstanceLabelService::new(
+                    self.db.clone(),
+                );
+            let peer_ids = label_service.find_peers_by_labels(&label_selectors).await?;
+
+            if peer_ids.is_empty() {
+                return Ok(vec![]);
+            }
+
+            let peers: Vec<PeerRow> = sqlx::query_as(
+                r#"
+                SELECT id, name, region
+                FROM peer_instances
+                WHERE id = ANY($1) AND is_local = false
+                ORDER BY name
+                "#,
+            )
+            .bind(&peer_ids)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            return Ok(peers);
         }
 
         // Empty selector = no peers matched

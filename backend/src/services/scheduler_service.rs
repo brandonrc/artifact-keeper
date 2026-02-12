@@ -17,6 +17,7 @@ use crate::services::health_monitor_service::{HealthMonitorService, MonitorConfi
 use crate::services::lifecycle_service::LifecycleService;
 use crate::services::metrics_service;
 use crate::services::storage_service::StorageService;
+use crate::services::sync_policy_service::SyncPolicyService;
 
 /// Database gauge stats for Prometheus metrics.
 #[derive(Debug, sqlx::FromRow)]
@@ -152,8 +153,27 @@ pub fn spawn_all(db: PgPool, config: Config) {
         });
     }
 
+    // Sync policy re-evaluation (every 5 minutes)
+    {
+        let db = db.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            let mut ticker = interval(Duration::from_secs(300)); // 5 minutes
+
+            loop {
+                ticker.tick().await;
+                tracing::debug!("Running periodic sync policy evaluation");
+
+                let svc = SyncPolicyService::new(db.clone());
+                if let Err(e) = svc.evaluate_policies().await {
+                    tracing::warn!("Periodic sync policy evaluation failed: {}", e);
+                }
+            }
+        });
+    }
+
     tracing::info!(
-        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules"
+        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules, sync policies"
     );
 }
 

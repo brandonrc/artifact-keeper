@@ -229,6 +229,7 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         .nest(
             "/peers",
             handlers::peers::router()
+                .merge(handlers::peer_instance_labels::peer_labels_router())
                 .nest("/:id/transfer", handlers::transfer::router())
                 .nest("/:id/connections", handlers::peer::peer_router())
                 .nest("/:id/chunks", handlers::peer::chunk_router())
