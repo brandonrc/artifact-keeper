@@ -178,7 +178,11 @@ async fn main() -> Result<()> {
     let state = Arc::new(app_state);
 
     // Spawn background schedulers (metrics snapshots, health monitor, lifecycle)
-    scheduler_service::spawn_all(db_pool, config.clone());
+    scheduler_service::spawn_all(db_pool.clone(), config.clone());
+
+    // Spawn background sync worker for peer replication
+    artifact_keeper_backend::services::sync_worker::spawn_sync_worker(db_pool).await;
+    tracing::info!("Sync worker started");
 
     // Build router
     let app = Router::new()

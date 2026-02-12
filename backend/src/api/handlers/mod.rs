@@ -54,6 +54,7 @@ pub mod signing;
 pub mod sso;
 pub mod sso_admin;
 pub mod swift;
+pub mod sync_policies;
 pub mod telemetry;
 pub mod terraform;
 pub mod totp;
