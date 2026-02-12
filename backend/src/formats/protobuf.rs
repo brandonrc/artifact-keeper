@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_default_trait() {
-        let handler = ProtobufHandler::default();
+        let handler = ProtobufHandler;
         assert_eq!(handler.format(), RepositoryFormat::Protobuf);
     }
 }
