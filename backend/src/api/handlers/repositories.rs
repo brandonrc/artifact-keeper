@@ -102,6 +102,7 @@ pub struct CreateRepositoryRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateRepositoryRequest {
+    pub key: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub is_public: Option<bool>,
@@ -408,6 +409,7 @@ pub async fn get_repository(
         (status = 200, description = "Repository updated", body = RepositoryResponse),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Repository not found"),
+        (status = 409, description = "Repository key already exists"),
     )
 )]
 pub async fn update_repository(
@@ -417,6 +419,12 @@ pub async fn update_repository(
     Json(payload): Json<UpdateRepositoryRequest>,
 ) -> Result<Json<RepositoryResponse>> {
     let _auth = require_auth(auth)?;
+
+    // Validate new key if provided
+    if let Some(ref new_key) = payload.key {
+        validate_repository_key(new_key)?;
+    }
+
     let service = state.create_repository_service();
 
     // Get existing repo by key
@@ -426,6 +434,7 @@ pub async fn update_repository(
         .update(
             existing.id,
             ServiceUpdateRepoReq {
+                key: payload.key,
                 name: payload.name,
                 description: payload.description,
                 is_public: payload.is_public,

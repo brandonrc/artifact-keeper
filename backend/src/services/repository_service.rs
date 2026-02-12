@@ -32,6 +32,7 @@ pub struct CreateRepositoryRequest {
 /// Request to update a repository
 #[derive(Debug)]
 pub struct UpdateRepositoryRequest {
+    pub key: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
     pub is_public: Option<bool>,
@@ -275,11 +276,12 @@ impl RepositoryService {
             r#"
             UPDATE repositories
             SET
-                name = COALESCE($2, name),
-                description = COALESCE($3, description),
-                is_public = COALESCE($4, is_public),
-                quota_bytes = COALESCE($5, quota_bytes),
-                upstream_url = COALESCE($6, upstream_url),
+                key = COALESCE($2, key),
+                name = COALESCE($3, name),
+                description = COALESCE($4, description),
+                is_public = COALESCE($5, is_public),
+                quota_bytes = COALESCE($6, quota_bytes),
+                upstream_url = COALESCE($7, upstream_url),
                 updated_at = NOW()
             WHERE id = $1
             RETURNING
@@ -293,6 +295,7 @@ impl RepositoryService {
                 created_at, updated_at
             "#,
             id,
+            req.key,
             req.name,
             req.description,
             req.is_public,
@@ -301,7 +304,13 @@ impl RepositoryService {
         )
         .fetch_optional(&self.db)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?
+        .map_err(|e| {
+            if e.to_string().contains("duplicate key") {
+                AppError::Conflict("Repository with that key already exists".to_string())
+            } else {
+                AppError::Database(e.to_string())
+            }
+        })?
         .ok_or_else(|| AppError::NotFound("Repository not found".to_string()))?;
 
         // Index updated repository in Meilisearch (non-blocking)

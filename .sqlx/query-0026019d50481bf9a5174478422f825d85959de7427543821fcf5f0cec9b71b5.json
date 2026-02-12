@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE repositories\n            SET\n                name = COALESCE($2, name),\n                description = COALESCE($3, description),\n                is_public = COALESCE($4, is_public),\n                quota_bytes = COALESCE($5, quota_bytes),\n                upstream_url = COALESCE($6, upstream_url),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                promotion_target_id, promotion_policy_id,\n                created_at, updated_at\n            ",
+  "query": "\n            UPDATE repositories\n            SET\n                key = COALESCE($2, key),\n                name = COALESCE($3, name),\n                description = COALESCE($4, description),\n                is_public = COALESCE($5, is_public),\n                quota_bytes = COALESCE($6, quota_bytes),\n                upstream_url = COALESCE($7, upstream_url),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                promotion_target_id, promotion_policy_id,\n                created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -169,6 +169,7 @@
       "Left": [
         "Uuid",
         "Varchar",
+        "Varchar",
         "Text",
         "Bool",
         "Int8",
@@ -194,5 +195,5 @@
       false
     ]
   },
-  "hash": "835ff056a7855b1b80fca1a926351989839201d49e0187e3a523b074aefe5b6c"
+  "hash": "0026019d50481bf9a5174478422f825d85959de7427543821fcf5f0cec9b71b5"
 }
