@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 use crate::storage::filesystem::FilesystemStorage;
@@ -130,11 +131,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_npm_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -163,6 +167,8 @@ async fn resolve_npm_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Respo
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -233,6 +239,117 @@ async fn get_package_metadata(
     })?;
 
     if artifacts.is_empty() {
+        // For remote repos, proxy the metadata from upstream
+        if repo.repo_type == "remote" {
+            if let Some(ref upstream_url) = repo.upstream_url {
+                if let Some(ref proxy) = state.proxy_service {
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        repo_key,
+                        upstream_url,
+                        package_name,
+                    )
+                    .await?;
+
+                    // Rewrite tarball URLs in the upstream metadata to point to our local instance
+                    if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&content) {
+                        rewrite_npm_tarball_urls(&mut json, &base_url, repo_key);
+                        let rewritten = serde_json::to_string(&json).unwrap_or_default();
+                        return Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(Body::from(rewritten))
+                            .unwrap());
+                    }
+
+                    // If not valid JSON, return raw upstream response
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            CONTENT_TYPE,
+                            content_type.unwrap_or_else(|| "application/json".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+        }
+        // For virtual repos, iterate through members and try proxy for remote members
+        if repo.repo_type == "virtual" {
+            if let Some(ref proxy) = state.proxy_service {
+                let members = sqlx::query!(
+                    r#"SELECT r.id, r.key, r.repo_type::text as "repo_type!", r.upstream_url
+                    FROM repositories r
+                    INNER JOIN virtual_repo_members vrm ON r.id = vrm.member_repo_id
+                    WHERE vrm.virtual_repo_id = $1
+                    ORDER BY vrm.priority"#,
+                    repo.id
+                )
+                .fetch_all(&state.db)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to resolve virtual members: {}", e),
+                    )
+                        .into_response()
+                })?;
+
+                for member in &members {
+                    // Try local artifacts first
+                    let local_count: i64 = sqlx::query_scalar!(
+                        "SELECT COUNT(*) as \"count!\" FROM artifacts WHERE repository_id = $1 AND name = $2 AND is_deleted = false",
+                        member.id,
+                        package_name
+                    )
+                    .fetch_one(&state.db)
+                    .await
+                    .unwrap_or(0);
+
+                    if local_count > 0 {
+                        // Has local artifacts in this member, skip for now
+                        // (would need to build metadata from local artifacts — complex)
+                        continue;
+                    }
+
+                    // Try proxy for remote members
+                    if member.repo_type == "remote" {
+                        if let Some(ref upstream_url) = member.upstream_url {
+                            if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
+                                proxy,
+                                member.id,
+                                &member.key,
+                                upstream_url,
+                                package_name,
+                            )
+                            .await
+                            {
+                                if let Ok(mut json) =
+                                    serde_json::from_slice::<serde_json::Value>(&content)
+                                {
+                                    rewrite_npm_tarball_urls(&mut json, &base_url, repo_key);
+                                    let rewritten =
+                                        serde_json::to_string(&json).unwrap_or_default();
+                                    return Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header(CONTENT_TYPE, "application/json")
+                                        .body(Body::from(rewritten))
+                                        .unwrap());
+                                }
+
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(CONTENT_TYPE, "application/json")
+                                    .body(Body::from(content))
+                                    .unwrap());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         return Err((StatusCode::NOT_FOUND, "Package not found").into_response());
     }
 
@@ -321,21 +438,23 @@ async fn get_package_metadata(
 
 async fn download_tarball(
     State(state): State<SharedState>,
-    Path((repo_key, _package, filename)): Path<(String, String, String)>,
+    Path((repo_key, package, filename)): Path<(String, String, String)>,
 ) -> Result<Response, Response> {
-    serve_tarball(&state, &repo_key, &filename).await
+    serve_tarball(&state, &repo_key, &package, &filename).await
 }
 
 async fn download_scoped_tarball(
     State(state): State<SharedState>,
-    Path((repo_key, _scope, _package, filename)): Path<(String, String, String, String)>,
+    Path((repo_key, scope, package, filename)): Path<(String, String, String, String)>,
 ) -> Result<Response, Response> {
-    serve_tarball(&state, &repo_key, &filename).await
+    let full_name = format!("@{}/{}", scope, package);
+    serve_tarball(&state, &repo_key, &full_name, &filename).await
 }
 
 async fn serve_tarball(
     state: &SharedState,
     repo_key: &str,
+    package_name: &str,
     filename: &str,
 ) -> Result<Response, Response> {
     let repo = resolve_npm_repo(&state.db, repo_key).await?;
@@ -361,8 +480,82 @@ async fn serve_tarball(
             format!("Database error: {}", e),
         )
             .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Tarball not found").into_response())?;
+    })?;
+
+    // If artifact not found locally, try proxy for remote repos
+    let artifact = match artifact {
+        Some(a) => a,
+        None => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    // Upstream path: {package_name}/-/{filename}
+                    let upstream_path = format!("{}/-/{}", package_name, filename);
+                    let (content, _content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/octet-stream")
+                        .header(
+                            "Content-Disposition",
+                            format!("attachment; filename=\"{}\"", filename),
+                        )
+                        .header(CONTENT_LENGTH, content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let fname = filename.to_string();
+                let upstream_path = format!("{}/-/{}", package_name, filename);
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let fname = fname.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_path_suffix(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &fname,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        CONTENT_TYPE,
+                        content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                    )
+                    .header(
+                        "Content-Disposition",
+                        format!("attachment; filename=\"{}\"", filename),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err((StatusCode::NOT_FOUND, "Tarball not found").into_response());
+        }
+    };
 
     // Read from storage
     let storage = FilesystemStorage::new(&repo.storage_path);
@@ -428,6 +621,9 @@ async fn publish_package(
     // Authenticate
     let user_id = authenticate(&state.db, &state.config, headers).await?;
     let repo = resolve_npm_repo(&state.db, repo_key).await?;
+
+    // Reject writes to remote/virtual repos
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Parse the npm publish payload
     let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
@@ -651,4 +847,46 @@ async fn publish_package(
             serde_json::to_string(&serde_json::json!({"ok": true})).unwrap(),
         ))
         .unwrap())
+}
+
+// ---------------------------------------------------------------------------
+// Proxy helpers
+// ---------------------------------------------------------------------------
+
+/// Rewrite tarball URLs in npm metadata JSON to point to our local instance.
+/// npm metadata contains `versions.{ver}.dist.tarball` pointing to the upstream registry.
+/// We rewrite those to point to `{base_url}/npm/{repo_key}/{package}/-/{filename}`.
+fn rewrite_npm_tarball_urls(json: &mut serde_json::Value, base_url: &str, repo_key: &str) {
+    let versions = match json.get_mut("versions").and_then(|v| v.as_object_mut()) {
+        Some(v) => v,
+        None => return,
+    };
+
+    for (_version, version_data) in versions.iter_mut() {
+        // Extract package name before taking mutable borrow on dist
+        let pkg_name = version_data
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("_unknown")
+            .to_string();
+
+        if let Some(dist) = version_data.get_mut("dist") {
+            // Extract the current tarball URL and compute the new one
+            let new_url = dist
+                .get("tarball")
+                .and_then(|t| t.as_str())
+                .and_then(|tarball| {
+                    // e.g., https://registry.npmjs.org/express/-/express-4.18.2.tgz
+                    tarball.rsplit_once("/-/").map(|(_, filename)| {
+                        format!("{}/npm/{}/{}/-/{}", base_url, repo_key, pkg_name, filename)
+                    })
+                });
+
+            if let Some(url) = new_url {
+                if let Some(d) = dist.as_object_mut() {
+                    d.insert("tarball".to_string(), serde_json::Value::String(url));
+                }
+            }
+        }
+    }
 }

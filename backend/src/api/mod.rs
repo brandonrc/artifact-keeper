@@ -12,6 +12,7 @@ use crate::services::artifact_service::ArtifactService;
 use crate::services::dependency_track_service::DependencyTrackService;
 use crate::services::meili_service::MeiliService;
 use crate::services::plugin_registry::PluginRegistry;
+use crate::services::proxy_service::ProxyService;
 use crate::services::repository_service::RepositoryService;
 use crate::services::scanner_service::ScannerService;
 use crate::services::wasm_plugin_service::WasmPluginService;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub scanner_service: Option<Arc<ScannerService>>,
     pub meili_service: Option<Arc<MeiliService>>,
     pub dependency_track: Option<Arc<DependencyTrackService>>,
+    pub proxy_service: Option<Arc<ProxyService>>,
     pub metrics_handle: Option<Arc<PrometheusHandle>>,
     /// When true, most API endpoints return 403 until the admin changes the default password.
     pub setup_required: Arc<AtomicBool>,
@@ -46,6 +48,7 @@ impl AppState {
             scanner_service: None,
             meili_service: None,
             dependency_track: None,
+            proxy_service: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
         }
@@ -66,6 +69,7 @@ impl AppState {
             scanner_service: None,
             meili_service: None,
             dependency_track: None,
+            proxy_service: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
         }
@@ -84,6 +88,11 @@ impl AppState {
     /// Set the Dependency-Track service for security analysis.
     pub fn set_dependency_track(&mut self, dt: Arc<DependencyTrackService>) {
         self.dependency_track = Some(dt);
+    }
+
+    /// Set the proxy service for remote repository proxying.
+    pub fn set_proxy_service(&mut self, proxy_service: Arc<ProxyService>) {
+        self.proxy_service = Some(proxy_service);
     }
 
     /// Set the Prometheus metrics handle for rendering /metrics output.

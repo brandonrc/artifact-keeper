@@ -16,6 +16,7 @@
 #   helm        - Helm chart tests
 #   conda       - Conda package tests
 #   docker      - Docker/OCI image tests
+#   proxy       - Remote proxy + virtual repository tests
 #   smoke       - Smoke tests only (pypi, npm, cargo)
 #   all         - All native client tests
 
@@ -95,7 +96,7 @@ services:
       retries: 30
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "redteam"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam"]
 
   # PKI service: uses pre-generated files from .pki/ if available (CI), otherwise generates them (local)
   pki:
@@ -129,7 +130,7 @@ services:
       retries: 20
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "redteam"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam"]
 
   # ==========================================================================
   # SMOKE TEST SERVICES (pypi, npm, cargo)
@@ -344,6 +345,25 @@ services:
     networks:
       - e2e-test-network
     profiles: ["docker", "all"]
+
+  # ==========================================================================
+  # PROXY + VIRTUAL REPOSITORY TESTS
+  # ==========================================================================
+
+  proxy-virtual-test:
+    image: node:20-slim
+    container_name: e2e-test-proxy-virtual
+    depends_on:
+      setup:
+        condition: service_healthy
+    environment:
+      REGISTRY_URL: http://backend:8080
+    volumes:
+      - ./scripts/native-tests:/scripts:ro
+    command: ["bash", "-c", "apt-get update -qq && apt-get install -y -qq curl jq python3 python3-pip >/dev/null 2>&1 && bash /scripts/test-proxy-virtual.sh"]
+    networks:
+      - e2e-test-network
+    profiles: ["proxy", "all"]
 
   # ==========================================================================
   # RED TEAM SECURITY TESTING

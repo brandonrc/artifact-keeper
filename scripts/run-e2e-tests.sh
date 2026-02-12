@@ -70,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --profile PROFILE  Test profile to run (smoke, all, redteam, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker)"
+            echo "  --profile PROFILE  Test profile to run (smoke, all, proxy, redteam, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker)"
             echo "  --build            Force rebuild all containers"
             echo "  --clean            Clean up containers and volumes after tests"
             echo "  --stress           Run stress tests after E2E tests"
@@ -154,7 +154,7 @@ PLAYWRIGHT_EXIT=$?
 
 # Run native client tests if profile is smoke or all
 NATIVE_EXIT=0
-if [ "$PROFILE" = "smoke" ] || [ "$PROFILE" = "all" ] || [[ "$PROFILE" =~ ^(pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker)$ ]]; then
+if [ "$PROFILE" = "smoke" ] || [ "$PROFILE" = "all" ] || [ "$PROFILE" = "proxy" ] || [[ "$PROFILE" =~ ^(pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker)$ ]]; then
     echo ""
     echo -e "${BLUE}Running native client tests (profile: $PROFILE)...${NC}"
     docker compose -f docker-compose.test.yml --profile "$PROFILE" up \

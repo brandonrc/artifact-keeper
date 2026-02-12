@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, key, storage_path, format::text as \"format!\", repo_type::text as \"repo_type!\", upstream_url FROM repositories WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "storage_path",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "format!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "repo_type!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "upstream_url",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "0fb4a633029ee39a66bd284afd0274fed55c4343bbe2f7c324b99ed155d1388b"
+}

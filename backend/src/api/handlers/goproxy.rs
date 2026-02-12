@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 use crate::storage::filesystem::FilesystemStorage;
@@ -212,12 +213,15 @@ async fn authenticate(
 
 struct RepoInfo {
     id: uuid::Uuid,
+    key: String,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_go_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        "SELECT id, key, storage_path, format::text as \"format!\", repo_type::text as \"repo_type!\", upstream_url FROM repositories WHERE key = $1",
         repo_key
     )
     .fetch_optional(db)
@@ -245,7 +249,10 @@ async fn resolve_go_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Respon
 
     Ok(RepoInfo {
         id: repo.id,
+        key: repo.key,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -287,6 +294,7 @@ async fn handle_put(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_go_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
     let request = parse_path(&path)?;
 
     match request {
@@ -445,7 +453,80 @@ async fn get_mod_file(
             format!("go.mod not found for {}@{}", module, version),
         )
             .into_response()
-    })?;
+    });
+
+    let artifact = match artifact {
+        Ok(a) => a,
+        Err(not_found) => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let encoded = encode_module_path(module);
+                    let upstream_path = format!("{}/@v/{}.mod", encoded, version);
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo.key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "text/plain; charset=utf-8".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let encoded = encode_module_path(module);
+                let upstream_path = format!("{}/@v/{}.mod", encoded, version);
+                let module_clone = module.to_string();
+                let version_clone = version.to_string();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let name = module_clone.clone();
+                        let ver = version_clone.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &name,
+                                &ver,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type.unwrap_or_else(|| "text/plain; charset=utf-8".to_string()),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+
+            return Err(not_found);
+        }
+    };
 
     let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
@@ -512,7 +593,80 @@ async fn download_zip(
             format!("Module zip not found for {}@{}", module, version),
         )
             .into_response()
-    })?;
+    });
+
+    let artifact = match artifact {
+        Ok(a) => a,
+        Err(not_found) => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let encoded = encode_module_path(module);
+                    let upstream_path = format!("{}/@v/{}.zip", encoded, version);
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo.key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "application/zip".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let encoded = encode_module_path(module);
+                let upstream_path = format!("{}/@v/{}.zip", encoded, version);
+                let module_clone = module.to_string();
+                let version_clone = version.to_string();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let name = module_clone.clone();
+                        let ver = version_clone.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &name,
+                                &ver,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type.unwrap_or_else(|| "application/zip".to_string()),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+
+            return Err(not_found);
+        }
+    };
 
     let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {

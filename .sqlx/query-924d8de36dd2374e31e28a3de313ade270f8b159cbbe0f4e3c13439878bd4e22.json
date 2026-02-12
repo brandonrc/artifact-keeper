@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+  "query": "SELECT id, storage_path, format::text as \"format!\", repo_type::text as \"repo_type!\", upstream_url\n        FROM repositories WHERE key = $1",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,16 @@
         "ordinal": 2,
         "name": "format!",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "repo_type!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "upstream_url",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -27,8 +37,10 @@
     "nullable": [
       false,
       false,
-      null
+      null,
+      null,
+      true
     ]
   },
-  "hash": "2dbd500a18fdab5469e7cbce6ae76a3c365b5d48f0b3b8c921b5588254a1ad1e"
+  "hash": "924d8de36dd2374e31e28a3de313ade270f8b159cbbe0f4e3c13439878bd4e22"
 }

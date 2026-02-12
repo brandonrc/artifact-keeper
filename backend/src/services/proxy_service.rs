@@ -197,15 +197,22 @@ impl ProxyService {
         format!("{}/{}", base, path)
     }
 
-    /// Generate storage key for cached artifact content
+    /// Generate storage key for cached artifact content.
+    /// Uses a `__content__` leaf file to avoid file/directory collisions
+    /// when one path is a prefix of another (e.g., npm metadata at `is-odd`
+    /// vs tarball at `is-odd/-/is-odd-3.0.1.tgz`).
     fn cache_storage_key(repo_key: &str, path: &str) -> String {
-        format!("proxy-cache/{}/{}", repo_key, path.trim_start_matches('/'))
+        format!(
+            "proxy-cache/{}/{}/__content__",
+            repo_key,
+            path.trim_start_matches('/')
+        )
     }
 
     /// Generate storage key for cache metadata
     fn cache_metadata_key(repo_key: &str, path: &str) -> String {
         format!(
-            "proxy-cache/{}/{}.__metadata__.json",
+            "proxy-cache/{}/{}/__cache_meta__.json",
             repo_key,
             path.trim_start_matches('/')
         )
@@ -437,7 +444,7 @@ mod tests {
     fn test_cache_storage_key() {
         assert_eq!(
             ProxyService::cache_storage_key("maven-central", "org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"),
-            "proxy-cache/maven-central/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"
+            "proxy-cache/maven-central/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar/__content__"
         );
     }
 
@@ -445,8 +452,20 @@ mod tests {
     fn test_cache_metadata_key() {
         assert_eq!(
             ProxyService::cache_metadata_key("npm-registry", "express"),
-            "proxy-cache/npm-registry/express.__metadata__.json"
+            "proxy-cache/npm-registry/express/__cache_meta__.json"
         );
+    }
+
+    #[test]
+    fn test_cache_keys_no_file_directory_collision() {
+        // Metadata cached at "is-odd" and tarball at "is-odd/-/is-odd-3.0.1.tgz"
+        // must not collide (one as file, other needing it as directory)
+        let meta_key = ProxyService::cache_storage_key("npm-proxy", "is-odd");
+        let tarball_key = ProxyService::cache_storage_key("npm-proxy", "is-odd/-/is-odd-3.0.1.tgz");
+
+        // Both should be inside the "is-odd" directory, not at the same level
+        assert!(meta_key.contains("is-odd/__content__"));
+        assert!(tarball_key.contains("is-odd/-/is-odd-3.0.1.tgz/__content__"));
     }
 
     #[test]

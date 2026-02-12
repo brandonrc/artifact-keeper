@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 use crate::services::signing_service::SigningService;
@@ -138,11 +139,13 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_debian_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        "SELECT id, storage_path, format::text as \"format!\", repo_type::text as \"repo_type!\", upstream_url FROM repositories WHERE key = $1",
         repo_key
     )
     .fetch_optional(db)
@@ -171,6 +174,8 @@ async fn resolve_debian_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Re
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -664,7 +669,76 @@ async fn pool_download(
         )
             .into_response()
     })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Package not found").into_response())?;
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "Package not found").into_response());
+
+    let artifact = match artifact {
+        Ok(a) => a,
+        Err(not_found) => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let upstream_path = format!("pool/{}/{}", component, path);
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let upstream_path = format!("pool/{}/{}", component, path);
+                let artifact_path_clone = artifact_path.clone();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let path = artifact_path_clone.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_path(&db, member_id, &storage_path, &path)
+                                .await
+                        }
+                    },
+                )
+                .await?;
+
+                let filename = path.rsplit('/').next().unwrap_or(&path);
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type
+                            .unwrap_or_else(|| "application/vnd.debian.binary-package".to_string()),
+                    )
+                    .header(
+                        "Content-Disposition",
+                        format!("attachment; filename=\"{}\"", filename),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+
+            return Err(not_found);
+        }
+    };
 
     let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
@@ -710,6 +784,7 @@ async fn pool_upload(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_debian_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     let filename = path.rsplit('/').next().unwrap_or(&path);
     let deb_info = parse_deb_filename(filename).ok_or_else(|| {
@@ -842,6 +917,7 @@ async fn upload_raw(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_debian_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Extract filename from X-Filename or Content-Disposition header
     let filename = headers

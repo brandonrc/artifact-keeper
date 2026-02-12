@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::swift::SwiftHandler;
 use crate::services::auth_service::AuthService;
@@ -114,11 +115,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_swift_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -147,6 +151,8 @@ async fn resolve_swift_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -377,8 +383,81 @@ async fn download_archive(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Database error: {}", e),
         )
-    })?
-    .ok_or_else(|| swift_error_response(StatusCode::NOT_FOUND, "Source archive not found"))?;
+    })?;
+
+    let artifact = match artifact {
+        Some(a) => a,
+        None => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let upstream_path = format!("{}/{}/{}.zip", scope, name, version);
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let name_clone = package_id.clone();
+                let version_clone = version.to_string();
+                let upstream_path = format!("{}/{}/{}.zip", scope, name, version);
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let name = name_clone.clone();
+                        let version = version_clone.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &name,
+                                &version,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type.unwrap_or_else(|| "application/zip".to_string()),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+
+            return Err(swift_error_response(
+                StatusCode::NOT_FOUND,
+                "Source archive not found",
+            ));
+        }
+    };
 
     let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
@@ -499,6 +578,9 @@ async fn publish_release(
     // Authenticate
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_swift_repo(&state.db, &repo_key).await?;
+
+    // Reject writes to remote/virtual repos
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Validate path
     let _info = SwiftHandler::parse_path(&format!("{}/{}/{}", scope, name, version))

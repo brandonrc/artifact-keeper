@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 use crate::storage::filesystem::FilesystemStorage;
@@ -172,11 +173,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_terraform_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -205,6 +209,8 @@ async fn resolve_terraform_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo,
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -327,7 +333,82 @@ async fn download_module(
             ),
         )
             .into_response()
-    })?;
+    });
+
+    let artifact = match artifact {
+        Ok(a) => a,
+        Err(not_found) => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let upstream_path = format!(
+                        "v1/modules/{}/{}/{}/{}/download",
+                        namespace, name, provider, version
+                    );
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let upstream_path = format!(
+                    "v1/modules/{}/{}/{}/{}/download",
+                    namespace, name, provider, version
+                );
+                let vname = module_name.clone();
+                let vversion = version.clone();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let vname = vname.clone();
+                        let vversion = vversion.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &vname,
+                                &vversion,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err(not_found);
+        }
+    };
 
     // Record download
     let _ = sqlx::query!(
@@ -525,6 +606,7 @@ async fn upload_module(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_terraform_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
     let module_name = format!("{}/{}/{}", namespace, name, provider);
 
     // Check for duplicate
@@ -799,7 +881,82 @@ async fn download_provider(
             ),
         )
             .into_response()
-    })?;
+    });
+
+    let artifact = match artifact {
+        Ok(a) => a,
+        Err(not_found) => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let upstream_path = format!(
+                        "v1/providers/{}/{}/{}/download/{}/{}",
+                        namespace, type_name, version, os, arch
+                    );
+                    let (content, content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            "Content-Type",
+                            content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                        )
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let upstream_path = format!(
+                    "v1/providers/{}/{}/{}/download/{}/{}",
+                    namespace, type_name, version, os, arch
+                );
+                let vname = provider_name.clone();
+                let vversion = version.clone();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let vname = vname.clone();
+                        let vversion = vversion.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &vname,
+                                &vversion,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        "Content-Type",
+                        content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err(not_found);
+        }
+    };
 
     // Record download
     let _ = sqlx::query!(
@@ -865,6 +1022,7 @@ async fn upload_provider(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_terraform_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
     let provider_name = format!("{}/{}", namespace, type_name);
     let platform = format!("{}_{}", os, arch);
 

@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::pypi::PypiHandler;
 use crate::services::auth_service::AuthService;
@@ -108,11 +109,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_pypi_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -142,6 +146,8 @@ async fn resolve_pypi_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Resp
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -262,6 +268,83 @@ async fn simple_project(
     })?;
 
     if artifacts.is_empty() {
+        // For remote repos, proxy the simple index from upstream
+        if repo.repo_type == "remote" {
+            if let (Some(ref upstream_url), Some(ref proxy)) =
+                (&repo.upstream_url, &state.proxy_service)
+            {
+                let upstream_path = format!("simple/{}/", normalized);
+                let (content, content_type) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    &repo_key,
+                    upstream_url,
+                    &upstream_path,
+                )
+                .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        CONTENT_TYPE,
+                        content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string()),
+                    )
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+        }
+        // For virtual repos, iterate through members and try proxy for remote members
+        if repo.repo_type == "virtual" {
+            if let Some(ref proxy) = state.proxy_service {
+                let members = sqlx::query!(
+                    r#"SELECT r.id, r.key, r.repo_type::text as "repo_type!", r.upstream_url
+                    FROM repositories r
+                    INNER JOIN virtual_repo_members vrm ON r.id = vrm.member_repo_id
+                    WHERE vrm.virtual_repo_id = $1
+                    ORDER BY vrm.priority"#,
+                    repo.id
+                )
+                .fetch_all(&state.db)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to resolve virtual members: {}", e),
+                    )
+                        .into_response()
+                })?;
+
+                for member in &members {
+                    // Try proxy for remote members
+                    if member.repo_type == "remote" {
+                        if let Some(ref upstream_url) = member.upstream_url {
+                            let upstream_path = format!("simple/{}/", normalized);
+                            if let Ok((content, content_type)) = proxy_helpers::proxy_fetch(
+                                proxy,
+                                member.id,
+                                &member.key,
+                                upstream_url,
+                                &upstream_path,
+                            )
+                            .await
+                            {
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header(
+                                        CONTENT_TYPE,
+                                        content_type.unwrap_or_else(|| {
+                                            "text/html; charset=utf-8".to_string()
+                                        }),
+                                    )
+                                    .body(Body::from(content))
+                                    .unwrap());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         return Err((StatusCode::NOT_FOUND, "Package not found").into_response());
     }
 
@@ -364,7 +447,7 @@ async fn simple_project(
 
 async fn download_or_metadata(
     State(state): State<SharedState>,
-    Path((repo_key, _project, filename)): Path<(String, String, String)>,
+    Path((repo_key, project, filename)): Path<(String, String, String)>,
 ) -> Result<Response, Response> {
     let repo = resolve_pypi_repo(&state.db, &repo_key).await?;
 
@@ -375,13 +458,14 @@ async fn download_or_metadata(
     }
 
     // Regular file download
-    serve_file(&state, repo.id, &repo.storage_path, &filename).await
+    serve_file(&state, &repo, &repo_key, &project, &filename).await
 }
 
 async fn serve_file(
     state: &SharedState,
-    repo_id: uuid::Uuid,
-    storage_path: &str,
+    repo: &RepoInfo,
+    repo_key: &str,
+    project: &str,
     filename: &str,
 ) -> Result<Response, Response> {
     // Find artifact by filename (last path segment matches)
@@ -394,7 +478,7 @@ async fn serve_file(
           AND path LIKE '%/' || $2
         LIMIT 1
         "#,
-        repo_id,
+        repo.id,
         filename
     )
     .fetch_optional(&state.db)
@@ -405,11 +489,101 @@ async fn serve_file(
             format!("Database error: {}", e),
         )
             .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found").into_response())?;
+    })?;
+
+    // If artifact not found locally, try proxy for remote repos
+    let artifact = match artifact {
+        Some(a) => a,
+        None => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let normalized = PypiHandler::normalize_name(project);
+                    let upstream_path = format!("simple/{}/{}", normalized, filename);
+                    let (content, _content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+
+                    let content_type = if filename.ends_with(".whl") {
+                        "application/zip"
+                    } else if filename.ends_with(".tar.gz") {
+                        "application/gzip"
+                    } else {
+                        "application/octet-stream"
+                    };
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, content_type)
+                        .header(
+                            "Content-Disposition",
+                            format!("attachment; filename=\"{}\"", filename),
+                        )
+                        .header(CONTENT_LENGTH, content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let fname = filename.to_string();
+                let normalized = PypiHandler::normalize_name(project);
+                let upstream_path = format!("simple/{}/{}", normalized, filename);
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let fname = fname.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_path_suffix(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &fname,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                let ct = content_type.unwrap_or_else(|| {
+                    if fname.ends_with(".whl") {
+                        "application/zip".to_string()
+                    } else if fname.ends_with(".tar.gz") {
+                        "application/gzip".to_string()
+                    } else {
+                        "application/octet-stream".to_string()
+                    }
+                });
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, ct)
+                    .header(
+                        "Content-Disposition",
+                        format!("attachment; filename=\"{}\"", filename),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err((StatusCode::NOT_FOUND, "File not found").into_response());
+        }
+    };
 
     // Read from storage
-    let storage = FilesystemStorage::new(storage_path);
+    let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -548,6 +722,9 @@ async fn upload(
     // Authenticate
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_pypi_repo(&state.db, &repo_key).await?;
+
+    // Reject writes to remote/virtual repos
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Parse multipart form data
     let mut action: Option<String> = None;
