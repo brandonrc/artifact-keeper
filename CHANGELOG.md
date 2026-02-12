@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Remote Proxy Repositories** (#112)
+  - Remote repos now proxy artifacts from upstream registries (npmjs.org, PyPI, Maven Central, etc.) on cache miss
+  - Automatic local caching with 24-hour TTL and ETag-based revalidation
+  - ProxyService wired into all 28 format handlers for download endpoints
+  - Write guards return 405 Method Not Allowed on remote repos
+- **Virtual Repository Resolution** (#112)
+  - Virtual repos aggregate multiple member repos (local + remote) with priority-based resolution
+  - Metadata merging for npm (`get_package_metadata`) and PyPI (`simple_project`) so native clients (`npm install`, `pip install`) work through virtual repos
+  - Write guards return 400 Bad Request on virtual repos
+  - Tarball URL rewriting to route downloads through the virtual repo key
+- **Proxy/Virtual E2E Test Suite** (#112)
+  - 21-test script covering proxy downloads, write rejection, virtual resolution, and native client integration
+  - Docker Compose `proxy` profile for CI
+  - Bootstrap script creates remote, local, and virtual repos with member wiring
+- **Repository Labels API** (#108)
+- **Artifact Upload Sync Trigger** (#108)
+- **Full-stack Kubernetes Manifest** (#104)
+
+### Fixed
+- **Proxy cache key collision**: Metadata cached as file blocked tarball paths that needed same prefix as directory; fixed with `__content__` leaf file scheme (#112)
+- Use AWS default credential chain instead of env vars only (#106)
+- Ensure admin login works on fresh installs and fix Dependency-Track startup race (#102)
+
 ## [1.0.0-rc.3] - 2026-02-08
 
 Bug fix release resolving 9 issues found by automated stress testing, plus build hygiene improvements.
