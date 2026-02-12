@@ -675,18 +675,16 @@ mod tests {
     #[test]
     fn test_available_slots_calculation() {
         // Simulates the check in process_pending_tasks.
-        let limit: Option<i32> = Some(3);
+        let max: i32 = 3;
         let active: i32 = 2;
-        let max = limit.unwrap_or(5);
         let available = max - active;
         assert_eq!(available, 1);
     }
 
     #[test]
     fn test_available_slots_at_limit() {
-        let limit: Option<i32> = Some(3);
+        let max: i32 = 3;
         let active: i32 = 3;
-        let max = limit.unwrap_or(5);
         let available = max - active;
         assert_eq!(available, 0);
     }
@@ -694,18 +692,16 @@ mod tests {
     #[test]
     fn test_available_slots_over_limit() {
         // Edge case: active somehow exceeded limit.
-        let limit: Option<i32> = Some(3);
+        let max: i32 = 3;
         let active: i32 = 5;
-        let max = limit.unwrap_or(5);
         let available = max - active;
         assert!(available < 0);
     }
 
     #[test]
     fn test_available_slots_default_limit() {
-        let limit: Option<i32> = None;
+        let max: i32 = 5; // default when no limit is configured
         let active: i32 = 2;
-        let max = limit.unwrap_or(5);
         let available = max - active;
         assert_eq!(available, 3);
     }
