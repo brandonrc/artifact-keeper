@@ -64,7 +64,8 @@
                 "vagrant",
                 "opkg",
                 "p2",
-                "bazel"
+                "bazel",
+                "protobuf"
               ]
             }
           }

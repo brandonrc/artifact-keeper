@@ -79,7 +79,8 @@
                 "vagrant",
                 "opkg",
                 "p2",
-                "bazel"
+                "bazel",
+                "protobuf"
               ]
             }
           }
@@ -223,7 +224,8 @@
                 "vagrant",
                 "opkg",
                 "p2",
-                "bazel"
+                "bazel",
+                "protobuf"
               ]
             }
           }

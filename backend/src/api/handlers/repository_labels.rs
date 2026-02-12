@@ -16,6 +16,7 @@ use crate::services::repository_label_service::{
     LabelEntry, RepositoryLabel, RepositoryLabelService,
 };
 use crate::services::repository_service::RepositoryService;
+use crate::services::sync_policy_service::SyncPolicyService;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -170,6 +171,16 @@ async fn set_labels(
     let label_service = RepositoryLabelService::new(state.db.clone());
     let labels = label_service.set_labels(repo.id, &entries).await?;
 
+    // Re-evaluate sync policies after label change
+    let sync_svc = SyncPolicyService::new(state.db.clone());
+    if let Err(e) = sync_svc.evaluate_for_repository(repo.id).await {
+        tracing::warn!(
+            "Sync policy re-evaluation failed for repo {}: {}",
+            repo.id,
+            e
+        );
+    }
+
     Ok(Json(labels_list_response(labels)))
 }
 
@@ -206,6 +217,16 @@ async fn add_label(
         .add_label(repo.id, &label_key, &payload.value)
         .await?;
 
+    // Re-evaluate sync policies after label change
+    let sync_svc = SyncPolicyService::new(state.db.clone());
+    if let Err(e) = sync_svc.evaluate_for_repository(repo.id).await {
+        tracing::warn!(
+            "Sync policy re-evaluation failed for repo {}: {}",
+            repo.id,
+            e
+        );
+    }
+
     Ok(Json(label_to_response(label)))
 }
 
@@ -237,6 +258,16 @@ async fn delete_label(
 
     let label_service = RepositoryLabelService::new(state.db.clone());
     label_service.remove_label(repo.id, &label_key).await?;
+
+    // Re-evaluate sync policies after label change
+    let sync_svc = SyncPolicyService::new(state.db.clone());
+    if let Err(e) = sync_svc.evaluate_for_repository(repo.id).await {
+        tracing::warn!(
+            "Sync policy re-evaluation failed for repo {}: {}",
+            repo.id,
+            e
+        );
+    }
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

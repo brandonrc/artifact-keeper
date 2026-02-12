@@ -17,6 +17,7 @@ use crate::services::peer_instance_service::{
     ReplicationMode,
 };
 use crate::services::peer_service::{PeerAnnouncement, PeerService};
+use crate::services::sync_policy_service::SyncPolicyService;
 
 /// Create peer instance routes
 pub fn router() -> Router<SharedState> {
@@ -225,6 +226,16 @@ pub async fn register_peer(
     } else {
         0.0
     };
+
+    // Re-evaluate sync policies for the new peer
+    let sync_svc = SyncPolicyService::new(state.db.clone());
+    if let Err(e) = sync_svc.evaluate_for_peer(instance.id).await {
+        tracing::warn!(
+            "Sync policy evaluation failed for new peer {}: {}",
+            instance.id,
+            e
+        );
+    }
 
     Ok(Json(PeerInstanceResponse {
         id: instance.id,

@@ -118,6 +118,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     doc.merge(super::handlers::tree::TreeApiDoc::openapi());
     doc.merge(super::handlers::repository_labels::RepositoryLabelsApiDoc::openapi());
     doc.merge(super::handlers::sync_policies::SyncPoliciesApiDoc::openapi());
+    doc.merge(super::handlers::peer_instance_labels::PeerInstanceLabelsApiDoc::openapi());
 
     doc
 }

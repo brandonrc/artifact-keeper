@@ -33,6 +33,7 @@ pub mod nuget;
 pub mod oci_v2;
 pub mod packages;
 pub mod peer;
+pub mod peer_instance_labels;
 pub mod peers;
 pub mod permissions;
 pub mod plugins;
