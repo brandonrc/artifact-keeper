@@ -20,6 +20,7 @@ on:
           - helm
           - conda
           - docker
+          - protobuf
         default: smoke
       include_stress:
         description: 'Include stress tests'

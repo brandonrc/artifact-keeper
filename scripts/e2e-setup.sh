@@ -20,7 +20,8 @@ for format in \
   "test-deb:Test Debian:debian" \
   "test-helm:Test Helm:helm" \
   "test-conda:Test Conda:conda" \
-  "test-docker:Test Docker:docker"
+  "test-docker:Test Docker:docker" \
+  "test-protobuf:Test Protobuf:protobuf"
 do
   KEY=$(echo "$format" | cut -d: -f1)
   NAME=$(echo "$format" | cut -d: -f2)
