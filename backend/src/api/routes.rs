@@ -236,6 +236,14 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
                     auth_middleware,
                 )),
         )
+        // Sync policy routes with auth middleware
+        .nest(
+            "/sync-policies",
+            handlers::sync_policies::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
+        )
         // Admin routes with auth middleware
         .nest(
             "/admin",
