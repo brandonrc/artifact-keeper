@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::api::download_response::{DownloadResponse, X_ARTIFACT_STORAGE};
 use crate::api::dto::Pagination;
+use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
@@ -865,7 +866,7 @@ pub async fn download_artifact(
     let storage = Arc::new(FilesystemStorage::new(&repo.storage_path));
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
-    let (artifact, content) = artifact_service
+    let download_result = artifact_service
         .download(
             repo.id,
             &path,
@@ -873,28 +874,108 @@ pub async fn download_artifact(
             Some(ip_addr.to_string()),
             user_agent.as_deref(),
         )
-        .await?;
+        .await;
 
-    Ok((
-        [
-            (header::CONTENT_TYPE, artifact.content_type),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", artifact.name),
-            ),
-            (header::CONTENT_LENGTH, artifact.size_bytes.to_string()),
-            (
-                header::HeaderName::from_static("x-checksum-sha256"),
-                artifact.checksum_sha256,
-            ),
-            (
-                header::HeaderName::from_static(X_ARTIFACT_STORAGE),
-                "proxy".to_string(),
-            ),
-        ],
-        content,
-    )
-        .into_response())
+    match download_result {
+        Ok((artifact, content)) => Ok((
+            [
+                (header::CONTENT_TYPE, artifact.content_type),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{}\"", artifact.name),
+                ),
+                (header::CONTENT_LENGTH, artifact.size_bytes.to_string()),
+                (
+                    header::HeaderName::from_static("x-checksum-sha256"),
+                    artifact.checksum_sha256,
+                ),
+                (
+                    header::HeaderName::from_static(X_ARTIFACT_STORAGE),
+                    "proxy".to_string(),
+                ),
+            ],
+            content,
+        )
+            .into_response()),
+        Err(AppError::NotFound(_)) if repo.repo_type == RepositoryType::Remote => {
+            // Try proxy for remote repositories
+            if let (Some(ref upstream_url), Some(ref proxy)) =
+                (&repo.upstream_url, &state.proxy_service)
+            {
+                let (content, content_type) =
+                    proxy_helpers::proxy_fetch(proxy, repo.id, &key, upstream_url, &path)
+                        .await
+                        .map_err(|_| {
+                            AppError::NotFound("Artifact not found upstream".to_string())
+                        })?;
+
+                let ct = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+                let filename = path.rsplit('/').next().unwrap_or(&path);
+
+                Ok((
+                    [
+                        (header::CONTENT_TYPE, ct),
+                        (
+                            header::CONTENT_DISPOSITION,
+                            format!("attachment; filename=\"{}\"", filename),
+                        ),
+                        (header::CONTENT_LENGTH, content.len().to_string()),
+                        (
+                            header::HeaderName::from_static(X_ARTIFACT_STORAGE),
+                            "upstream".to_string(),
+                        ),
+                    ],
+                    content,
+                )
+                    .into_response())
+            } else {
+                Err(AppError::NotFound("Artifact not found".to_string()))
+            }
+        }
+        Err(AppError::NotFound(_)) if repo.repo_type == RepositoryType::Virtual => {
+            // Virtual repo: try each member in priority order
+            let db = state.db.clone();
+            let path_clone = path.clone();
+            let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                &state.db,
+                state.proxy_service.as_deref(),
+                repo.id,
+                &path,
+                |member_id, storage_path| {
+                    let db = db.clone();
+                    let p = path_clone.clone();
+                    async move {
+                        proxy_helpers::local_fetch_by_path(&db, member_id, &storage_path, &p).await
+                    }
+                },
+            )
+            .await
+            .map_err(|_| {
+                AppError::NotFound("Artifact not found in any member repository".to_string())
+            })?;
+
+            let ct = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+            let filename = path.rsplit('/').next().unwrap_or(&path);
+
+            Ok((
+                [
+                    (header::CONTENT_TYPE, ct),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{}\"", filename),
+                    ),
+                    (header::CONTENT_LENGTH, content.len().to_string()),
+                    (
+                        header::HeaderName::from_static(X_ARTIFACT_STORAGE),
+                        "virtual".to_string(),
+                    ),
+                ],
+                content,
+            )
+                .into_response())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Delete artifact

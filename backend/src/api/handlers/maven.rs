@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::maven::{generate_metadata_xml, MavenHandler};
 use crate::services::auth_service::AuthService;
@@ -92,11 +93,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_maven_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -125,6 +129,8 @@ async fn resolve_maven_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -240,7 +246,7 @@ async fn download(
     }
 
     // 4. Serve the artifact file
-    serve_artifact(&state, repo.id, &repo.storage_path, &path).await
+    serve_artifact(&state, &repo, &repo_key, &path).await
 }
 
 async fn generate_metadata_for_artifact(
@@ -290,8 +296,8 @@ async fn generate_metadata_for_artifact(
 
 async fn serve_artifact(
     state: &SharedState,
-    repo_id: uuid::Uuid,
-    storage_path: &str,
+    repo: &RepoInfo,
+    repo_key: &str,
     path: &str,
 ) -> Result<Response, Response> {
     let artifact = sqlx::query!(
@@ -303,7 +309,7 @@ async fn serve_artifact(
           AND path = $2
         LIMIT 1
         "#,
-        repo_id,
+        repo.id,
         path,
     )
     .fetch_optional(&state.db)
@@ -314,10 +320,70 @@ async fn serve_artifact(
             format!("Database error: {}", e),
         )
             .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found").into_response())?;
+    })?;
 
-    let storage = FilesystemStorage::new(storage_path);
+    // If artifact not found locally, try proxy for remote repos
+    let artifact = match artifact {
+        Some(a) => a,
+        None => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let (content, content_type) =
+                        proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, upstream_url, path)
+                            .await?;
+
+                    let ct =
+                        content_type.unwrap_or_else(|| content_type_for_path(path).to_string());
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, ct)
+                        .header(CONTENT_LENGTH, content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let artifact_path = path.to_string();
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let artifact_path = artifact_path.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_path(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &artifact_path,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                let ct = content_type.unwrap_or_else(|| content_type_for_path(path).to_string());
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, ct)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err((StatusCode::NOT_FOUND, "File not found").into_response());
+        }
+    };
+
+    let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -432,6 +498,9 @@ async fn upload(
 ) -> Result<Response, Response> {
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_maven_repo(&state.db, &repo_key).await?;
+
+    // Reject writes to remote/virtual repos
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     let storage_key = format!("maven/{}", path);
     let storage = FilesystemStorage::new(&repo.storage_path);

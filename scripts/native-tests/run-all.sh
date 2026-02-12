@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run all native client tests
 # Usage: ./run-all.sh [profile]
-# Profiles: smoke (default), all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker
+# Profiles: smoke (default), all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, proxy
 set -euo pipefail
 
 PROFILE="${1:-smoke}"
@@ -13,7 +13,7 @@ echo "=============================================="
 
 # Define test sets
 SMOKE_TESTS=(pypi npm cargo)
-ALL_TESTS=(pypi npm cargo maven go rpm deb helm conda docker)
+ALL_TESTS=(pypi npm cargo maven go rpm deb helm conda docker proxy-virtual)
 
 # Select tests based on profile
 case "$PROFILE" in
@@ -23,12 +23,15 @@ case "$PROFILE" in
     all)
         TESTS=("${ALL_TESTS[@]}")
         ;;
-    pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker)
+    proxy)
+        TESTS=("proxy-virtual")
+        ;;
+    pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker|proxy-virtual)
         TESTS=("$PROFILE")
         ;;
     *)
         echo "ERROR: Unknown profile: $PROFILE"
-        echo "Available profiles: smoke, all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker"
+        echo "Available profiles: smoke, all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, proxy"
         exit 1
         ;;
 esac

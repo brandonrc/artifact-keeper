@@ -31,10 +31,12 @@ use artifact_keeper_backend::{
         meili_service::MeiliService,
         metrics_service,
         plugin_registry::PluginRegistry,
+        proxy_service::ProxyService,
         scan_config_service::ScanConfigService,
         scan_result_service::ScanResultService,
         scanner_service::{AdvisoryClient, ScannerService},
         scheduler_service,
+        storage_service::StorageService,
         wasm_plugin_service::WasmPluginService,
     },
 };
@@ -172,6 +174,22 @@ async fn main() -> Result<()> {
     }
 
     app_state.set_metrics_handle(metrics_handle);
+
+    // Initialize proxy service for remote repository caching
+    match StorageService::from_config(&config).await {
+        Ok(storage_svc) => {
+            let proxy_service = Arc::new(ProxyService::new(db_pool.clone(), Arc::new(storage_svc)));
+            app_state.set_proxy_service(proxy_service);
+            tracing::info!("Proxy service initialized for remote repositories");
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to initialize proxy service, remote repositories disabled: {}",
+                e
+            );
+        }
+    }
+
     app_state
         .setup_required
         .store(setup_required, std::sync::atomic::Ordering::Relaxed);

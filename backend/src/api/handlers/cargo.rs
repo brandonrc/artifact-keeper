@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 use crate::storage::filesystem::FilesystemStorage;
@@ -133,11 +134,14 @@ async fn authenticate(
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    repo_type: String,
+    upstream_url: Option<String>,
 }
 
 async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query!(
-        "SELECT id, storage_path, format::text as \"format!\" FROM repositories WHERE key = $1",
+        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
+        FROM repositories WHERE key = $1"#,
         repo_key
     )
     .fetch_optional(db)
@@ -166,6 +170,8 @@ async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
+        repo_type: repo.repo_type,
+        upstream_url: repo.upstream_url,
     })
 }
 
@@ -307,6 +313,9 @@ async fn publish(
     // Authenticate
     let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_cargo_repo(&state.db, &repo_key).await?;
+
+    // Reject writes to remote/virtual repos
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Parse the binary publish payload
     if body.len() < 4 {
@@ -566,8 +575,89 @@ async fn download(
             format!("Database error: {}", e),
         )
             .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Crate not found").into_response())?;
+    })?;
+
+    // If crate not found locally, try proxy for remote repos
+    let artifact = match artifact {
+        Some(a) => a,
+        None => {
+            if repo.repo_type == "remote" {
+                if let (Some(ref upstream_url), Some(ref proxy)) =
+                    (&repo.upstream_url, &state.proxy_service)
+                {
+                    let upstream_path =
+                        format!("api/v1/crates/{}/{}/download", name_lower, version);
+                    let (content, _content_type) = proxy_helpers::proxy_fetch(
+                        proxy,
+                        repo.id,
+                        &repo_key,
+                        upstream_url,
+                        &upstream_path,
+                    )
+                    .await?;
+
+                    let filename = format!("{}-{}.crate", name_lower, version);
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/x-tar")
+                        .header(
+                            "Content-Disposition",
+                            format!("attachment; filename=\"{}\"", filename),
+                        )
+                        .header(CONTENT_LENGTH, content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+            // Virtual repo: try each member in priority order
+            if repo.repo_type == "virtual" {
+                let db = state.db.clone();
+                let vname = name_lower.clone();
+                let vversion = version.clone();
+                let upstream_path = format!("api/v1/crates/{}/{}/download", name_lower, version);
+                let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                    &state.db,
+                    state.proxy_service.as_deref(),
+                    repo.id,
+                    &upstream_path,
+                    |member_id, storage_path| {
+                        let db = db.clone();
+                        let vname = vname.clone();
+                        let vversion = vversion.clone();
+                        async move {
+                            proxy_helpers::local_fetch_by_name_version(
+                                &db,
+                                member_id,
+                                &storage_path,
+                                &vname,
+                                &vversion,
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+                let filename = format!("{}-{}.crate", name_lower, version);
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        CONTENT_TYPE,
+                        content_type.unwrap_or_else(|| "application/x-tar".to_string()),
+                    )
+                    .header(
+                        "Content-Disposition",
+                        format!("attachment; filename=\"{}\"", filename),
+                    )
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            return Err((StatusCode::NOT_FOUND, "Crate not found").into_response());
+        }
+    };
 
     let storage = FilesystemStorage::new(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
@@ -671,6 +761,143 @@ async fn serve_index(
     })?;
 
     if versions.is_empty() {
+        // For remote repos, proxy the sparse index from upstream
+        if repo.repo_type == "remote" {
+            if let (Some(ref upstream_url), Some(ref proxy)) =
+                (&repo.upstream_url, &state.proxy_service)
+            {
+                // Cargo sparse index path layout depends on crate name length
+                let index_path = cargo_sparse_index_path(&name_lower);
+                let (content, content_type) =
+                    proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, upstream_url, &index_path)
+                        .await?;
+
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(
+                        CONTENT_TYPE,
+                        content_type.unwrap_or_else(|| "application/json".to_string()),
+                    )
+                    .header("cache-control", "max-age=60")
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+        }
+        // Virtual repo: try each member in priority order for index
+        if repo.repo_type == "virtual" {
+            let index_path = cargo_sparse_index_path(&name_lower);
+            let db = state.db.clone();
+            let vname = name_lower.clone();
+            let (content, content_type) = proxy_helpers::resolve_virtual_download(
+                &state.db,
+                state.proxy_service.as_deref(),
+                repo.id,
+                &index_path,
+                |member_id, _storage_path| {
+                    let db = db.clone();
+                    let vname = vname.clone();
+                    async move {
+                        // For the index, we just need to check if the crate exists in this member.
+                        // We query by name and return the index content if found.
+                        // Using non-macro query to avoid offline cache requirements.
+                        use sqlx::Row;
+                        let rows = sqlx::query(
+                            r#"
+                            SELECT a.name, a.version, a.checksum_sha256,
+                                   am.metadata
+                            FROM artifacts a
+                            LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
+                            WHERE a.repository_id = $1
+                              AND a.name = $2
+                              AND a.is_deleted = false
+                            ORDER BY a.created_at ASC
+                            "#,
+                        )
+                        .bind(member_id)
+                        .bind(&vname)
+                        .fetch_all(&db)
+                        .await
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Database error: {}", e),
+                            )
+                                .into_response()
+                        })?;
+
+                        if rows.is_empty() {
+                            return Err((StatusCode::NOT_FOUND, "Crate not found").into_response());
+                        }
+
+                        let mut lines = Vec::new();
+                        for row in &rows {
+                            let vers: Option<String> = row.get("version");
+                            let vers = vers.as_deref().unwrap_or("0.0.0");
+                            let cksum: String = row.get("checksum_sha256");
+                            let meta: Option<serde_json::Value> = row.get("metadata");
+
+                            let (deps, features, links, rust_version) = if let Some(ref meta) = meta
+                            {
+                                (
+                                    meta.get("deps").cloned().unwrap_or(serde_json::json!([])),
+                                    meta.get("features")
+                                        .cloned()
+                                        .unwrap_or(serde_json::json!({})),
+                                    meta.get("links")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null),
+                                    meta.get("rust_version")
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null),
+                                )
+                            } else {
+                                (
+                                    serde_json::json!([]),
+                                    serde_json::json!({}),
+                                    serde_json::Value::Null,
+                                    serde_json::Value::Null,
+                                )
+                            };
+
+                            let mut entry = serde_json::json!({
+                                "name": vname,
+                                "vers": vers,
+                                "deps": deps,
+                                "cksum": cksum,
+                                "features": features,
+                                "yanked": false,
+                            });
+
+                            if !links.is_null() {
+                                entry["links"] = links;
+                            }
+                            if !rust_version.is_null() {
+                                entry["rust-version"] = rust_version;
+                            }
+
+                            lines.push(serde_json::to_string(&entry).unwrap());
+                        }
+
+                        let body = lines.join("\n");
+                        Ok((
+                            bytes::Bytes::from(body),
+                            Some("application/json".to_string()),
+                        ))
+                    }
+                },
+            )
+            .await?;
+
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    CONTENT_TYPE,
+                    content_type.unwrap_or_else(|| "application/json".to_string()),
+                )
+                .header("cache-control", "max-age=60")
+                .body(Body::from(content))
+                .unwrap());
+        }
         return Err((StatusCode::NOT_FOUND, "Crate not found in index").into_response());
     }
 
@@ -733,4 +960,14 @@ async fn serve_index(
         .header("cache-control", "max-age=60")
         .body(Body::from(body))
         .unwrap())
+}
+
+/// Build the sparse index path for a crate name following the Cargo registry layout.
+fn cargo_sparse_index_path(name: &str) -> String {
+    match name.len() {
+        1 => format!("index/1/{}", name),
+        2 => format!("index/2/{}", name),
+        3 => format!("index/3/{}/{}", &name[..1], name),
+        _ => format!("index/{}/{}/{}", &name[..2], &name[2..4], name),
+    }
 }
