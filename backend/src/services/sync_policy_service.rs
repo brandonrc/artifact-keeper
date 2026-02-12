@@ -846,7 +846,7 @@ impl SyncPolicyService {
         if !selector.match_repos.is_empty() {
             let repos: Vec<RepoRow> = sqlx::query_as(
                 r#"
-                SELECT id, key, format
+                SELECT id, key, format::TEXT
                 FROM repositories
                 WHERE id = ANY($1)
                 "#,
@@ -860,7 +860,7 @@ impl SyncPolicyService {
 
         // Start with all repositories
         let mut all_repos: Vec<RepoRow> =
-            sqlx::query_as("SELECT id, key, format FROM repositories ORDER BY key")
+            sqlx::query_as("SELECT id, key, format::TEXT FROM repositories ORDER BY key")
                 .fetch_all(&self.db)
                 .await
                 .map_err(|e| AppError::Database(e.to_string()))?;
