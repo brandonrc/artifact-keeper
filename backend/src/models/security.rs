@@ -98,7 +98,7 @@ pub enum Grade {
 impl Grade {
     pub fn from_score(score: i32) -> Self {
         match score {
-            90..=100 => Grade::A,
+            90.. => Grade::A,
             75..=89 => Grade::B,
             50..=74 => Grade::C,
             25..=49 => Grade::D,
@@ -363,8 +363,9 @@ mod tests {
 
     #[test]
     fn test_grade_from_score_above_100() {
-        // Scores > 100 fall through to F because the match range is 90..=100
-        assert_eq!(Grade::from_score(101), Grade::F);
+        // Scores > 100 clamp to A via the unbounded 90.. range
+        assert_eq!(Grade::from_score(101), Grade::A);
+        assert_eq!(Grade::from_score(200), Grade::A);
     }
 
     #[test]
@@ -411,10 +412,4 @@ mod tests {
         };
         assert_eq!(config.threshold(), Severity::High);
     }
-
-    // -----------------------------------------------------------------------
-    // Note: Grade::from_score(101) returns F.
-    // This may be a bug - scores above 100 should arguably map to A.
-    // Not fixing per instructions, but noting it.
-    // -----------------------------------------------------------------------
 }

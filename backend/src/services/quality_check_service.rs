@@ -229,12 +229,11 @@ impl QualityCheckService {
         let mut info_count: i32 = 0;
 
         for issue in &output.issues {
-            match issue.severity.as_str() {
+            match issue.severity.to_lowercase().as_str() {
                 "critical" => critical_count += 1,
                 "high" => high_count += 1,
                 "medium" => medium_count += 1,
                 "low" => low_count += 1,
-                "info" => info_count += 1,
                 _ => info_count += 1,
             }
         }

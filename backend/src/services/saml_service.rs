@@ -426,14 +426,26 @@ impl SamlService {
                 }
                 Ok(Event::Empty(ref e)) => {
                     let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                    if name == "StatusCode" {
-                        for attr in e.attributes().flatten() {
-                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let value = String::from_utf8_lossy(&attr.value).to_string();
-                            if key == "Value" {
-                                response.status_code = value;
+                    match name.as_str() {
+                        "StatusCode" => {
+                            for attr in e.attributes().flatten() {
+                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                let value = String::from_utf8_lossy(&attr.value).to_string();
+                                if key == "Value" {
+                                    response.status_code = value;
+                                }
                             }
                         }
+                        "AuthnStatement" => {
+                            for attr in e.attributes().flatten() {
+                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                                let value = String::from_utf8_lossy(&attr.value).to_string();
+                                if key == "SessionIndex" {
+                                    assertion.session_index = Some(value);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 Ok(Event::Text(ref e)) => {
@@ -1092,8 +1104,11 @@ mod tests {
     #[test]
     fn test_saml_config_defaults() {
         // Set minimal env vars for test
-        std::env::set_var("SAML_IDP_SSO_URL", "https://idp.example.com/sso");
-        std::env::set_var("SAML_IDP_ISSUER", "https://idp.example.com");
+        // SAFETY: Test-only, single-threaded access to env vars
+        unsafe {
+            std::env::set_var("SAML_IDP_SSO_URL", "https://idp.example.com/sso");
+            std::env::set_var("SAML_IDP_ISSUER", "https://idp.example.com");
+        }
 
         let config = SamlConfig::from_env();
         assert!(config.is_some());
@@ -1109,15 +1124,20 @@ mod tests {
         assert!(config.admin_group.is_none());
 
         // Clean up
-        std::env::remove_var("SAML_IDP_SSO_URL");
-        std::env::remove_var("SAML_IDP_ISSUER");
+        unsafe {
+            std::env::remove_var("SAML_IDP_SSO_URL");
+            std::env::remove_var("SAML_IDP_ISSUER");
+        }
     }
 
     #[tokio::test]
     async fn test_saml_config_returns_none_without_required_vars() {
         // Ensure neither var is set
-        std::env::remove_var("SAML_IDP_SSO_URL");
-        std::env::remove_var("SAML_IDP_ISSUER");
+        // SAFETY: Test-only, single-threaded access to env vars
+        unsafe {
+            std::env::remove_var("SAML_IDP_SSO_URL");
+            std::env::remove_var("SAML_IDP_ISSUER");
+        }
 
         let config = SamlConfig::from_env();
         assert!(config.is_none());
@@ -1220,12 +1240,8 @@ mod tests {
             assertion.name_id_format.as_deref(),
             Some("urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress")
         );
-        // BUG: session_index is None because AuthnStatement is a self-closing
-        // XML element (<saml:AuthnStatement ... />) which produces Event::Empty,
-        // but parse_saml_response only handles AuthnStatement under Event::Start.
-        // The SessionIndex attribute is therefore never captured.
-        // Fix: add AuthnStatement handling to the Event::Empty branch.
-        assert_eq!(assertion.session_index, None);
+        // Self-closing AuthnStatement elements are now correctly handled in Event::Empty
+        assert_eq!(assertion.session_index, Some("session_abc123".to_string()));
     }
 
     #[tokio::test]
@@ -1766,7 +1782,8 @@ mod tests {
     #[tokio::test]
     async fn test_map_groups_to_roles_basic_user() {
         // Clear the env var to avoid interference
-        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+        // SAFETY: Test-only, single-threaded access to env vars
+        unsafe { std::env::remove_var("SAML_GROUP_ROLE_MAP") };
 
         let service = make_test_saml_service();
         let groups = vec!["Developers".to_string()];
@@ -1778,7 +1795,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_groups_to_roles_admin() {
-        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+        unsafe { std::env::remove_var("SAML_GROUP_ROLE_MAP") };
 
         let service = make_test_saml_service();
         let groups = vec!["Admins".to_string()];
@@ -1790,7 +1807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_groups_to_roles_deduplication() {
-        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+        unsafe { std::env::remove_var("SAML_GROUP_ROLE_MAP") };
 
         let service = make_test_saml_service();
         let groups = vec!["Admins".to_string()];
@@ -1805,7 +1822,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_map_groups_to_roles_sorted() {
-        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+        unsafe { std::env::remove_var("SAML_GROUP_ROLE_MAP") };
 
         let service = make_test_saml_service();
         let groups = vec!["Admins".to_string()];

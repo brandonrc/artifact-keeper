@@ -69,19 +69,27 @@ impl CargoHandler {
     /// Format: <name>-<version>.crate
     fn parse_crate_filename(filename: &str) -> Result<(String, String)> {
         let name = filename.trim_end_matches(".crate");
-        let parts: Vec<&str> = name.rsplitn(2, '-').collect();
 
-        if parts.len() != 2 {
-            return Err(AppError::Validation(format!(
+        // Find the first hyphen followed by a digit — that's where the version starts.
+        // This correctly handles both hyphenated names (my-crate-1.0.0) and
+        // pre-release versions (my-crate-1.0.0-beta.1).
+        let version_start = name
+            .char_indices()
+            .zip(name.chars().skip(1))
+            .find(|&((_, c), next)| c == '-' && next.is_ascii_digit())
+            .map(|((i, _), _)| i);
+
+        match version_start {
+            Some(i) => {
+                let crate_name = name[..i].to_string();
+                let version = name[i + 1..].to_string();
+                Ok((crate_name, version))
+            }
+            None => Err(AppError::Validation(format!(
                 "Invalid crate filename: {}",
                 filename
-            )));
+            ))),
         }
-
-        let version = parts[0].to_string();
-        let crate_name = parts[1].to_string();
-
-        Ok((crate_name, version))
     }
 
     /// Parse index path based on crate name length rules
@@ -658,14 +666,11 @@ mod tests {
 
     #[test]
     fn test_parse_crate_filename_prerelease() {
-        // rsplitn(2, '-') splits on the LAST hyphen, so for "foo-1.0.0-beta.1":
-        // parts = ["beta.1", "foo-1.0.0"], meaning version = "beta.1" and name = "foo-1.0.0"
-        // NOTE: This is a potential bug -- pre-release versions with hyphens (e.g. "1.0.0-beta.1")
-        // are incorrectly split because rsplitn splits on the last hyphen, not the name-version
-        // boundary. The real cargo registry uses a different mechanism (metadata in the upload).
+        // Pre-release versions with hyphens (e.g. "1.0.0-beta.1") are correctly parsed
+        // by finding the first hyphen followed by a digit as the version boundary.
         let (name, version) = CargoHandler::parse_crate_filename("foo-1.0.0-beta.1.crate").unwrap();
-        assert_eq!(name, "foo-1.0.0");
-        assert_eq!(version, "beta.1");
+        assert_eq!(name, "foo");
+        assert_eq!(version, "1.0.0-beta.1");
     }
 
     #[test]

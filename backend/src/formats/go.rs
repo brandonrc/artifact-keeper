@@ -236,12 +236,12 @@ impl GoHandler {
     fn parse_dependency_line(line: &str) -> Option<GoDependency> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
+            // Check for "// indirect" by looking for "//" followed by "indirect"
+            let indirect = parts.windows(2).any(|w| w[0] == "//" && w[1] == "indirect");
             Some(GoDependency {
                 path: parts[0].to_string(),
                 version: parts[1].to_string(),
-                indirect: parts
-                    .iter()
-                    .any(|&p| p == "//indirect" || p == "// indirect"),
+                indirect,
             })
         } else {
             None
@@ -842,23 +842,13 @@ require github.com/pkg/errors v0.9.1
 
     #[test]
     fn test_parse_dependency_line_indirect() {
-        // Note: the parser checks for "//indirect" or "// indirect" as exact tokens.
-        // The go.mod format uses "// indirect" (with space) as a comment.
-        // split_whitespace on "github.com/user/repo v1.0.0 // indirect"
-        // gives ["github.com/user/repo", "v1.0.0", "//", "indirect"]
-        // Neither "//indirect" nor "// indirect" matches any token exactly.
-        // This is a potential issue: the current parser won't detect "// indirect"
-        // since it's split into "//", "indirect".
+        // "// indirect" is correctly detected by looking for "//" followed by "indirect"
+        // as adjacent tokens in the split_whitespace output.
         let dep =
             GoHandler::parse_dependency_line("github.com/user/repo v1.0.0 // indirect").unwrap();
         assert_eq!(dep.path, "github.com/user/repo");
         assert_eq!(dep.version, "v1.0.0");
-        // NOTE: The indirect detection doesn't work for "// indirect" (two tokens)
-        // because split_whitespace gives ["//", "indirect"] and the check looks
-        // for "//indirect" or "// indirect" as single tokens.
-        // This is a bug: indirect is not properly detected when "// indirect"
-        // has a space between "//" and "indirect".
-        assert!(!dep.indirect);
+        assert!(dep.indirect);
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub struct FormatConfig {
 }
 
 /// Capabilities configuration from [capabilities] section.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilitiesConfig {
     /// Plugin can parse artifact metadata
     #[serde(default = "default_true")]
@@ -62,6 +62,16 @@ pub struct CapabilitiesConfig {
     /// Plugin can validate artifacts before storage
     #[serde(default = "default_true")]
     pub validate_artifact: bool,
+}
+
+impl Default for CapabilitiesConfig {
+    fn default() -> Self {
+        Self {
+            parse_metadata: true,
+            generate_index: false,
+            validate_artifact: true,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -528,14 +538,12 @@ timeout_secs = 10
 
     #[test]
     fn test_capabilities_config_default() {
-        // NOTE (potential bug): CapabilitiesConfig derives Default which sets all bools
-        // to false, but serde(default = "default_true") sets parse_metadata and
-        // validate_artifact to true during deserialization. These two defaults disagree.
-        // Direct Default::default() produces false for all fields.
+        // Default impl now matches serde defaults: parse_metadata and validate_artifact
+        // are true, generate_index is false.
         let caps = CapabilitiesConfig::default();
-        assert!(!caps.parse_metadata); // false from #[derive(Default)], not serde default
+        assert!(caps.parse_metadata);
         assert!(!caps.generate_index);
-        assert!(!caps.validate_artifact); // false from #[derive(Default)], not serde default
+        assert!(caps.validate_artifact);
     }
 
     #[test]
@@ -557,11 +565,10 @@ version = "0.1"
         let manifest = PluginManifest::from_toml(toml).unwrap();
         assert_eq!(manifest.plugin.name, "minimal");
         assert!(manifest.format.is_none());
-        // NOTE: When the [capabilities] section is entirely missing, serde uses
-        // #[serde(default)] which calls CapabilitiesConfig::default() (derive Default),
-        // giving all false. This differs from when the section is present but fields
-        // are missing (which uses serde(default = "default_true")).
-        assert!(!manifest.capabilities.parse_metadata); // derive Default -> false
+        // When the [capabilities] section is entirely missing, serde uses
+        // #[serde(default)] which calls CapabilitiesConfig::default().
+        // Our manual Default impl now matches serde field defaults.
+        assert!(manifest.capabilities.parse_metadata);
         assert_eq!(manifest.requirements.timeout_secs, 5);
     }
 
