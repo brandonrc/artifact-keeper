@@ -112,6 +112,13 @@ mod tests {
     }
 
     #[test]
+    fn test_correlation_id_generate_is_unique() {
+        let id1 = CorrelationId::generate();
+        let id2 = CorrelationId::generate();
+        assert_ne!(id1.as_str(), id2.as_str());
+    }
+
+    #[test]
     fn test_correlation_id_new() {
         let id = CorrelationId::new("my-custom-id".to_string());
         assert_eq!(id.as_str(), "my-custom-id");
@@ -121,5 +128,90 @@ mod tests {
     fn test_correlation_id_display() {
         let id = CorrelationId::new("test-id".to_string());
         assert_eq!(format!("{}", id), "test-id");
+    }
+
+    #[test]
+    fn test_correlation_id_clone() {
+        let id = CorrelationId::new("clone-test".to_string());
+        let cloned = id.clone();
+        assert_eq!(id.as_str(), cloned.as_str());
+    }
+
+    // traceparent extraction tests
+
+    /// Helper to extract trace-id from a traceparent header value.
+    fn extract_trace_id(traceparent: &str) -> Option<String> {
+        let parts: Vec<&str> = traceparent.split('-').collect();
+        if parts.len() >= 2 {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn test_traceparent_valid_extraction() {
+        // W3C format: version-traceid-parentid-flags
+        let tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(
+            trace_id.as_deref(),
+            Some("4bf92f3577b34da6a3ce929d0e0e4736")
+        );
+    }
+
+    #[test]
+    fn test_traceparent_version_00() {
+        let tp = "00-abcdef1234567890abcdef1234567890-1234567890abcdef-00";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(
+            trace_id.as_deref(),
+            Some("abcdef1234567890abcdef1234567890")
+        );
+    }
+
+    #[test]
+    fn test_traceparent_future_version() {
+        // Future versions with extra fields should still work
+        let tp = "ff-abcdef1234567890abcdef1234567890-1234567890abcdef-01-extra";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(
+            trace_id.as_deref(),
+            Some("abcdef1234567890abcdef1234567890")
+        );
+    }
+
+    #[test]
+    fn test_traceparent_malformed_no_dashes() {
+        let tp = "nohyphenshere";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(trace_id, None);
+    }
+
+    #[test]
+    fn test_traceparent_single_field() {
+        let tp = "00";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(trace_id, None);
+    }
+
+    #[test]
+    fn test_traceparent_empty_string() {
+        let tp = "";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(trace_id, None);
+    }
+
+    #[test]
+    fn test_traceparent_two_fields_minimum() {
+        let tp = "00-traceid";
+        let trace_id = extract_trace_id(tp);
+        assert_eq!(trace_id.as_deref(), Some("traceid"));
+    }
+
+    #[test]
+    fn test_header_constants() {
+        assert_eq!(CORRELATION_ID_HEADER, "X-Correlation-ID");
+        assert_eq!(TRACEPARENT_HEADER, "traceparent");
     }
 }

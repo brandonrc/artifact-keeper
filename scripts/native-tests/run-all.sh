@@ -1,7 +1,7 @@
 #!/bin/bash
 # Run all native client tests
 # Usage: ./run-all.sh [profile]
-# Profiles: smoke (default), all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, proxy
+# Profiles: smoke (default), all, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, proxy, health-probes
 set -euo pipefail
 
 PROFILE="${1:-smoke}"
@@ -13,7 +13,7 @@ echo "=============================================="
 
 # Define test sets
 SMOKE_TESTS=(pypi npm cargo)
-ALL_TESTS=(pypi npm cargo maven go rpm deb helm conda docker protobuf proxy-virtual)
+ALL_TESTS=(pypi npm cargo maven go rpm deb helm conda docker protobuf proxy-virtual health-probes)
 
 # Select tests based on profile
 case "$PROFILE" in
@@ -26,7 +26,7 @@ case "$PROFILE" in
     proxy)
         TESTS=("proxy-virtual")
         ;;
-    pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker|protobuf|proxy-virtual)
+    pypi|npm|cargo|maven|go|rpm|deb|helm|conda|docker|protobuf|proxy-virtual|health-probes)
         TESTS=("$PROFILE")
         ;;
     *)
