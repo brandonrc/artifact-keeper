@@ -36,7 +36,6 @@ jobs:
     with:
       image_tag: dev
     secrets: inherit
-    continue-on-error: true
 
   # ════════════════════════════════════════════════════════════════════════════
   # BUILD BINARIES
