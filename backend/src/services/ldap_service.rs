@@ -518,6 +518,8 @@ mod tests {
             peer_public_endpoint: "http://localhost:8080".into(),
             peer_api_key: "test-key".into(),
             dependency_track_url: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_service_name: "test".into(),
         };
 
         let ldap_config = LdapConfig::from_config(&config);

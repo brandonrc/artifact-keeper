@@ -21,6 +21,8 @@
 #   Trivy:          8090
 #   OpenSCAP:       8091
 #   Dependency-Track: 8092
+#   Jaeger UI:        16686
+#   OTLP gRPC:        4317
 
 services:
   postgres:
@@ -118,6 +120,17 @@ services:
       retries: 5
     restart: unless-stopped
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: artifact-keeper-dev-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
   dtrack-init:
     image: alpine:3.20
     container_name: artifact-keeper-dev-dtrack-init
@@ -168,6 +181,8 @@ services:
       MEILISEARCH_API_KEY: artifact-keeper-dev-key
       DEPENDENCY_TRACK_URL: http://dependency-track-apiserver:8080
       DEPENDENCY_TRACK_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: artifact-keeper
       HOST: 0.0.0.0
       PORT: 8080
       SQLX_OFFLINE: "true"

@@ -97,6 +97,12 @@ pub struct Config {
 
     /// Dependency-Track API URL for vulnerability management (optional)
     pub dependency_track_url: Option<String>,
+
+    /// OpenTelemetry OTLP endpoint (optional, enables OTel when set).
+    pub otel_exporter_otlp_endpoint: Option<String>,
+
+    /// OpenTelemetry service name (default: "artifact-keeper").
+    pub otel_service_name: String,
 }
 
 impl Config {
@@ -139,6 +145,9 @@ impl Config {
             peer_api_key: env::var("PEER_API_KEY")
                 .unwrap_or_else(|_| "change-me-in-production".into()),
             dependency_track_url: env::var("DEPENDENCY_TRACK_URL").ok(),
+            otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
+            otel_service_name: env::var("OTEL_SERVICE_NAME")
+                .unwrap_or_else(|_| "artifact-keeper".into()),
         })
     }
 }

@@ -110,6 +110,16 @@ pub fn set_user_gauge(total_users: i64) {
     gauge!("ak_users_total").set(total_users as f64);
 }
 
+/// Update database connection pool gauge metrics.
+pub fn set_db_pool_gauges(pool: &sqlx::PgPool) {
+    let size = pool.size() as f64;
+    let idle = pool.num_idle() as f64;
+    gauge!("ak_db_pool_connections_active").set(size - idle);
+    gauge!("ak_db_pool_connections_idle").set(idle);
+    gauge!("ak_db_pool_connections_max").set(pool.options().get_max_connections() as f64);
+    gauge!("ak_db_pool_connections_size").set(size);
+}
+
 /// Record a cleanup operation.
 pub fn record_cleanup(cleanup_type: &str, items_removed: u64) {
     counter!("ak_cleanup_items_removed_total", "type" => cleanup_type.to_string())
