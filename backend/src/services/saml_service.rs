@@ -886,11 +886,70 @@ mod urlencoding {
 mod tests {
     use super::*;
 
+    // =======================================================================
+    // base64_encode tests
+    // =======================================================================
+
     #[test]
     fn test_base64_encode() {
         assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
         assert_eq!(base64_encode(b"Hello World"), "SGVsbG8gV29ybGQ=");
     }
+
+    #[test]
+    fn test_base64_encode_empty() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn test_base64_encode_single_byte() {
+        assert_eq!(base64_encode(b"a"), "YQ==");
+    }
+
+    #[test]
+    fn test_base64_encode_two_bytes() {
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+    }
+
+    #[test]
+    fn test_base64_encode_three_bytes() {
+        // Three bytes => no padding needed
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+    }
+
+    #[test]
+    fn test_base64_encode_padding_alignment() {
+        // 4 bytes => 1 byte padding remainder
+        assert_eq!(base64_encode(b"abcd"), "YWJjZA==");
+        // 5 bytes
+        assert_eq!(base64_encode(b"abcde"), "YWJjZGU=");
+        // 6 bytes => no padding
+        assert_eq!(base64_encode(b"abcdef"), "YWJjZGVm");
+    }
+
+    #[test]
+    fn test_base64_encode_binary_data() {
+        let data: Vec<u8> = (0..=255).collect();
+        let encoded = base64_encode(&data);
+        // Should not panic, and should produce valid base64
+        assert!(!encoded.is_empty());
+        assert_eq!(encoded.len() % 4, 0); // Base64 output length is multiple of 4
+    }
+
+    #[test]
+    fn test_base64_encode_xml_content() {
+        // Typical SAML usage: encoding XML
+        let xml = r#"<?xml version="1.0"?><samlp:AuthnRequest/>"#;
+        let encoded = base64_encode(xml.as_bytes());
+        assert!(!encoded.is_empty());
+        // Verify round-trip
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), xml);
+    }
+
+    // =======================================================================
+    // base64_decode tests
+    // =======================================================================
 
     #[test]
     fn test_base64_decode() {
@@ -902,11 +961,133 @@ mod tests {
     }
 
     #[test]
+    fn test_base64_decode_empty() {
+        let decoded = base64_decode("").unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_base64_decode_no_padding() {
+        let decoded = base64_decode("YWJj").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "abc");
+    }
+
+    #[test]
+    fn test_base64_decode_single_padding() {
+        let decoded = base64_decode("YWJjZGU=").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "abcde");
+    }
+
+    #[test]
+    fn test_base64_decode_double_padding() {
+        let decoded = base64_decode("YQ==").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "a");
+    }
+
+    #[test]
+    fn test_base64_decode_ignores_whitespace() {
+        let decoded = base64_decode("SGVs\nbG8=").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "Hello");
+
+        let decoded = base64_decode("SGVs bG8=").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "Hello");
+
+        let decoded = base64_decode("SGVs\r\nbG8=").unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "Hello");
+    }
+
+    #[test]
+    fn test_base64_decode_invalid_character() {
+        let result = base64_decode("SGVs!G8=");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid base64 character"));
+    }
+
+    #[test]
+    fn test_base64_roundtrip() {
+        let test_strings = vec![
+            "",
+            "a",
+            "ab",
+            "abc",
+            "test string with spaces",
+            "special chars: <>&\"'",
+            "unicode: hello world",
+        ];
+
+        for s in test_strings {
+            let encoded = base64_encode(s.as_bytes());
+            let decoded = base64_decode(&encoded).unwrap();
+            assert_eq!(
+                String::from_utf8(decoded).unwrap(),
+                s,
+                "Round-trip failed for: {:?}",
+                s
+            );
+        }
+    }
+
+    // =======================================================================
+    // urlencoding tests
+    // =======================================================================
+
+    #[test]
     fn test_urlencoding() {
         assert_eq!(urlencoding::encode("hello"), "hello");
         assert_eq!(urlencoding::encode("hello world"), "hello%20world");
         assert_eq!(urlencoding::encode("a+b=c"), "a%2Bb%3Dc");
     }
+
+    #[test]
+    fn test_urlencoding_empty() {
+        assert_eq!(urlencoding::encode(""), "");
+    }
+
+    #[test]
+    fn test_urlencoding_unreserved_chars_preserved() {
+        // RFC 3986 unreserved characters: A-Z, a-z, 0-9, -, _, ., ~
+        assert_eq!(
+            urlencoding::encode(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+            ),
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+        );
+    }
+
+    #[test]
+    fn test_urlencoding_special_chars() {
+        assert_eq!(urlencoding::encode("/"), "%2F");
+        assert_eq!(urlencoding::encode("?"), "%3F");
+        assert_eq!(urlencoding::encode("&"), "%26");
+        assert_eq!(urlencoding::encode("="), "%3D");
+        assert_eq!(urlencoding::encode("#"), "%23");
+        assert_eq!(urlencoding::encode("@"), "%40");
+    }
+
+    #[test]
+    fn test_urlencoding_base64_output() {
+        // Typical SAML usage: URL-encoding a base64 string
+        let b64 = "SGVsbG8gV29ybGQ=";
+        let encoded = urlencoding::encode(b64);
+        // + should be encoded, = should be encoded
+        assert!(encoded.contains("%3D")); // = is encoded
+                                          // Letters and numbers should be preserved
+        assert!(encoded.contains("SGVsbG8"));
+    }
+
+    #[test]
+    fn test_urlencoding_percent_encoding_format() {
+        // Verify uppercase hex output
+        let encoded = urlencoding::encode(" ");
+        assert_eq!(encoded, "%20");
+
+        let encoded = urlencoding::encode("\n");
+        assert_eq!(encoded, "%0A");
+    }
+
+    // =======================================================================
+    // SamlConfig tests
+    // =======================================================================
 
     #[test]
     fn test_saml_config_defaults() {
@@ -919,9 +1100,977 @@ mod tests {
         let config = config.unwrap();
         assert_eq!(config.idp_sso_url, "https://idp.example.com/sso");
         assert_eq!(config.sp_entity_id, "artifact-keeper");
+        assert_eq!(config.username_attr, "NameID");
+        assert_eq!(config.email_attr, "email");
+        assert_eq!(config.display_name_attr, "displayName");
+        assert_eq!(config.groups_attr, "groups");
+        assert!(!config.sign_requests);
+        assert!(config.require_signed_assertions);
+        assert!(config.admin_group.is_none());
 
         // Clean up
         std::env::remove_var("SAML_IDP_SSO_URL");
         std::env::remove_var("SAML_IDP_ISSUER");
+    }
+
+    #[tokio::test]
+    async fn test_saml_config_returns_none_without_required_vars() {
+        // Ensure neither var is set
+        std::env::remove_var("SAML_IDP_SSO_URL");
+        std::env::remove_var("SAML_IDP_ISSUER");
+
+        let config = SamlConfig::from_env();
+        assert!(config.is_none());
+    }
+
+    // =======================================================================
+    // SAML response XML parsing tests
+    // =======================================================================
+
+    fn make_test_saml_config() -> SamlConfig {
+        SamlConfig {
+            idp_metadata_url: None,
+            idp_sso_url: "https://idp.example.com/sso".to_string(),
+            idp_issuer: "https://idp.example.com".to_string(),
+            idp_certificate: None,
+            sp_entity_id: "artifact-keeper".to_string(),
+            acs_url: "http://localhost:8080/auth/saml/acs".to_string(),
+            username_attr: "NameID".to_string(),
+            email_attr: "email".to_string(),
+            display_name_attr: "displayName".to_string(),
+            groups_attr: "groups".to_string(),
+            admin_group: Some("Admins".to_string()),
+            sign_requests: false,
+            require_signed_assertions: false,
+        }
+    }
+
+    fn make_test_saml_service() -> SamlService {
+        let config = make_test_saml_config();
+        SamlService::with_config(
+            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+        )
+    }
+
+    fn sample_saml_response_xml() -> String {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="_response123"
+                InResponseTo="_request456"
+                Version="2.0">
+    <saml:Issuer>https://idp.example.com</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+    </samlp:Status>
+    <saml:Assertion ID="_assertion789" Version="2.0">
+        <saml:Issuer>https://idp.example.com</saml:Issuer>
+        <saml:Subject>
+            <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">john.doe@example.com</saml:NameID>
+        </saml:Subject>
+        <saml:Conditions NotBefore="2020-01-01T00:00:00Z" NotOnOrAfter="2099-12-31T23:59:59Z">
+            <saml:AudienceRestriction>
+                <saml:Audience>artifact-keeper</saml:Audience>
+            </saml:AudienceRestriction>
+        </saml:Conditions>
+        <saml:AuthnStatement SessionIndex="session_abc123"/>
+        <saml:AttributeStatement>
+            <saml:Attribute Name="email">
+                <saml:AttributeValue>john.doe@example.com</saml:AttributeValue>
+            </saml:Attribute>
+            <saml:Attribute Name="displayName">
+                <saml:AttributeValue>John Doe</saml:AttributeValue>
+            </saml:Attribute>
+            <saml:Attribute Name="groups">
+                <saml:AttributeValue>Developers</saml:AttributeValue>
+                <saml:AttributeValue>Admins</saml:AttributeValue>
+            </saml:Attribute>
+        </saml:AttributeStatement>
+    </saml:Assertion>
+</samlp:Response>"#
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_basic() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+
+        let response = service.parse_saml_response(&xml).unwrap();
+
+        assert_eq!(response.id, "_response123");
+        assert_eq!(response.in_response_to, Some("_request456".to_string()));
+        assert_eq!(response.issuer, "https://idp.example.com");
+        assert!(response.status_code.ends_with(":Success"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_assertion_fields() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+
+        let response = service.parse_saml_response(&xml).unwrap();
+        let assertion = response.assertion.as_ref().unwrap();
+
+        assert_eq!(assertion.id, "_assertion789");
+        assert_eq!(assertion.issuer, "https://idp.example.com");
+        assert_eq!(assertion.name_id, "john.doe@example.com");
+        assert_eq!(
+            assertion.name_id_format.as_deref(),
+            Some("urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress")
+        );
+        // BUG: session_index is None because AuthnStatement is a self-closing
+        // XML element (<saml:AuthnStatement ... />) which produces Event::Empty,
+        // but parse_saml_response only handles AuthnStatement under Event::Start.
+        // The SessionIndex attribute is therefore never captured.
+        // Fix: add AuthnStatement handling to the Event::Empty branch.
+        assert_eq!(assertion.session_index, None);
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_conditions() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+
+        let response = service.parse_saml_response(&xml).unwrap();
+        let assertion = response.assertion.as_ref().unwrap();
+
+        assert_eq!(
+            assertion.not_before.as_deref(),
+            Some("2020-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            assertion.not_on_or_after.as_deref(),
+            Some("2099-12-31T23:59:59Z")
+        );
+        assert_eq!(assertion.audiences, vec!["artifact-keeper"]);
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_attributes() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+
+        let response = service.parse_saml_response(&xml).unwrap();
+        let assertion = response.assertion.as_ref().unwrap();
+
+        assert_eq!(
+            assertion.attributes.get("email"),
+            Some(&vec!["john.doe@example.com".to_string()])
+        );
+        assert_eq!(
+            assertion.attributes.get("displayName"),
+            Some(&vec!["John Doe".to_string()])
+        );
+
+        let groups = assertion.attributes.get("groups").unwrap();
+        assert_eq!(groups.len(), 2);
+        assert!(groups.contains(&"Developers".to_string()));
+        assert!(groups.contains(&"Admins".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_no_assertion() {
+        let service = make_test_saml_service();
+        let xml = r#"<?xml version="1.0"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="_resp1" Version="2.0">
+    <saml:Issuer>https://idp.example.com</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Requester"/>
+        <samlp:StatusMessage>Authentication failed</samlp:StatusMessage>
+    </samlp:Status>
+</samlp:Response>"#;
+
+        let response = service.parse_saml_response(xml).unwrap();
+        assert!(response.assertion.is_none());
+        assert!(response.status_code.ends_with(":Requester"));
+        assert_eq!(
+            response.status_message.as_deref(),
+            Some("Authentication failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_parse_saml_response_empty_status_code() {
+        let service = make_test_saml_service();
+        let xml = r#"<?xml version="1.0"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="_resp1" Version="2.0">
+    <saml:Issuer>https://idp.example.com</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+    </samlp:Status>
+</samlp:Response>"#;
+
+        let response = service.parse_saml_response(xml).unwrap();
+        assert_eq!(response.id, "_resp1");
+        assert!(response.status_code.contains("Success"));
+    }
+
+    // =======================================================================
+    // validate_response tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_validate_response_success() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+        let response = service.parse_saml_response(&xml).unwrap();
+
+        let result = service.validate_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_failed_status() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Requester".to_string(),
+            status_message: Some("Auth failed".to_string()),
+            assertion: None,
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Auth failed"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_wrong_issuer() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://evil-idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: None,
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid issuer"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_wrong_audience() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: Some(SamlAssertion {
+                id: "_a1".to_string(),
+                issuer: "https://idp.example.com".to_string(),
+                name_id: "user@example.com".to_string(),
+                name_id_format: None,
+                session_index: None,
+                not_before: None,
+                not_on_or_after: None,
+                audiences: vec!["wrong-sp-entity-id".to_string()],
+                attributes: HashMap::new(),
+            }),
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("audience restriction"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_empty_audience_passes() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: Some(SamlAssertion {
+                id: "_a1".to_string(),
+                issuer: "https://idp.example.com".to_string(),
+                name_id: "user@example.com".to_string(),
+                name_id_format: None,
+                session_index: None,
+                not_before: None,
+                not_on_or_after: None,
+                audiences: vec![],
+                attributes: HashMap::new(),
+            }),
+        };
+
+        // Empty audiences list means no restriction to check
+        let result = service.validate_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_expired_assertion() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: Some(SamlAssertion {
+                id: "_a1".to_string(),
+                issuer: "https://idp.example.com".to_string(),
+                name_id: "user@example.com".to_string(),
+                name_id_format: None,
+                session_index: None,
+                not_before: None,
+                not_on_or_after: Some("2020-01-01T00:00:00Z".to_string()),
+                audiences: vec!["artifact-keeper".to_string()],
+                attributes: HashMap::new(),
+            }),
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expired"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_not_yet_valid() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: Some(SamlAssertion {
+                id: "_a1".to_string(),
+                issuer: "https://idp.example.com".to_string(),
+                name_id: "user@example.com".to_string(),
+                name_id_format: None,
+                session_index: None,
+                not_before: Some("2099-01-01T00:00:00Z".to_string()),
+                not_on_or_after: None,
+                audiences: vec!["artifact-keeper".to_string()],
+                attributes: HashMap::new(),
+            }),
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not yet valid"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_correct_audience_among_many() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Success".to_string(),
+            status_message: None,
+            assertion: Some(SamlAssertion {
+                id: "_a1".to_string(),
+                issuer: "https://idp.example.com".to_string(),
+                name_id: "user@example.com".to_string(),
+                name_id_format: None,
+                session_index: None,
+                not_before: None,
+                not_on_or_after: None,
+                audiences: vec![
+                    "other-sp".to_string(),
+                    "artifact-keeper".to_string(),
+                    "another-sp".to_string(),
+                ],
+                attributes: HashMap::new(),
+            }),
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_response_failed_status_without_message() {
+        let service = make_test_saml_service();
+        let response = SamlResponse {
+            id: "_resp1".to_string(),
+            in_response_to: None,
+            issuer: "https://idp.example.com".to_string(),
+            status_code: "urn:oasis:names:tc:SAML:2.0:status:Responder".to_string(),
+            status_message: None,
+            assertion: None,
+        };
+
+        let result = service.validate_response(&response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Should include the status code in the default message
+        assert!(err.contains("Responder"));
+    }
+
+    // =======================================================================
+    // extract_user_info tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_extract_user_info_basic() {
+        let service = make_test_saml_service();
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "john@example.com".to_string(),
+            name_id_format: Some(
+                "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress".to_string(),
+            ),
+            session_index: Some("session_123".to_string()),
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: {
+                let mut attrs = HashMap::new();
+                attrs.insert("email".to_string(), vec!["john@example.com".to_string()]);
+                attrs.insert("displayName".to_string(), vec!["John Doe".to_string()]);
+                attrs.insert(
+                    "groups".to_string(),
+                    vec!["Developers".to_string(), "Admins".to_string()],
+                );
+                attrs
+            },
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+
+        // username_attr is "NameID", so username comes from name_id
+        assert_eq!(user_info.username, "john@example.com");
+        assert_eq!(user_info.email, "john@example.com");
+        assert_eq!(user_info.display_name, Some("John Doe".to_string()));
+        assert_eq!(user_info.groups, vec!["Developers", "Admins"]);
+        assert_eq!(user_info.name_id, "john@example.com");
+        assert_eq!(user_info.session_index, Some("session_123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_custom_username_attr() {
+        let mut config = make_test_saml_config();
+        config.username_attr = "uid".to_string();
+
+        let service = SamlService {
+            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+            http_client: Client::new(),
+        };
+
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "john@example.com".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: {
+                let mut attrs = HashMap::new();
+                attrs.insert("uid".to_string(), vec!["jdoe".to_string()]);
+                attrs.insert("email".to_string(), vec!["john@example.com".to_string()]);
+                attrs
+            },
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        assert_eq!(user_info.username, "jdoe");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_missing_username_attr_falls_back_to_name_id() {
+        let mut config = make_test_saml_config();
+        config.username_attr = "nonexistent".to_string();
+
+        let service = SamlService {
+            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+            http_client: Client::new(),
+        };
+
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "fallback-user".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: HashMap::new(),
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        assert_eq!(user_info.username, "fallback-user");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_missing_email_generates_default() {
+        let service = make_test_saml_service();
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "jdoe".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: HashMap::new(),
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        // No email attribute => default email is "{username}@unknown"
+        assert_eq!(user_info.email, "jdoe@unknown");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_missing_display_name() {
+        let service = make_test_saml_service();
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "jdoe".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: HashMap::new(),
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        assert!(user_info.display_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_empty_groups() {
+        let service = make_test_saml_service();
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "jdoe".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: HashMap::new(),
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        assert!(user_info.groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_info_preserves_all_attributes() {
+        let service = make_test_saml_service();
+        let mut attrs = HashMap::new();
+        attrs.insert("email".to_string(), vec!["a@b.com".to_string()]);
+        attrs.insert(
+            "custom_attr".to_string(),
+            vec!["value1".to_string(), "value2".to_string()],
+        );
+
+        let assertion = SamlAssertion {
+            id: "_a1".to_string(),
+            issuer: "https://idp.example.com".to_string(),
+            name_id: "jdoe".to_string(),
+            name_id_format: None,
+            session_index: None,
+            not_before: None,
+            not_on_or_after: None,
+            audiences: vec![],
+            attributes: attrs,
+        };
+
+        let user_info = service.extract_user_info(&assertion).unwrap();
+        assert_eq!(user_info.attributes.len(), 2);
+        assert_eq!(
+            user_info.attributes.get("custom_attr").unwrap(),
+            &vec!["value1".to_string(), "value2".to_string()]
+        );
+    }
+
+    // =======================================================================
+    // is_admin_from_groups tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_matching() {
+        let service = make_test_saml_service();
+        let groups = vec!["Developers".to_string(), "Admins".to_string()];
+        assert!(service.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_case_insensitive() {
+        let service = make_test_saml_service();
+        let groups = vec!["admins".to_string()];
+        assert!(service.is_admin_from_groups(&groups));
+
+        let groups = vec!["ADMINS".to_string()];
+        assert!(service.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_not_matching() {
+        let service = make_test_saml_service();
+        let groups = vec!["Developers".to_string(), "Users".to_string()];
+        assert!(!service.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_empty() {
+        let service = make_test_saml_service();
+        let groups: Vec<String> = vec![];
+        assert!(!service.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_no_admin_group_configured() {
+        let mut config = make_test_saml_config();
+        config.admin_group = None;
+
+        let service = SamlService {
+            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+            http_client: Client::new(),
+        };
+
+        let groups = vec!["Admins".to_string(), "SuperAdmins".to_string()];
+        assert!(!service.is_admin_from_groups(&groups));
+    }
+
+    // =======================================================================
+    // map_groups_to_roles tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_basic_user() {
+        // Clear the env var to avoid interference
+        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+
+        let service = make_test_saml_service();
+        let groups = vec!["Developers".to_string()];
+        let roles = service.map_groups_to_roles(&groups);
+
+        assert!(roles.contains(&"user".to_string()));
+        assert!(!roles.contains(&"admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_admin() {
+        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+
+        let service = make_test_saml_service();
+        let groups = vec!["Admins".to_string()];
+        let roles = service.map_groups_to_roles(&groups);
+
+        assert!(roles.contains(&"user".to_string()));
+        assert!(roles.contains(&"admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_deduplication() {
+        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+
+        let service = make_test_saml_service();
+        let groups = vec!["Admins".to_string()];
+        let roles = service.map_groups_to_roles(&groups);
+
+        // Should not have duplicate entries
+        let mut unique_roles = roles.clone();
+        unique_roles.sort();
+        unique_roles.dedup();
+        assert_eq!(roles.len(), unique_roles.len());
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_sorted() {
+        std::env::remove_var("SAML_GROUP_ROLE_MAP");
+
+        let service = make_test_saml_service();
+        let groups = vec!["Admins".to_string()];
+        let roles = service.map_groups_to_roles(&groups);
+
+        let mut sorted = roles.clone();
+        sorted.sort();
+        assert_eq!(roles, sorted);
+    }
+
+    // =======================================================================
+    // extract_groups tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_extract_groups() {
+        let service = make_test_saml_service();
+        let saml_user = SamlUserInfo {
+            name_id: "jdoe".to_string(),
+            name_id_format: None,
+            session_index: None,
+            username: "jdoe".to_string(),
+            email: "jdoe@example.com".to_string(),
+            display_name: None,
+            groups: vec!["Group1".to_string(), "Group2".to_string()],
+            attributes: HashMap::new(),
+        };
+
+        let groups = service.extract_groups(&saml_user);
+        assert_eq!(groups, vec!["Group1", "Group2"]);
+    }
+
+    // =======================================================================
+    // is_configured tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_is_configured_true() {
+        let service = make_test_saml_service();
+        assert!(service.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_is_configured_empty_sso_url() {
+        let mut config = make_test_saml_config();
+        config.idp_sso_url = String::new();
+
+        let service = SamlService {
+            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+            http_client: Client::new(),
+        };
+
+        assert!(!service.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_is_configured_empty_issuer() {
+        let mut config = make_test_saml_config();
+        config.idp_issuer = String::new();
+
+        let service = SamlService {
+            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            config,
+            http_client: Client::new(),
+        };
+
+        assert!(!service.is_configured());
+    }
+
+    // =======================================================================
+    // Accessor method tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_idp_sso_url_accessor() {
+        let service = make_test_saml_service();
+        assert_eq!(service.idp_sso_url(), "https://idp.example.com/sso");
+    }
+
+    #[tokio::test]
+    async fn test_sp_entity_id_accessor() {
+        let service = make_test_saml_service();
+        assert_eq!(service.sp_entity_id(), "artifact-keeper");
+    }
+
+    #[tokio::test]
+    async fn test_acs_url_accessor() {
+        let service = make_test_saml_service();
+        assert_eq!(service.acs_url(), "http://localhost:8080/auth/saml/acs");
+    }
+
+    // =======================================================================
+    // create_authn_request tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_create_authn_request_format() {
+        let service = make_test_saml_service();
+        let request = service.create_authn_request().unwrap();
+
+        // Request ID should start with _id
+        assert!(request.request_id.starts_with("_id"));
+
+        // Relay state should be a valid UUID
+        let _uuid = Uuid::parse_str(&request.relay_state).unwrap();
+
+        // Redirect URL should contain the IdP SSO URL
+        assert!(request
+            .redirect_url
+            .starts_with("https://idp.example.com/sso?"));
+
+        // Should contain SAMLRequest parameter
+        assert!(request.redirect_url.contains("SAMLRequest="));
+
+        // Should contain RelayState parameter
+        assert!(request.redirect_url.contains("RelayState="));
+    }
+
+    // =======================================================================
+    // SamlUserInfo serialization tests
+    // =======================================================================
+
+    #[test]
+    fn test_saml_user_info_serialization_roundtrip() {
+        let user_info = SamlUserInfo {
+            name_id: "jdoe@example.com".to_string(),
+            name_id_format: Some(
+                "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress".to_string(),
+            ),
+            session_index: Some("session_abc".to_string()),
+            username: "jdoe".to_string(),
+            email: "jdoe@example.com".to_string(),
+            display_name: Some("John Doe".to_string()),
+            groups: vec!["Developers".to_string(), "Admins".to_string()],
+            attributes: {
+                let mut attrs = HashMap::new();
+                attrs.insert("email".to_string(), vec!["jdoe@example.com".to_string()]);
+                attrs
+            },
+        };
+
+        let json = serde_json::to_string(&user_info).unwrap();
+        let parsed: SamlUserInfo = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.name_id, user_info.name_id);
+        assert_eq!(parsed.username, user_info.username);
+        assert_eq!(parsed.email, user_info.email);
+        assert_eq!(parsed.display_name, user_info.display_name);
+        assert_eq!(parsed.groups, user_info.groups);
+    }
+
+    // =======================================================================
+    // from_db_config tests
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_from_db_config_attribute_mapping() {
+        let attr_mapping = serde_json::json!({
+            "username": "uid",
+            "email": "mail",
+            "display_name": "cn",
+            "groups": "memberOf"
+        });
+
+        let service = SamlService::from_db_config(
+            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            "https://idp.example.com",
+            "https://idp.example.com/sso",
+            Some("https://idp.example.com/slo"),
+            Some("-----BEGIN CERTIFICATE-----\nMIIC..."),
+            "artifact-keeper",
+            "http://localhost:8080/auth/saml/acs",
+            "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
+            &attr_mapping,
+            false,
+            true,
+            Some("AdminGroup"),
+        );
+
+        assert_eq!(service.config.username_attr, "uid");
+        assert_eq!(service.config.email_attr, "mail");
+        assert_eq!(service.config.display_name_attr, "cn");
+        assert_eq!(service.config.groups_attr, "memberOf");
+        assert_eq!(service.config.idp_issuer, "https://idp.example.com");
+        assert_eq!(service.config.idp_sso_url, "https://idp.example.com/sso");
+        assert!(!service.config.sign_requests);
+        assert!(service.config.require_signed_assertions);
+        assert_eq!(service.config.admin_group, Some("AdminGroup".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_from_db_config_defaults_for_missing_attrs() {
+        let attr_mapping = serde_json::json!({});
+
+        let service = SamlService::from_db_config(
+            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            "https://idp.example.com",
+            "https://idp.example.com/sso",
+            None,
+            None,
+            "sp",
+            "http://localhost/acs",
+            "unspecified",
+            &attr_mapping,
+            false,
+            false,
+            None,
+        );
+
+        assert_eq!(service.config.username_attr, "NameID");
+        assert_eq!(service.config.email_attr, "email");
+        assert_eq!(service.config.display_name_attr, "displayName");
+        assert_eq!(service.config.groups_attr, "groups");
+        assert!(service.config.admin_group.is_none());
+        assert!(service.config.idp_certificate.is_none());
+    }
+
+    // =======================================================================
+    // Full SAML response parsing + validation + extraction integration test
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_full_saml_flow_parse_validate_extract() {
+        let service = make_test_saml_service();
+        let xml = sample_saml_response_xml();
+
+        // Parse
+        let response = service.parse_saml_response(&xml).unwrap();
+
+        // Validate
+        service.validate_response(&response).unwrap();
+
+        // Extract
+        let assertion = response.assertion.unwrap();
+        let user_info = service.extract_user_info(&assertion).unwrap();
+
+        assert_eq!(user_info.username, "john.doe@example.com");
+        assert_eq!(user_info.email, "john.doe@example.com");
+        assert_eq!(user_info.display_name, Some("John Doe".to_string()));
+        assert!(user_info.groups.contains(&"Admins".to_string()));
+        assert!(user_info.groups.contains(&"Developers".to_string()));
+
+        // Admin check
+        assert!(service.is_admin_from_groups(&user_info.groups));
+    }
+
+    // =======================================================================
+    // Edge case: StatusCode as self-closing element
+    // =======================================================================
+
+    #[tokio::test]
+    async fn test_parse_saml_response_self_closing_status_code() {
+        let service = make_test_saml_service();
+        let xml = r#"<?xml version="1.0"?>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="_resp1" Version="2.0">
+    <saml:Issuer>https://idp.example.com</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+    </samlp:Status>
+</samlp:Response>"#;
+
+        let response = service.parse_saml_response(xml).unwrap();
+        assert!(response.status_code.ends_with(":Success"));
     }
 }

@@ -169,3 +169,235 @@ pub async fn serve_from_storage_with_expiry<S: StorageBackend + ?Sized>(
         None => DownloadResponse::content(data, content_type),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use bytes::Bytes;
+
+    #[test]
+    fn test_redirect_constructor() {
+        let presigned = PresignedUrl {
+            url: "https://s3.example.com/bucket/key?sig=abc".to_string(),
+            expires_in: Duration::from_secs(3600),
+            source: PresignedUrlSource::S3,
+        };
+        let resp = DownloadResponse::redirect(presigned);
+        assert!(matches!(resp, DownloadResponse::Redirect(_)));
+    }
+
+    #[test]
+    fn test_content_constructor() {
+        let data = Bytes::from_static(b"hello world");
+        let resp = DownloadResponse::content(data, "text/plain");
+        match resp {
+            DownloadResponse::Content {
+                data,
+                content_type,
+                filename,
+            } => {
+                assert_eq!(data.as_ref(), b"hello world");
+                assert_eq!(content_type, "text/plain");
+                assert!(filename.is_none());
+            }
+            _ => panic!("Expected Content variant"),
+        }
+    }
+
+    #[test]
+    fn test_content_with_filename_constructor() {
+        let data = Bytes::from_static(b"jar content");
+        let resp = DownloadResponse::content_with_filename(
+            data,
+            "application/java-archive",
+            "mylib-1.0.jar",
+        );
+        match resp {
+            DownloadResponse::Content {
+                data,
+                content_type,
+                filename,
+            } => {
+                assert_eq!(data.as_ref(), b"jar content");
+                assert_eq!(content_type, "application/java-archive");
+                assert_eq!(filename.as_deref(), Some("mylib-1.0.jar"));
+            }
+            _ => panic!("Expected Content variant"),
+        }
+    }
+
+    fn make_redirect_response(source: PresignedUrlSource) -> Response {
+        let presigned = PresignedUrl {
+            url: "https://storage.example.com/artifact".to_string(),
+            expires_in: Duration::from_secs(1800),
+            source,
+        };
+        DownloadResponse::Redirect(presigned).into_response()
+    }
+
+    #[test]
+    fn test_redirect_s3_into_response() {
+        let resp = make_redirect_response(PresignedUrlSource::S3);
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers().get("location").unwrap().to_str().unwrap(),
+            "https://storage.example.com/artifact"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(X_ARTIFACT_STORAGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "redirect-s3"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "private, max-age=1800"
+        );
+    }
+
+    #[test]
+    fn test_redirect_cloudfront_into_response() {
+        let resp = make_redirect_response(PresignedUrlSource::CloudFront);
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers()
+                .get(X_ARTIFACT_STORAGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "redirect-cloudfront"
+        );
+    }
+
+    #[test]
+    fn test_redirect_azure_into_response() {
+        let resp = make_redirect_response(PresignedUrlSource::Azure);
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers()
+                .get(X_ARTIFACT_STORAGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "redirect-azure"
+        );
+    }
+
+    #[test]
+    fn test_redirect_gcs_into_response() {
+        let resp = make_redirect_response(PresignedUrlSource::Gcs);
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        assert_eq!(
+            resp.headers()
+                .get(X_ARTIFACT_STORAGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "redirect-gcs"
+        );
+    }
+
+    #[test]
+    fn test_content_into_response_without_filename() {
+        let data = Bytes::from_static(b"file contents here");
+        let resp = DownloadResponse::Content {
+            data,
+            content_type: "application/octet-stream".to_string(),
+            filename: None,
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "18"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(X_ARTIFACT_STORAGE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "proxy"
+        );
+        assert!(resp.headers().get("content-disposition").is_none());
+    }
+
+    #[test]
+    fn test_content_into_response_with_filename() {
+        let data = Bytes::from_static(b"PKzip");
+        let resp = DownloadResponse::Content {
+            data,
+            content_type: "application/zip".to_string(),
+            filename: Some("archive.zip".to_string()),
+        }
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cd = resp
+            .headers()
+            .get("content-disposition")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(cd, "attachment; filename=\"archive.zip\"");
+    }
+
+    #[test]
+    fn test_content_into_response_empty_body() {
+        let data = Bytes::new();
+        let resp = DownloadResponse::content(data, "text/plain").into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "0"
+        );
+    }
+
+    #[test]
+    fn test_redirect_cache_control_uses_expires_in() {
+        let presigned = PresignedUrl {
+            url: "https://cdn.example.com/file".to_string(),
+            expires_in: Duration::from_secs(7200),
+            source: PresignedUrlSource::CloudFront,
+        };
+        let resp = DownloadResponse::redirect(presigned).into_response();
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "private, max-age=7200"
+        );
+    }
+
+    #[test]
+    fn test_x_artifact_storage_header_constant() {
+        assert_eq!(X_ARTIFACT_STORAGE, "x-artifact-storage");
+    }
+}

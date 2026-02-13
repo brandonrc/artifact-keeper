@@ -278,3 +278,269 @@ pub async fn admin_middleware(
     request.extensions_mut().insert(auth_ext);
     next.run(request).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // extract_token_from_auth_header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_token() {
+        let result = extract_token_from_auth_header("Bearer my-jwt-token-123");
+        assert!(matches!(result, ExtractedToken::Bearer("my-jwt-token-123")));
+    }
+
+    #[test]
+    fn test_extract_apikey_token() {
+        let result = extract_token_from_auth_header("ApiKey ak_secret_key");
+        assert!(matches!(result, ExtractedToken::ApiKey("ak_secret_key")));
+    }
+
+    #[test]
+    fn test_extract_invalid_scheme() {
+        let result = extract_token_from_auth_header("Basic dXNlcjpwYXNz");
+        assert!(matches!(result, ExtractedToken::Invalid));
+    }
+
+    #[test]
+    fn test_extract_empty_string() {
+        let result = extract_token_from_auth_header("");
+        assert!(matches!(result, ExtractedToken::Invalid));
+    }
+
+    #[test]
+    fn test_extract_bearer_empty_token() {
+        let result = extract_token_from_auth_header("Bearer ");
+        assert!(matches!(result, ExtractedToken::Bearer("")));
+    }
+
+    #[test]
+    fn test_extract_case_sensitive_bearer() {
+        let result = extract_token_from_auth_header("bearer my-token");
+        assert!(matches!(result, ExtractedToken::Invalid));
+    }
+
+    #[test]
+    fn test_extract_case_sensitive_apikey() {
+        let result = extract_token_from_auth_header("apikey my-token");
+        assert!(matches!(result, ExtractedToken::Invalid));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_token from full Request
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_token_from_authorization_bearer() {
+        let request = Request::builder()
+            .header(AUTHORIZATION, "Bearer jwt-abc-123")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::Bearer("jwt-abc-123")));
+    }
+
+    #[test]
+    fn test_extract_token_from_authorization_apikey() {
+        let request = Request::builder()
+            .header(AUTHORIZATION, "ApiKey token-xyz")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::ApiKey("token-xyz")));
+    }
+
+    #[test]
+    fn test_extract_token_from_x_api_key_header() {
+        let request = Request::builder()
+            .header("x-api-key", "my-api-key-value")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::ApiKey("my-api-key-value")));
+    }
+
+    #[test]
+    fn test_extract_token_authorization_takes_priority_over_x_api_key() {
+        let request = Request::builder()
+            .header(AUTHORIZATION, "Bearer jwt-token")
+            .header("x-api-key", "api-key-value")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::Bearer("jwt-token")));
+    }
+
+    #[test]
+    fn test_extract_token_from_cookie() {
+        let request = Request::builder()
+            .header(
+                COOKIE,
+                "session_id=abc; ak_access_token=cookie-jwt-token; other=val",
+            )
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::Bearer("cookie-jwt-token")));
+    }
+
+    #[test]
+    fn test_extract_token_cookie_no_matching_cookie() {
+        let request = Request::builder()
+            .header(COOKIE, "session_id=abc; other_cookie=val")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::None));
+    }
+
+    #[test]
+    fn test_extract_token_no_headers() {
+        let request = Request::builder().body(axum::body::Body::empty()).unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::None));
+    }
+
+    #[test]
+    fn test_extract_token_invalid_auth_header_does_not_fall_through() {
+        let request = Request::builder()
+            .header(AUTHORIZATION, "Basic dXNlcjpwYXNz")
+            .header("x-api-key", "api-key-value")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let result = extract_token(&request);
+        assert!(matches!(result, ExtractedToken::Invalid));
+    }
+
+    // -----------------------------------------------------------------------
+    // AuthExtension::from(Claims)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auth_extension_from_claims() {
+        let user_id = Uuid::new_v4();
+        let claims = Claims {
+            sub: user_id,
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            is_admin: true,
+            iat: 1000,
+            exp: 2000,
+            token_type: "access".to_string(),
+        };
+
+        let ext = AuthExtension::from(claims);
+        assert_eq!(ext.user_id, user_id);
+        assert_eq!(ext.username, "testuser");
+        assert_eq!(ext.email, "test@example.com");
+        assert!(ext.is_admin);
+        assert!(!ext.is_api_token);
+        assert!(ext.scopes.is_none());
+    }
+
+    #[test]
+    fn test_auth_extension_from_claims_non_admin() {
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "regular".to_string(),
+            email: "regular@example.com".to_string(),
+            is_admin: false,
+            iat: 1000,
+            exp: 2000,
+            token_type: "access".to_string(),
+        };
+
+        let ext = AuthExtension::from(claims);
+        assert!(!ext.is_admin);
+        assert!(!ext.is_api_token);
+    }
+
+    // -----------------------------------------------------------------------
+    // auth_extension_from_api_user
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auth_extension_from_api_user_fn() {
+        let user_id = Uuid::new_v4();
+        let user = User {
+            id: user_id,
+            username: "apiuser".to_string(),
+            email: "api@example.com".to_string(),
+            password_hash: None,
+            auth_provider: crate::models::user::AuthProvider::Local,
+            external_id: None,
+            display_name: None,
+            is_active: true,
+            is_admin: false,
+            must_change_password: false,
+            totp_secret: None,
+            totp_enabled: false,
+            totp_backup_codes: None,
+            totp_verified_at: None,
+            last_login_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let ext = auth_extension_from_api_user(user);
+        assert_eq!(ext.user_id, user_id);
+        assert_eq!(ext.username, "apiuser");
+        assert_eq!(ext.email, "api@example.com");
+        assert!(!ext.is_admin);
+        assert!(ext.is_api_token);
+        assert!(ext.scopes.is_none());
+    }
+
+    #[test]
+    fn test_auth_extension_from_api_user_admin_fn() {
+        let user = User {
+            id: Uuid::new_v4(),
+            username: "admin_api".to_string(),
+            email: "admin@example.com".to_string(),
+            password_hash: Some("hash".to_string()),
+            auth_provider: crate::models::user::AuthProvider::Local,
+            external_id: None,
+            display_name: Some("Admin".to_string()),
+            is_active: true,
+            is_admin: true,
+            must_change_password: false,
+            totp_secret: None,
+            totp_enabled: false,
+            totp_backup_codes: None,
+            totp_verified_at: None,
+            last_login_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let ext = auth_extension_from_api_user(user);
+        assert!(ext.is_admin);
+        assert!(ext.is_api_token);
+    }
+
+    // -----------------------------------------------------------------------
+    // AuthExtension Clone / Debug
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auth_extension_clone_and_debug() {
+        let ext = AuthExtension {
+            user_id: Uuid::nil(),
+            username: "user".to_string(),
+            email: "user@x.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            scopes: Some(vec!["read".to_string(), "write".to_string()]),
+        };
+
+        let cloned = ext.clone();
+        assert_eq!(cloned.user_id, ext.user_id);
+        assert_eq!(cloned.scopes, ext.scopes);
+
+        let debug_str = format!("{:?}", ext);
+        assert!(debug_str.contains("user"));
+    }
+}

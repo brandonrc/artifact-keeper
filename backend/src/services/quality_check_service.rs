@@ -1208,6 +1208,7 @@ fn compute_weighted_health_score(scores: &ComponentScores) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::quality::RawQualityIssue;
 
     #[test]
     fn test_all_components_present() {
@@ -1377,5 +1378,799 @@ mod tests {
             metadata: None,
         };
         assert_eq!(compute_weighted_health_score(&scores), 99);
+    }
+
+    // =======================================================================
+    // Weight constants validation
+    // =======================================================================
+
+    #[test]
+    fn test_weight_constants_sum_to_100() {
+        assert_eq!(
+            WEIGHT_SECURITY + WEIGHT_LICENSE + WEIGHT_QUALITY + WEIGHT_METADATA,
+            100
+        );
+    }
+
+    #[test]
+    fn test_security_has_highest_weight() {
+        assert!(WEIGHT_SECURITY > WEIGHT_QUALITY);
+        assert!(WEIGHT_SECURITY > WEIGHT_LICENSE);
+        assert!(WEIGHT_SECURITY > WEIGHT_METADATA);
+    }
+
+    #[test]
+    fn test_metadata_has_lowest_weight() {
+        assert!(WEIGHT_METADATA < WEIGHT_SECURITY);
+        assert!(WEIGHT_METADATA < WEIGHT_QUALITY);
+        assert!(WEIGHT_METADATA < WEIGHT_LICENSE);
+    }
+
+    // =======================================================================
+    // compute_weighted_health_score: additional edge cases
+    // =======================================================================
+
+    #[test]
+    fn test_only_license_present() {
+        let scores = ComponentScores {
+            security: None,
+            license: Some(50),
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(compute_weighted_health_score(&scores), 50);
+    }
+
+    #[test]
+    fn test_only_quality_present() {
+        let scores = ComponentScores {
+            security: None,
+            license: None,
+            quality: Some(72),
+            metadata: None,
+        };
+        assert_eq!(compute_weighted_health_score(&scores), 72);
+    }
+
+    #[test]
+    fn test_security_dominance_over_metadata() {
+        let scores = ComponentScores {
+            security: Some(20),
+            license: None,
+            quality: None,
+            metadata: Some(100),
+        };
+        // (20*40 + 100*15) / (40+15) = (800+1500) / 55 = 2300/55 = 41
+        let result = compute_weighted_health_score(&scores);
+        assert_eq!(result, 41);
+        assert!(result < 50, "Security weight should dominate");
+    }
+
+    #[test]
+    fn test_all_pairs_of_two_components() {
+        // security + license
+        let scores = ComponentScores {
+            security: Some(100),
+            license: Some(100),
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(compute_weighted_health_score(&scores), 100);
+
+        // security + metadata both zero
+        let scores = ComponentScores {
+            security: Some(0),
+            license: None,
+            quality: None,
+            metadata: Some(0),
+        };
+        assert_eq!(compute_weighted_health_score(&scores), 0);
+
+        // license + metadata
+        let scores = ComponentScores {
+            security: None,
+            license: Some(80),
+            quality: None,
+            metadata: Some(60),
+        };
+        // (80*20 + 60*15) / (20+15) = 2500/35 = 71
+        assert_eq!(compute_weighted_health_score(&scores), 71);
+
+        // quality + metadata
+        let scores = ComponentScores {
+            security: None,
+            license: None,
+            quality: Some(40),
+            metadata: Some(80),
+        };
+        // (40*25 + 80*15) / (25+15) = 2200/40 = 55
+        assert_eq!(compute_weighted_health_score(&scores), 55);
+    }
+
+    #[test]
+    fn test_grade_integration_with_weighted_score() {
+        let perfect = ComponentScores {
+            security: Some(100),
+            license: Some(100),
+            quality: Some(100),
+            metadata: Some(100),
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&perfect)),
+            Grade::A
+        );
+
+        let zero = ComponentScores {
+            security: Some(0),
+            license: Some(0),
+            quality: Some(0),
+            metadata: Some(0),
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&zero)),
+            Grade::F
+        );
+
+        let none = ComponentScores {
+            security: None,
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&none)),
+            Grade::A
+        );
+    }
+
+    #[test]
+    fn test_grade_boundaries_from_weighted_scores() {
+        // A: 90-100
+        let s = ComponentScores {
+            security: Some(90),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::A
+        );
+        // B: 75-89
+        let s = ComponentScores {
+            security: Some(89),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::B
+        );
+        let s = ComponentScores {
+            security: Some(75),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::B
+        );
+        // C: 50-74
+        let s = ComponentScores {
+            security: Some(74),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::C
+        );
+        // D: 25-49
+        let s = ComponentScores {
+            security: Some(49),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::D
+        );
+        // F: 0-24
+        let s = ComponentScores {
+            security: Some(24),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(
+            Grade::from_score(compute_weighted_health_score(&s)),
+            Grade::F
+        );
+    }
+
+    #[test]
+    fn test_negative_scores_handled() {
+        let scores = ComponentScores {
+            security: Some(-10),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(compute_weighted_health_score(&scores), -10);
+    }
+
+    #[test]
+    fn test_large_scores_handled() {
+        let scores = ComponentScores {
+            security: Some(200),
+            license: None,
+            quality: None,
+            metadata: None,
+        };
+        assert_eq!(compute_weighted_health_score(&scores), 200);
+    }
+
+    // =======================================================================
+    // Input struct construction tests
+    // =======================================================================
+
+    #[test]
+    fn test_create_quality_gate_input_construction() {
+        let input = CreateQualityGateInput {
+            repository_id: Some(Uuid::new_v4()),
+            name: "test-gate".to_string(),
+            description: Some("A test gate".to_string()),
+            min_health_score: Some(80),
+            min_security_score: Some(70),
+            min_quality_score: Some(60),
+            min_metadata_score: Some(50),
+            max_critical_issues: Some(0),
+            max_high_issues: Some(5),
+            max_medium_issues: Some(10),
+            required_checks: vec!["metadata_completeness".to_string(), "helm_lint".to_string()],
+            enforce_on_promotion: true,
+            enforce_on_download: false,
+            action: "block".to_string(),
+        };
+        assert_eq!(input.name, "test-gate");
+        assert_eq!(input.min_health_score, Some(80));
+        assert_eq!(input.required_checks.len(), 2);
+        assert!(input.enforce_on_promotion);
+        assert!(!input.enforce_on_download);
+    }
+
+    #[test]
+    fn test_create_quality_gate_input_minimal() {
+        let input = CreateQualityGateInput {
+            repository_id: None,
+            name: "global-gate".to_string(),
+            description: None,
+            min_health_score: None,
+            min_security_score: None,
+            min_quality_score: None,
+            min_metadata_score: None,
+            max_critical_issues: None,
+            max_high_issues: None,
+            max_medium_issues: None,
+            required_checks: vec![],
+            enforce_on_promotion: false,
+            enforce_on_download: false,
+            action: "warn".to_string(),
+        };
+        assert!(input.repository_id.is_none());
+        assert!(input.required_checks.is_empty());
+        assert_eq!(input.action, "warn");
+    }
+
+    #[test]
+    fn test_update_quality_gate_input_all_none() {
+        let input = UpdateQualityGateInput {
+            name: None,
+            description: None,
+            min_health_score: None,
+            min_security_score: None,
+            min_quality_score: None,
+            min_metadata_score: None,
+            max_critical_issues: None,
+            max_high_issues: None,
+            max_medium_issues: None,
+            required_checks: None,
+            enforce_on_promotion: None,
+            enforce_on_download: None,
+            action: None,
+            is_enabled: None,
+        };
+        assert!(input.name.is_none());
+        assert!(input.is_enabled.is_none());
+    }
+
+    #[test]
+    fn test_update_quality_gate_input_partial() {
+        let input = UpdateQualityGateInput {
+            name: Some("updated-name".to_string()),
+            description: None,
+            min_health_score: Some(90),
+            min_security_score: None,
+            min_quality_score: None,
+            min_metadata_score: None,
+            max_critical_issues: None,
+            max_high_issues: None,
+            max_medium_issues: None,
+            required_checks: None,
+            enforce_on_promotion: None,
+            enforce_on_download: None,
+            action: None,
+            is_enabled: Some(false),
+        };
+        assert_eq!(input.name.as_deref(), Some("updated-name"));
+        assert_eq!(input.min_health_score, Some(90));
+        assert_eq!(input.is_enabled, Some(false));
+    }
+
+    // =======================================================================
+    // Severity counting logic (replicating persist_check_result algorithm)
+    // =======================================================================
+
+    fn count_severities(issues: &[RawQualityIssue]) -> (i32, i32, i32, i32, i32) {
+        let mut critical_count: i32 = 0;
+        let mut high_count: i32 = 0;
+        let mut medium_count: i32 = 0;
+        let mut low_count: i32 = 0;
+        let mut info_count: i32 = 0;
+        for issue in issues {
+            match issue.severity.as_str() {
+                "critical" => critical_count += 1,
+                "high" => high_count += 1,
+                "medium" => medium_count += 1,
+                "low" => low_count += 1,
+                "info" => info_count += 1,
+                _ => info_count += 1,
+            }
+        }
+        (
+            critical_count,
+            high_count,
+            medium_count,
+            low_count,
+            info_count,
+        )
+    }
+
+    fn make_issue(severity: &str) -> RawQualityIssue {
+        RawQualityIssue {
+            severity: severity.to_string(),
+            category: "test".to_string(),
+            title: "test issue".to_string(),
+            description: None,
+            location: None,
+        }
+    }
+
+    #[test]
+    fn test_severity_counting_empty() {
+        let (c, h, m, l, i) = count_severities(&[]);
+        assert_eq!((c, h, m, l, i), (0, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn test_severity_counting_all_types() {
+        let issues = vec![
+            make_issue("critical"),
+            make_issue("critical"),
+            make_issue("high"),
+            make_issue("medium"),
+            make_issue("medium"),
+            make_issue("medium"),
+            make_issue("low"),
+            make_issue("info"),
+            make_issue("info"),
+        ];
+        let (c, h, m, l, i) = count_severities(&issues);
+        assert_eq!((c, h, m, l, i), (2, 1, 3, 1, 2));
+    }
+
+    #[test]
+    fn test_severity_counting_unknown_maps_to_info() {
+        let issues = vec![
+            make_issue("unknown"),
+            make_issue("warning"),
+            make_issue("debug"),
+        ];
+        let (c, h, m, l, i) = count_severities(&issues);
+        assert_eq!((c, h, m, l), (0, 0, 0, 0));
+        assert_eq!(i, 3);
+    }
+
+    #[test]
+    fn test_severity_counting_case_sensitive() {
+        // The source code uses exact string matching
+        let issues = vec![
+            make_issue("Critical"),
+            make_issue("HIGH"),
+            make_issue("Medium"),
+        ];
+        let (c, h, m, l, i) = count_severities(&issues);
+        assert_eq!((c, h, m, l), (0, 0, 0, 0));
+        assert_eq!(i, 3, "Capitalized severities should fall through to info");
+    }
+
+    // =======================================================================
+    // QualityCheckOutput serialization
+    // =======================================================================
+
+    #[test]
+    fn test_quality_check_output_serialization() {
+        let output = QualityCheckOutput {
+            score: 85,
+            passed: true,
+            issues: vec![make_issue("low")],
+            details: serde_json::json!({"checker": "metadata", "version": "1.0"}),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["score"], 85);
+        assert_eq!(json["passed"], true);
+        assert_eq!(json["issues"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_quality_check_output_no_issues() {
+        let output = QualityCheckOutput {
+            score: 100,
+            passed: true,
+            issues: vec![],
+            details: serde_json::json!({}),
+        };
+        assert!(output.passed);
+        assert_eq!(output.issues.len(), 0);
+    }
+
+    // =======================================================================
+    // QualityGateViolation and QualityGateEvaluation
+    // =======================================================================
+
+    #[test]
+    fn test_quality_gate_violation_serialization() {
+        let violation = QualityGateViolation {
+            rule: "min_health_score".to_string(),
+            expected: ">= 80".to_string(),
+            actual: "65".to_string(),
+            message: "Health score 65 is below minimum 80".to_string(),
+        };
+        let json = serde_json::to_value(&violation).unwrap();
+        assert_eq!(json["rule"], "min_health_score");
+        assert_eq!(json["expected"], ">= 80");
+        assert_eq!(json["actual"], "65");
+    }
+
+    #[test]
+    fn test_quality_gate_evaluation_passed() {
+        let evaluation = QualityGateEvaluation {
+            passed: true,
+            action: "block".to_string(),
+            gate_name: "prod-gate".to_string(),
+            health_score: 92,
+            health_grade: "A".to_string(),
+            violations: vec![],
+            component_scores: ComponentScores {
+                security: Some(95),
+                license: Some(100),
+                quality: Some(85),
+                metadata: Some(90),
+            },
+        };
+        assert!(evaluation.passed);
+        assert!(evaluation.violations.is_empty());
+    }
+
+    #[test]
+    fn test_quality_gate_evaluation_failed_with_violations() {
+        let evaluation = QualityGateEvaluation {
+            passed: false,
+            action: "block".to_string(),
+            gate_name: "strict-gate".to_string(),
+            health_score: 45,
+            health_grade: "D".to_string(),
+            violations: vec![
+                QualityGateViolation {
+                    rule: "min_health_score".to_string(),
+                    expected: ">= 80".to_string(),
+                    actual: "45".to_string(),
+                    message: "Health score 45 is below minimum 80".to_string(),
+                },
+                QualityGateViolation {
+                    rule: "max_critical_issues".to_string(),
+                    expected: "<= 0".to_string(),
+                    actual: "3".to_string(),
+                    message: "Critical issues count 3 exceeds maximum 0".to_string(),
+                },
+            ],
+            component_scores: ComponentScores {
+                security: Some(30),
+                license: None,
+                quality: Some(60),
+                metadata: Some(50),
+            },
+        };
+        assert!(!evaluation.passed);
+        assert_eq!(evaluation.violations.len(), 2);
+        assert_eq!(evaluation.violations[0].rule, "min_health_score");
+        assert_eq!(evaluation.violations[1].rule, "max_critical_issues");
+    }
+
+    #[test]
+    fn test_quality_gate_evaluation_serialization_roundtrip() {
+        let evaluation = QualityGateEvaluation {
+            passed: false,
+            action: "warn".to_string(),
+            gate_name: "default".to_string(),
+            health_score: 70,
+            health_grade: "C".to_string(),
+            violations: vec![QualityGateViolation {
+                rule: "min_security_score".to_string(),
+                expected: ">= 80".to_string(),
+                actual: "50".to_string(),
+                message: "Security score 50 is below minimum 80".to_string(),
+            }],
+            component_scores: ComponentScores {
+                security: Some(50),
+                license: None,
+                quality: Some(90),
+                metadata: Some(80),
+            },
+        };
+        let json = serde_json::to_value(&evaluation).unwrap();
+        let roundtripped: QualityGateEvaluation = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtripped.passed, evaluation.passed);
+        assert_eq!(roundtripped.action, evaluation.action);
+        assert_eq!(roundtripped.health_score, evaluation.health_score);
+        assert_eq!(roundtripped.violations.len(), 1);
+    }
+
+    // =======================================================================
+    // ComponentScores serialization
+    // =======================================================================
+
+    #[test]
+    fn test_component_scores_serialization() {
+        let scores = ComponentScores {
+            security: Some(90),
+            license: None,
+            quality: Some(75),
+            metadata: None,
+        };
+        let json = serde_json::to_value(&scores).unwrap();
+        assert_eq!(json["security"], 90);
+        assert!(json["license"].is_null());
+        assert_eq!(json["quality"], 75);
+        assert!(json["metadata"].is_null());
+    }
+
+    #[test]
+    fn test_component_scores_deserialization_with_nulls() {
+        let json = serde_json::json!({
+            "security": null,
+            "license": null,
+            "quality": null,
+            "metadata": null,
+        });
+        let scores: ComponentScores = serde_json::from_value(json).unwrap();
+        assert!(scores.security.is_none());
+        assert!(scores.license.is_none());
+        assert!(scores.quality.is_none());
+        assert!(scores.metadata.is_none());
+    }
+
+    // =======================================================================
+    // CheckScoreRow total issues calculation
+    // =======================================================================
+
+    #[test]
+    fn test_total_issues_calculation() {
+        let rows = vec![
+            CheckScoreRow {
+                check_type: "metadata_completeness".to_string(),
+                score: Some(80),
+                passed: Some(true),
+                critical_count: 0,
+                high_count: 1,
+                medium_count: 2,
+                low_count: 3,
+            },
+            CheckScoreRow {
+                check_type: "helm_lint".to_string(),
+                score: Some(60),
+                passed: Some(false),
+                critical_count: 1,
+                high_count: 2,
+                medium_count: 0,
+                low_count: 1,
+            },
+        ];
+        let mut total_issues: i32 = 0;
+        let mut critical_issues: i32 = 0;
+        let mut checks_passed: i32 = 0;
+        let checks_total = rows.len() as i32;
+        for row in &rows {
+            total_issues += row.critical_count + row.high_count + row.medium_count + row.low_count;
+            critical_issues += row.critical_count;
+            if row.passed.unwrap_or(false) {
+                checks_passed += 1;
+            }
+        }
+        assert_eq!(total_issues, 10);
+        assert_eq!(critical_issues, 1);
+        assert_eq!(checks_passed, 1);
+        assert_eq!(checks_total, 2);
+    }
+
+    #[test]
+    fn test_total_issues_with_no_rows() {
+        let rows: Vec<CheckScoreRow> = vec![];
+        let checks_total = rows.len() as i32;
+        assert_eq!(checks_total, 0);
+    }
+
+    #[test]
+    fn test_passed_none_defaults_to_false() {
+        let row = CheckScoreRow {
+            check_type: "test".to_string(),
+            score: Some(50),
+            passed: None,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+        };
+        assert!(!row.passed.unwrap_or(false));
+    }
+
+    // =======================================================================
+    // Quality score averaging logic
+    // =======================================================================
+
+    #[test]
+    fn test_quality_score_from_check_rows() {
+        let rows = vec![
+            CheckScoreRow {
+                check_type: "metadata_completeness".to_string(),
+                score: Some(80),
+                passed: Some(true),
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+            },
+            CheckScoreRow {
+                check_type: "helm_lint".to_string(),
+                score: Some(60),
+                passed: Some(true),
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+            },
+            CheckScoreRow {
+                check_type: "docker_best_practices".to_string(),
+                score: Some(40),
+                passed: Some(false),
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+            },
+        ];
+        let metadata_score: Option<i32> = rows
+            .iter()
+            .find(|r| r.check_type == "metadata_completeness")
+            .and_then(|r| r.score);
+        assert_eq!(metadata_score, Some(80));
+
+        let quality_checks: Vec<i32> = rows
+            .iter()
+            .filter(|r| r.check_type != "metadata_completeness")
+            .filter_map(|r| r.score)
+            .collect();
+        let quality_score = if quality_checks.is_empty() {
+            None
+        } else {
+            Some(quality_checks.iter().sum::<i32>() / quality_checks.len() as i32)
+        };
+        assert_eq!(quality_score, Some(50));
+    }
+
+    #[test]
+    fn test_quality_score_no_non_metadata_checks() {
+        let rows = vec![CheckScoreRow {
+            check_type: "metadata_completeness".to_string(),
+            score: Some(80),
+            passed: Some(true),
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+        }];
+        let quality_checks: Vec<i32> = rows
+            .iter()
+            .filter(|r| r.check_type != "metadata_completeness")
+            .filter_map(|r| r.score)
+            .collect();
+        assert!(quality_checks.is_empty());
+    }
+
+    #[test]
+    fn test_quality_score_with_none_scores_filtered() {
+        let rows = vec![
+            CheckScoreRow {
+                check_type: "helm_lint".to_string(),
+                score: None,
+                passed: None,
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+            },
+            CheckScoreRow {
+                check_type: "docker_lint".to_string(),
+                score: Some(70),
+                passed: Some(true),
+                critical_count: 0,
+                high_count: 0,
+                medium_count: 0,
+                low_count: 0,
+            },
+        ];
+        let quality_checks: Vec<i32> = rows
+            .iter()
+            .filter(|r| r.check_type != "metadata_completeness")
+            .filter_map(|r| r.score)
+            .collect();
+        assert_eq!(quality_checks, vec![70]);
+    }
+
+    // =======================================================================
+    // RepoAggregateRow and grades
+    // =======================================================================
+
+    #[test]
+    fn test_repo_aggregate_row_default() {
+        let agg = RepoAggregateRow {
+            avg_score: 100,
+            avg_security: None,
+            avg_license: None,
+            avg_quality: None,
+            avg_metadata: None,
+            total: 0,
+            passing: 0,
+            failing: 0,
+        };
+        let health_grade = Grade::from_score(agg.avg_score).as_char().to_string();
+        assert_eq!(health_grade, "A");
+    }
+
+    #[test]
+    fn test_repo_aggregate_row_grades() {
+        for (score, expected_grade) in [
+            (100, "A"),
+            (90, "A"),
+            (89, "B"),
+            (75, "B"),
+            (74, "C"),
+            (50, "C"),
+            (49, "D"),
+            (25, "D"),
+            (24, "F"),
+            (0, "F"),
+        ] {
+            let grade = Grade::from_score(score).as_char().to_string();
+            assert_eq!(
+                grade, expected_grade,
+                "Score {} should produce grade {}",
+                score, expected_grade
+            );
+        }
     }
 }

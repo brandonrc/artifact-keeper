@@ -368,6 +368,16 @@ pub fn generate_index_yaml(charts: Vec<(ChartYaml, String, String, String)>) -> 
 mod tests {
     use super::*;
 
+    // ---- HelmHandler::new / Default ----
+
+    #[test]
+    fn test_new_and_default() {
+        let _h1 = HelmHandler::new();
+        let _h2 = HelmHandler::default();
+    }
+
+    // ---- parse_chart_filename ----
+
     #[test]
     fn test_parse_chart_filename() {
         let (name, version) = HelmHandler::parse_chart_filename("nginx-1.2.3.tgz").unwrap();
@@ -384,19 +394,112 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_path_chart() {
-        let info = HelmHandler::parse_path("nginx-1.2.3.tgz").unwrap();
-        assert_eq!(info.name, Some("nginx".to_string()));
-        assert_eq!(info.version, Some("1.2.3".to_string()));
-        assert!(!info.is_index);
+    fn test_parse_chart_filename_prerelease() {
+        // rsplitn(2, '-') splits on the last '-', so "1.0.0" stays together
+        // and "alpha" would need to be part of the version in the filename
+        // But "chart-1.0.0" -> name="chart", version="1.0.0"
+        let (name, version) = HelmHandler::parse_chart_filename("chart-1.0.0.tgz").unwrap();
+        assert_eq!(name, "chart");
+        assert_eq!(version, "1.0.0");
     }
+
+    #[test]
+    fn test_parse_chart_filename_no_hyphen() {
+        // No hyphen means rsplitn gives only 1 part
+        let result = HelmHandler::parse_chart_filename("nohyphen.tgz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_chart_filename_version_not_starting_with_digit() {
+        // "chart-alpha.tgz" -> version = "alpha" which doesn't start with digit
+        let result = HelmHandler::parse_chart_filename("chart-alpha.tgz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_chart_filename_version_empty_after_hyphen() {
+        // "chart-.tgz" -> version is empty, first char check fails
+        let result = HelmHandler::parse_chart_filename("chart-.tgz");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: index.yaml ----
 
     #[test]
     fn test_parse_path_index() {
         let info = HelmHandler::parse_path("index.yaml").unwrap();
         assert!(info.is_index);
         assert!(info.name.is_none());
+        assert!(info.version.is_none());
+        assert_eq!(info.filename, Some("index.yaml".to_string()));
     }
+
+    #[test]
+    fn test_parse_path_index_subdir() {
+        let info = HelmHandler::parse_path("some/subdir/index.yaml").unwrap();
+        assert!(info.is_index);
+        assert_eq!(info.filename, Some("index.yaml".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_index_leading_slash() {
+        let info = HelmHandler::parse_path("/index.yaml").unwrap();
+        assert!(info.is_index);
+    }
+
+    // ---- parse_path: chart package ----
+
+    #[test]
+    fn test_parse_path_chart() {
+        let info = HelmHandler::parse_path("nginx-1.2.3.tgz").unwrap();
+        assert_eq!(info.name, Some("nginx".to_string()));
+        assert_eq!(info.version, Some("1.2.3".to_string()));
+        assert!(!info.is_index);
+        assert_eq!(info.filename, Some("nginx-1.2.3.tgz".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_chart_in_charts_dir() {
+        let info = HelmHandler::parse_path("charts/nginx-1.2.3.tgz").unwrap();
+        assert_eq!(info.name, Some("nginx".to_string()));
+        assert_eq!(info.version, Some("1.2.3".to_string()));
+        assert!(!info.is_index);
+        assert_eq!(info.filename, Some("nginx-1.2.3.tgz".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_chart_leading_slash() {
+        let info = HelmHandler::parse_path("/nginx-1.2.3.tgz").unwrap();
+        assert_eq!(info.name, Some("nginx".to_string()));
+        assert_eq!(info.version, Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_chart_hyphenated_name() {
+        let info = HelmHandler::parse_path("my-chart-name-2.0.0.tgz").unwrap();
+        assert_eq!(info.name, Some("my-chart-name".to_string()));
+        assert_eq!(info.version, Some("2.0.0".to_string()));
+    }
+
+    // ---- parse_path: invalid ----
+
+    #[test]
+    fn test_parse_path_invalid() {
+        assert!(HelmHandler::parse_path("random.txt").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty() {
+        assert!(HelmHandler::parse_path("").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_no_extension() {
+        assert!(HelmHandler::parse_path("filename").is_err());
+    }
+
+    // ---- ChartYaml serde ----
 
     #[test]
     fn test_parse_chart_yaml() {
@@ -418,5 +521,332 @@ maintainers:
         assert_eq!(chart.version, "1.2.3");
         assert_eq!(chart.api_version, "v2");
         assert_eq!(chart.app_version, Some("1.21.0".to_string()));
+        assert_eq!(
+            chart.description,
+            Some("A Helm chart for Nginx".to_string())
+        );
+        assert_eq!(
+            chart.keywords,
+            Some(vec!["nginx".to_string(), "web".to_string()])
+        );
+        let maintainers = chart.maintainers.unwrap();
+        assert_eq!(maintainers.len(), 1);
+        assert_eq!(maintainers[0].name, "John Doe");
+        assert_eq!(maintainers[0].email, Some("john@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_parse_chart_yaml_v1_minimal() {
+        let yaml = r#"
+apiVersion: v1
+name: my-chart
+version: 0.1.0
+"#;
+        let chart: ChartYaml = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(chart.api_version, "v1");
+        assert_eq!(chart.name, "my-chart");
+        assert_eq!(chart.version, "0.1.0");
+        assert!(chart.description.is_none());
+        assert!(chart.keywords.is_none());
+        assert!(chart.maintainers.is_none());
+        assert!(chart.app_version.is_none());
+        assert!(chart.home.is_none());
+        assert!(chart.sources.is_none());
+        assert!(chart.icon.is_none());
+        assert!(chart.deprecated.is_none());
+        assert!(chart.chart_type.is_none());
+        assert!(chart.kube_version.is_none());
+        assert!(chart.annotations.is_none());
+    }
+
+    #[test]
+    fn test_parse_chart_yaml_full() {
+        let yaml = r#"
+apiVersion: v2
+name: full-chart
+version: 2.0.0
+kubeVersion: ">=1.25.0"
+description: Full featured chart
+type: application
+keywords:
+  - test
+home: https://example.com
+sources:
+  - https://github.com/user/repo
+dependencies:
+  - name: subchart
+    version: "1.0.0"
+    repository: https://charts.example.com
+    condition: subchart.enabled
+    tags:
+      - frontend
+    alias: sc
+maintainers:
+  - name: Dev
+    email: dev@example.com
+    url: https://dev.example.com
+icon: https://example.com/icon.png
+appVersion: "3.0"
+deprecated: true
+annotations:
+  category: database
+"#;
+        let chart: ChartYaml = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(chart.name, "full-chart");
+        assert_eq!(chart.version, "2.0.0");
+        assert_eq!(chart.kube_version, Some(">=1.25.0".to_string()));
+        assert_eq!(chart.chart_type, Some("application".to_string()));
+        assert_eq!(chart.home, Some("https://example.com".to_string()));
+        assert_eq!(
+            chart.sources,
+            Some(vec!["https://github.com/user/repo".to_string()])
+        );
+        assert_eq!(chart.icon, Some("https://example.com/icon.png".to_string()));
+        assert_eq!(chart.deprecated, Some(true));
+
+        let deps = chart.dependencies.unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "subchart");
+        assert_eq!(deps[0].version, "1.0.0");
+        assert_eq!(
+            deps[0].repository,
+            Some("https://charts.example.com".to_string())
+        );
+        assert_eq!(deps[0].condition, Some("subchart.enabled".to_string()));
+        assert_eq!(deps[0].tags, Some(vec!["frontend".to_string()]));
+        assert_eq!(deps[0].alias, Some("sc".to_string()));
+
+        let m = chart.maintainers.unwrap();
+        assert_eq!(m[0].url, Some("https://dev.example.com".to_string()));
+
+        let ann = chart.annotations.unwrap();
+        assert_eq!(ann.get("category"), Some(&"database".to_string()));
+    }
+
+    // ---- ChartDependency serde ----
+
+    #[test]
+    fn test_chart_dependency_minimal() {
+        let yaml = r#"
+name: dep
+version: "1.0.0"
+"#;
+        let dep: ChartDependency = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(dep.name, "dep");
+        assert_eq!(dep.version, "1.0.0");
+        assert!(dep.repository.is_none());
+        assert!(dep.condition.is_none());
+        assert!(dep.tags.is_none());
+        assert!(dep.import_values.is_none());
+        assert!(dep.alias.is_none());
+    }
+
+    // ---- extract_chart_yaml: error cases ----
+
+    #[test]
+    fn test_extract_chart_yaml_invalid_bytes() {
+        let result = HelmHandler::extract_chart_yaml(b"not gzip");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_chart_yaml_empty() {
+        let result = HelmHandler::extract_chart_yaml(b"");
+        assert!(result.is_err());
+    }
+
+    // ---- extract_values_yaml: error cases ----
+
+    #[test]
+    fn test_extract_values_yaml_invalid_bytes() {
+        let result = HelmHandler::extract_values_yaml(b"not gzip");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_values_yaml_empty() {
+        let result = HelmHandler::extract_values_yaml(b"");
+        assert!(result.is_err());
+    }
+
+    // ---- generate_index_yaml ----
+
+    #[test]
+    fn test_generate_index_yaml_empty() {
+        let yaml_str = generate_index_yaml(vec![]).unwrap();
+        let index: HelmIndex = serde_yaml::from_str(&yaml_str).unwrap();
+        assert_eq!(index.api_version, "v1");
+        assert!(index.entries.is_empty());
+    }
+
+    #[test]
+    fn test_generate_index_yaml_single_chart() {
+        let chart = ChartYaml {
+            api_version: "v2".to_string(),
+            name: "nginx".to_string(),
+            version: "1.0.0".to_string(),
+            kube_version: None,
+            description: Some("Test chart".to_string()),
+            chart_type: None,
+            keywords: None,
+            home: None,
+            sources: None,
+            dependencies: None,
+            maintainers: None,
+            icon: None,
+            app_version: None,
+            deprecated: None,
+            annotations: None,
+        };
+
+        let yaml_str = generate_index_yaml(vec![(
+            chart,
+            "https://example.com/charts/nginx-1.0.0.tgz".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            "sha256:abc123".to_string(),
+        )])
+        .unwrap();
+
+        let index: HelmIndex = serde_yaml::from_str(&yaml_str).unwrap();
+        assert_eq!(index.api_version, "v1");
+        assert!(index.entries.contains_key("nginx"));
+        let entries = &index.entries["nginx"];
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].chart.name, "nginx");
+        assert_eq!(entries[0].chart.version, "1.0.0");
+        assert_eq!(
+            entries[0].urls,
+            vec!["https://example.com/charts/nginx-1.0.0.tgz"]
+        );
+        assert_eq!(entries[0].digest, "sha256:abc123");
+    }
+
+    #[test]
+    fn test_generate_index_yaml_multiple_versions() {
+        let make_chart = |version: &str| ChartYaml {
+            api_version: "v2".to_string(),
+            name: "nginx".to_string(),
+            version: version.to_string(),
+            kube_version: None,
+            description: None,
+            chart_type: None,
+            keywords: None,
+            home: None,
+            sources: None,
+            dependencies: None,
+            maintainers: None,
+            icon: None,
+            app_version: None,
+            deprecated: None,
+            annotations: None,
+        };
+
+        let yaml_str = generate_index_yaml(vec![
+            (
+                make_chart("1.0.0"),
+                "https://example.com/nginx-1.0.0.tgz".to_string(),
+                "2024-01-01T00:00:00Z".to_string(),
+                "aaa".to_string(),
+            ),
+            (
+                make_chart("2.0.0"),
+                "https://example.com/nginx-2.0.0.tgz".to_string(),
+                "2024-06-01T00:00:00Z".to_string(),
+                "bbb".to_string(),
+            ),
+        ])
+        .unwrap();
+
+        let index: HelmIndex = serde_yaml::from_str(&yaml_str).unwrap();
+        assert_eq!(index.entries["nginx"].len(), 2);
+    }
+
+    #[test]
+    fn test_generate_index_yaml_multiple_charts() {
+        let make_chart = |name: &str, version: &str| ChartYaml {
+            api_version: "v2".to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            kube_version: None,
+            description: None,
+            chart_type: None,
+            keywords: None,
+            home: None,
+            sources: None,
+            dependencies: None,
+            maintainers: None,
+            icon: None,
+            app_version: None,
+            deprecated: None,
+            annotations: None,
+        };
+
+        let yaml_str = generate_index_yaml(vec![
+            (
+                make_chart("nginx", "1.0.0"),
+                "url1".to_string(),
+                "time1".to_string(),
+                "d1".to_string(),
+            ),
+            (
+                make_chart("redis", "2.0.0"),
+                "url2".to_string(),
+                "time2".to_string(),
+                "d2".to_string(),
+            ),
+        ])
+        .unwrap();
+
+        let index: HelmIndex = serde_yaml::from_str(&yaml_str).unwrap();
+        assert!(index.entries.contains_key("nginx"));
+        assert!(index.entries.contains_key("redis"));
+    }
+
+    // ---- HelmIndex serde ----
+
+    #[test]
+    fn test_helm_index_roundtrip() {
+        let index = HelmIndex {
+            api_version: "v1".to_string(),
+            generated: "2024-01-01T00:00:00Z".to_string(),
+            entries: HashMap::new(),
+        };
+        let yaml = serde_yaml::to_string(&index).unwrap();
+        let parsed: HelmIndex = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.api_version, "v1");
+        assert!(parsed.entries.is_empty());
+    }
+
+    // ---- IndexEntry serde ----
+
+    #[test]
+    fn test_index_entry_roundtrip() {
+        let entry = IndexEntry {
+            chart: ChartYaml {
+                api_version: "v2".to_string(),
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+                kube_version: None,
+                description: None,
+                chart_type: None,
+                keywords: None,
+                home: None,
+                sources: None,
+                dependencies: None,
+                maintainers: None,
+                icon: None,
+                app_version: None,
+                deprecated: None,
+                annotations: None,
+            },
+            urls: vec!["https://example.com/test-1.0.0.tgz".to_string()],
+            created: "2024-01-01T00:00:00Z".to_string(),
+            digest: "sha256:abc".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        let parsed: IndexEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.chart.name, "test");
+        assert_eq!(parsed.urls.len(), 1);
+        assert_eq!(parsed.digest, "sha256:abc");
     }
 }

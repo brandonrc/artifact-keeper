@@ -384,6 +384,16 @@ pub fn generate_packument(
 mod tests {
     use super::*;
 
+    // ---- NpmHandler::new / Default ----
+
+    #[test]
+    fn test_new_and_default() {
+        let _h1 = NpmHandler::new();
+        let _h2 = NpmHandler::default();
+    }
+
+    // ---- parse_path: unscoped tarball ----
+
     #[test]
     fn test_parse_unscoped_path() {
         let info = NpmHandler::parse_path("lodash/-/lodash-4.17.21.tgz").unwrap();
@@ -393,6 +403,15 @@ mod tests {
         assert_eq!(info.version, Some("4.17.21".to_string()));
         assert!(info.is_tarball);
     }
+
+    #[test]
+    fn test_parse_unscoped_path_leading_slash() {
+        let info = NpmHandler::parse_path("/lodash/-/lodash-4.17.21.tgz").unwrap();
+        assert_eq!(info.name, "lodash");
+        assert!(info.is_tarball);
+    }
+
+    // ---- parse_path: scoped tarball ----
 
     #[test]
     fn test_parse_scoped_path() {
@@ -405,10 +424,381 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_scoped_path_leading_slash() {
+        let info = NpmHandler::parse_path("/@angular/core/-/@angular/core-17.0.0.tgz").unwrap();
+        assert_eq!(info.name, "core");
+        assert_eq!(info.full_name, "@angular/core");
+        assert_eq!(info.scope, Some("angular".to_string()));
+        assert_eq!(info.version, Some("17.0.0".to_string()));
+        assert!(info.is_tarball);
+    }
+
+    // ---- parse_path: metadata (unscoped) ----
+
+    #[test]
     fn test_parse_metadata_path() {
         let info = NpmHandler::parse_path("lodash").unwrap();
         assert_eq!(info.name, "lodash");
+        assert_eq!(info.full_name, "lodash");
         assert_eq!(info.version, None);
         assert!(!info.is_tarball);
+        assert!(info.scope.is_none());
+    }
+
+    // ---- parse_path: metadata (scoped) ----
+
+    #[test]
+    fn test_parse_scoped_metadata_path() {
+        // Scoped metadata: @scope/package/extra (4 parts)
+        let info = NpmHandler::parse_path("@types/node/something/else").unwrap();
+        assert_eq!(info.name, "node");
+        assert_eq!(info.full_name, "@types/node");
+        assert_eq!(info.scope, Some("types".to_string()));
+        assert!(!info.is_tarball);
+        assert!(info.version.is_none());
+    }
+
+    // ---- parse_path: scoped too few parts ----
+
+    #[test]
+    fn test_parse_scoped_path_too_few_parts() {
+        // Only @scope - not enough parts
+        let result = NpmHandler::parse_path("@types");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_scoped_path_two_parts_only() {
+        // @scope/package - only 2 parts, but the code checks < 4
+        // Actually parts.len() < 4 returns error
+        let result = NpmHandler::parse_path("@types/node");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_scoped_path_three_parts_no_dash() {
+        // @scope/package/extra - 3 parts, still < 4
+        let result = NpmHandler::parse_path("@types/node/x");
+        assert!(result.is_err());
+    }
+
+    // ---- extract_version_from_filename ----
+
+    #[test]
+    fn test_extract_version_simple() {
+        let v = NpmHandler::extract_version_from_filename("lodash-4.17.21.tgz", "lodash").unwrap();
+        assert_eq!(v, "4.17.21");
+    }
+
+    #[test]
+    fn test_extract_version_prerelease() {
+        let v =
+            NpmHandler::extract_version_from_filename("react-18.0.0-rc.1.tgz", "react").unwrap();
+        assert_eq!(v, "18.0.0-rc.1");
+    }
+
+    #[test]
+    fn test_extract_version_wrong_prefix() {
+        let result = NpmHandler::extract_version_from_filename("wrongname-1.0.0.tgz", "lodash");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_version_wrong_suffix() {
+        let result = NpmHandler::extract_version_from_filename("lodash-1.0.0.tar.gz", "lodash");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_version_empty_filename() {
+        let result = NpmHandler::extract_version_from_filename("", "lodash");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: unscoped with extra subpaths ----
+
+    #[test]
+    fn test_parse_unscoped_metadata_only_name() {
+        let info = NpmHandler::parse_path("express").unwrap();
+        assert_eq!(info.name, "express");
+        assert_eq!(info.full_name, "express");
+        assert!(!info.is_tarball);
+        assert!(info.version.is_none());
+    }
+
+    #[test]
+    fn test_parse_unscoped_with_non_dash_segment() {
+        // package/something where something != "-"
+        let info = NpmHandler::parse_path("lodash/latest").unwrap();
+        assert_eq!(info.name, "lodash");
+        assert!(!info.is_tarball);
+        assert!(info.version.is_none());
+    }
+
+    // ---- extract_package_json: error cases ----
+
+    #[test]
+    fn test_extract_package_json_not_gzip() {
+        let result = NpmHandler::extract_package_json(b"not a tarball");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_package_json_empty() {
+        let result = NpmHandler::extract_package_json(b"");
+        assert!(result.is_err());
+    }
+
+    // ---- generate_packument ----
+
+    #[test]
+    fn test_generate_packument_single_version() {
+        let pkg = PackageJson {
+            name: "my-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            description: Some("A test package".to_string()),
+            main: Some("index.js".to_string()),
+            module: None,
+            types: None,
+            keywords: Some(vec!["test".to_string()]),
+            author: None,
+            license: Some("MIT".to_string()),
+            repository: None,
+            bugs: None,
+            homepage: None,
+            dependencies: Some({
+                let mut m = std::collections::HashMap::new();
+                m.insert("lodash".to_string(), "^4.0.0".to_string());
+                m
+            }),
+            dev_dependencies: None,
+            peer_dependencies: None,
+            engines: None,
+            scripts: None,
+        };
+
+        let packument = generate_packument(
+            "my-pkg",
+            vec![(
+                "1.0.0".to_string(),
+                pkg,
+                "https://example.com/my-pkg-1.0.0.tgz".to_string(),
+                "abc123".to_string(),
+            )],
+        );
+
+        assert_eq!(packument.name, "my-pkg");
+        assert_eq!(
+            packument.dist_tags.get("latest"),
+            Some(&"1.0.0".to_string())
+        );
+        assert!(packument.versions.contains_key("1.0.0"));
+        let v = &packument.versions["1.0.0"];
+        assert_eq!(v.name, "my-pkg");
+        assert_eq!(v.version, "1.0.0");
+        assert_eq!(v.description, Some("A test package".to_string()));
+        assert_eq!(v.dist.tarball, "https://example.com/my-pkg-1.0.0.tgz");
+        assert_eq!(v.dist.shasum, "abc123");
+        assert!(v.dist.integrity.is_none());
+        assert!(packument.time.contains_key("1.0.0"));
+    }
+
+    #[test]
+    fn test_generate_packument_multiple_versions() {
+        let make_pkg = |v: &str| PackageJson {
+            name: "my-pkg".to_string(),
+            version: v.to_string(),
+            description: None,
+            main: None,
+            module: None,
+            types: None,
+            keywords: None,
+            author: None,
+            license: None,
+            repository: None,
+            bugs: None,
+            homepage: None,
+            dependencies: None,
+            dev_dependencies: None,
+            peer_dependencies: None,
+            engines: None,
+            scripts: None,
+        };
+
+        let packument = generate_packument(
+            "my-pkg",
+            vec![
+                (
+                    "1.0.0".to_string(),
+                    make_pkg("1.0.0"),
+                    "https://example.com/1.tgz".to_string(),
+                    "aaa".to_string(),
+                ),
+                (
+                    "2.0.0".to_string(),
+                    make_pkg("2.0.0"),
+                    "https://example.com/2.tgz".to_string(),
+                    "bbb".to_string(),
+                ),
+            ],
+        );
+
+        // "latest" should be the last version processed
+        assert_eq!(
+            packument.dist_tags.get("latest"),
+            Some(&"2.0.0".to_string())
+        );
+        assert_eq!(packument.versions.len(), 2);
+        assert!(packument.versions.contains_key("1.0.0"));
+        assert!(packument.versions.contains_key("2.0.0"));
+    }
+
+    #[test]
+    fn test_generate_packument_empty_versions() {
+        let packument = generate_packument("empty-pkg", vec![]);
+        assert_eq!(packument.name, "empty-pkg");
+        assert_eq!(packument.dist_tags.get("latest"), Some(&String::new()));
+        assert!(packument.versions.is_empty());
+    }
+
+    // ---- PackageJson serde ----
+
+    #[test]
+    fn test_package_json_deserialize_full() {
+        let json = r#"{
+            "name": "test-pkg",
+            "version": "1.0.0",
+            "description": "A test",
+            "main": "index.js",
+            "module": "index.mjs",
+            "types": "index.d.ts",
+            "keywords": ["test"],
+            "author": "John Doe",
+            "license": "MIT",
+            "repository": "https://github.com/user/repo",
+            "bugs": {"url": "https://github.com/user/repo/issues"},
+            "homepage": "https://example.com",
+            "dependencies": {"lodash": "^4.0"},
+            "devDependencies": {"jest": "^29.0"},
+            "peerDependencies": {"react": "^18.0"},
+            "engines": {"node": ">=18.0"},
+            "scripts": {"test": "jest"}
+        }"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        assert_eq!(pkg.name, "test-pkg");
+        assert_eq!(pkg.version, "1.0.0");
+        assert_eq!(pkg.description, Some("A test".to_string()));
+        assert_eq!(pkg.main, Some("index.js".to_string()));
+        assert_eq!(pkg.module, Some("index.mjs".to_string()));
+        assert_eq!(pkg.types, Some("index.d.ts".to_string()));
+        assert_eq!(pkg.keywords, Some(vec!["test".to_string()]));
+        assert_eq!(pkg.license, Some("MIT".to_string()));
+        assert_eq!(pkg.homepage, Some("https://example.com".to_string()));
+        assert!(pkg.dependencies.is_some());
+        assert!(pkg.dev_dependencies.is_some());
+        assert!(pkg.peer_dependencies.is_some());
+        assert!(pkg.engines.is_some());
+        assert!(pkg.scripts.is_some());
+    }
+
+    #[test]
+    fn test_package_json_author_string() {
+        let json = r#"{"name":"p","version":"1.0.0","author":"John"}"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        assert!(matches!(pkg.author, Some(PackageAuthor::String(_))));
+    }
+
+    #[test]
+    fn test_package_json_author_object() {
+        let json = r#"{"name":"p","version":"1.0.0","author":{"name":"John","email":"john@example.com","url":"https://john.com"}}"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        match pkg.author {
+            Some(PackageAuthor::Object { name, email, url }) => {
+                assert_eq!(name, "John");
+                assert_eq!(email, Some("john@example.com".to_string()));
+                assert_eq!(url, Some("https://john.com".to_string()));
+            }
+            _ => panic!("Expected PackageAuthor::Object"),
+        }
+    }
+
+    #[test]
+    fn test_package_repository_string() {
+        let json = r#"{"name":"p","version":"1.0.0","repository":"https://github.com/user/repo"}"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        assert!(matches!(pkg.repository, Some(PackageRepository::String(_))));
+    }
+
+    #[test]
+    fn test_package_repository_object() {
+        let json = r#"{"name":"p","version":"1.0.0","repository":{"type":"git","url":"https://github.com/user/repo","directory":"packages/core"}}"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        match pkg.repository {
+            Some(PackageRepository::Object {
+                repo_type,
+                url,
+                directory,
+            }) => {
+                assert_eq!(repo_type, Some("git".to_string()));
+                assert_eq!(url, "https://github.com/user/repo");
+                assert_eq!(directory, Some("packages/core".to_string()));
+            }
+            _ => panic!("Expected PackageRepository::Object"),
+        }
+    }
+
+    #[test]
+    fn test_package_bugs_deserialize() {
+        let json = r#"{"url":"https://github.com/user/repo/issues","email":"bugs@example.com"}"#;
+        let bugs: PackageBugs = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            bugs.url,
+            Some("https://github.com/user/repo/issues".to_string())
+        );
+        assert_eq!(bugs.email, Some("bugs@example.com".to_string()));
+    }
+
+    // ---- PackageJson minimal ----
+
+    #[test]
+    fn test_package_json_minimal() {
+        let json = r#"{"name":"minimal","version":"0.0.1"}"#;
+        let pkg: PackageJson = serde_json::from_str(json).unwrap();
+        assert_eq!(pkg.name, "minimal");
+        assert_eq!(pkg.version, "0.0.1");
+        assert!(pkg.description.is_none());
+        assert!(pkg.main.is_none());
+        assert!(pkg.author.is_none());
+        assert!(pkg.license.is_none());
+        assert!(pkg.dependencies.is_none());
+    }
+
+    // ---- Packument serde ----
+
+    #[test]
+    fn test_packument_serialization_roundtrip() {
+        let packument = Packument {
+            name: "test".to_string(),
+            description: Some("desc".to_string()),
+            dist_tags: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("latest".to_string(), "1.0.0".to_string());
+                m
+            },
+            versions: std::collections::HashMap::new(),
+            time: std::collections::HashMap::new(),
+            maintainers: vec![PackumentMaintainer {
+                name: "dev".to_string(),
+                email: Some("dev@example.com".to_string()),
+            }],
+            keywords: Some(vec!["test".to_string()]),
+            license: Some("MIT".to_string()),
+            readme: Some("# Test".to_string()),
+        };
+        let json = serde_json::to_string(&packument).unwrap();
+        let parsed: Packument = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "test");
+        assert_eq!(parsed.dist_tags.get("latest"), Some(&"1.0.0".to_string()));
+        assert_eq!(parsed.maintainers.len(), 1);
     }
 }

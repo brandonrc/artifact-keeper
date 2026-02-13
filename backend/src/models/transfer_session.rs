@@ -117,3 +117,156 @@ impl ChunkAvailability {
         indices
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_availability(total_chunks: i32) -> ChunkAvailability {
+        ChunkAvailability {
+            id: Uuid::new_v4(),
+            peer_instance_id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            chunk_bitmap: ChunkAvailability::new_bitmap(total_chunks as usize),
+            total_chunks,
+            available_chunks: 0,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // new_bitmap
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_bitmap_sizes() {
+        assert_eq!(ChunkAvailability::new_bitmap(0).len(), 0);
+        assert_eq!(ChunkAvailability::new_bitmap(1).len(), 1);
+        assert_eq!(ChunkAvailability::new_bitmap(7).len(), 1);
+        assert_eq!(ChunkAvailability::new_bitmap(8).len(), 1);
+        assert_eq!(ChunkAvailability::new_bitmap(9).len(), 2);
+        assert_eq!(ChunkAvailability::new_bitmap(16).len(), 2);
+        assert_eq!(ChunkAvailability::new_bitmap(17).len(), 3);
+        assert_eq!(ChunkAvailability::new_bitmap(500).len(), 63);
+    }
+
+    #[test]
+    fn test_new_bitmap_zeroed() {
+        let bitmap = ChunkAvailability::new_bitmap(32);
+        assert!(bitmap.iter().all(|&b| b == 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // has_chunk
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_has_chunk_empty() {
+        let avail = make_availability(16);
+        for i in 0..16 {
+            assert!(!avail.has_chunk(i));
+        }
+    }
+
+    #[test]
+    fn test_has_chunk_out_of_bounds() {
+        let avail = make_availability(8);
+        assert!(!avail.has_chunk(100)); // beyond bitmap length
+    }
+
+    // -----------------------------------------------------------------------
+    // set_chunk
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_chunk_basic() {
+        let mut avail = make_availability(16);
+
+        avail.set_chunk(0);
+        assert!(avail.has_chunk(0));
+        assert_eq!(avail.available_chunks, 1);
+
+        avail.set_chunk(7);
+        assert!(avail.has_chunk(7));
+        assert_eq!(avail.available_chunks, 2);
+
+        avail.set_chunk(15);
+        assert!(avail.has_chunk(15));
+        assert_eq!(avail.available_chunks, 3);
+    }
+
+    #[test]
+    fn test_set_chunk_idempotent() {
+        let mut avail = make_availability(16);
+
+        avail.set_chunk(5);
+        assert_eq!(avail.available_chunks, 1);
+
+        // Setting the same chunk again should not increment
+        avail.set_chunk(5);
+        assert_eq!(avail.available_chunks, 1);
+    }
+
+    #[test]
+    fn test_set_chunk_out_of_bounds() {
+        let mut avail = make_availability(8);
+        let original_count = avail.available_chunks;
+        avail.set_chunk(100); // beyond bitmap, should do nothing
+        assert_eq!(avail.available_chunks, original_count);
+    }
+
+    #[test]
+    fn test_set_chunk_all_bits() {
+        let mut avail = make_availability(16);
+        for i in 0..16 {
+            avail.set_chunk(i);
+        }
+        assert_eq!(avail.available_chunks, 16);
+        for i in 0..16 {
+            assert!(avail.has_chunk(i));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // available_chunk_indices
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_available_chunk_indices_empty() {
+        let avail = make_availability(16);
+        assert!(avail.available_chunk_indices().is_empty());
+    }
+
+    #[test]
+    fn test_available_chunk_indices_some_set() {
+        let mut avail = make_availability(16);
+        avail.set_chunk(2);
+        avail.set_chunk(5);
+        avail.set_chunk(10);
+
+        let indices = avail.available_chunk_indices();
+        assert_eq!(indices, vec![2, 5, 10]);
+    }
+
+    #[test]
+    fn test_available_chunk_indices_all_set() {
+        let mut avail = make_availability(8);
+        for i in 0..8 {
+            avail.set_chunk(i);
+        }
+
+        let indices = avail.available_chunk_indices();
+        assert_eq!(indices, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn test_available_chunk_indices_boundary_bits() {
+        let mut avail = make_availability(9);
+        avail.set_chunk(0); // first bit of byte 0
+        avail.set_chunk(7); // last bit of byte 0
+        avail.set_chunk(8); // first bit of byte 1
+
+        let indices = avail.available_chunk_indices();
+        assert_eq!(indices, vec![0, 7, 8]);
+    }
+}

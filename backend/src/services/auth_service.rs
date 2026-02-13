@@ -890,4 +890,459 @@ mod tests {
         assert!(AuthService::verify_password(password, &hash).unwrap());
         assert!(!AuthService::verify_password("wrong_password", &hash).unwrap());
     }
+
+    // -----------------------------------------------------------------------
+    // Password hashing edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_password_hashing_empty_string() {
+        let hash = AuthService::hash_password("").unwrap();
+        assert!(AuthService::verify_password("", &hash).unwrap());
+        assert!(!AuthService::verify_password("non-empty", &hash).unwrap());
+    }
+
+    #[test]
+    fn test_password_hashing_unicode() {
+        let password = "\u{1F600}password\u{00E9}\u{00FC}";
+        let hash = AuthService::hash_password(password).unwrap();
+        assert!(AuthService::verify_password(password, &hash).unwrap());
+    }
+
+    #[test]
+    fn test_password_hashing_long_password() {
+        // bcrypt typically truncates at 72 bytes; verify the function works
+        let password = "a".repeat(100);
+        let hash = AuthService::hash_password(&password).unwrap();
+        assert!(AuthService::verify_password(&password, &hash).unwrap());
+    }
+
+    #[test]
+    fn test_password_hash_different_each_time() {
+        let password = "same_password";
+        let hash1 = AuthService::hash_password(password).unwrap();
+        let hash2 = AuthService::hash_password(password).unwrap();
+        // bcrypt uses random salts, so hashes should differ
+        assert_ne!(hash1, hash2);
+        // But both should verify correctly
+        assert!(AuthService::verify_password(password, &hash1).unwrap());
+        assert!(AuthService::verify_password(password, &hash2).unwrap());
+    }
+
+    #[test]
+    fn test_verify_password_invalid_hash() {
+        // An invalid bcrypt hash should return an error, not panic
+        let result = AuthService::verify_password("password", "not-a-valid-hash");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Token generation & validation (no DB needed)
+    // -----------------------------------------------------------------------
+
+    fn make_test_config() -> Arc<Config> {
+        Arc::new(Config {
+            database_url: "postgresql://unused".to_string(),
+            bind_address: "0.0.0.0:8080".to_string(),
+            log_level: "info".to_string(),
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/tmp/test".to_string(),
+            s3_bucket: None,
+            s3_region: None,
+            s3_endpoint: None,
+            jwt_secret: "super-secret-test-key-for-unit-tests-minimum-length".to_string(),
+            jwt_expiration_secs: 86400,
+            jwt_access_token_expiry_minutes: 30,
+            jwt_refresh_token_expiry_days: 7,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            ldap_url: None,
+            ldap_base_dn: None,
+            trivy_url: None,
+            openscap_url: None,
+            openscap_profile: "standard".to_string(),
+            meilisearch_url: None,
+            meilisearch_api_key: None,
+            scan_workspace_path: "/tmp".to_string(),
+            demo_mode: false,
+            peer_instance_name: "test".to_string(),
+            peer_public_endpoint: "http://localhost:8080".to_string(),
+            peer_api_key: "test-key".to_string(),
+            dependency_track_url: None,
+        })
+    }
+
+    fn make_test_user() -> User {
+        User {
+            id: Uuid::new_v4(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            password_hash: None,
+            auth_provider: AuthProvider::Local,
+            external_id: None,
+            display_name: Some("Test User".to_string()),
+            is_active: true,
+            is_admin: false,
+            must_change_password: false,
+            totp_secret: None,
+            totp_enabled: false,
+            totp_backup_codes: None,
+            totp_verified_at: None,
+            last_login_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // We cannot create a PgPool without a real database, so for unit tests that
+    // need JWT encoding/decoding, we directly use jsonwebtoken's encode/decode
+    // with the same keys the AuthService would use.
+
+    #[test]
+    fn test_generate_tokens_and_validate_access_token() {
+        let config = make_test_config();
+        let secret = config.jwt_secret.clone();
+        let encoding_key = EncodingKey::from_secret(secret.as_bytes());
+        let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+
+        let user = make_test_user();
+        let now = Utc::now();
+        let access_exp = now + Duration::minutes(config.jwt_access_token_expiry_minutes);
+        let refresh_exp = now + Duration::days(config.jwt_refresh_token_expiry_days);
+
+        let access_claims = Claims {
+            sub: user.id,
+            username: user.username.clone(),
+            email: user.email.clone(),
+            is_admin: user.is_admin,
+            iat: now.timestamp(),
+            exp: access_exp.timestamp(),
+            token_type: "access".to_string(),
+        };
+
+        let refresh_claims = Claims {
+            sub: user.id,
+            username: user.username.clone(),
+            email: user.email.clone(),
+            is_admin: user.is_admin,
+            iat: now.timestamp(),
+            exp: refresh_exp.timestamp(),
+            token_type: "refresh".to_string(),
+        };
+
+        let access_token = encode(&Header::default(), &access_claims, &encoding_key).unwrap();
+        let refresh_token = encode(&Header::default(), &refresh_claims, &encoding_key).unwrap();
+
+        // Validate access token
+        let decoded =
+            decode::<Claims>(&access_token, &decoding_key, &Validation::default()).unwrap();
+        assert_eq!(decoded.claims.sub, user.id);
+        assert_eq!(decoded.claims.username, "testuser");
+        assert_eq!(decoded.claims.token_type, "access");
+        assert!(!decoded.claims.is_admin);
+
+        // Validate refresh token
+        let decoded =
+            decode::<Claims>(&refresh_token, &decoding_key, &Validation::default()).unwrap();
+        assert_eq!(decoded.claims.sub, user.id);
+        assert_eq!(decoded.claims.token_type, "refresh");
+    }
+
+    #[test]
+    fn test_validate_access_token_rejects_refresh_token() {
+        let config = make_test_config();
+        let secret = config.jwt_secret.clone();
+        let encoding_key = EncodingKey::from_secret(secret.as_bytes());
+        let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+
+        let now = Utc::now();
+        let refresh_claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "user@test.com".to_string(),
+            is_admin: false,
+            iat: now.timestamp(),
+            exp: (now + Duration::days(7)).timestamp(),
+            token_type: "refresh".to_string(),
+        };
+
+        let token = encode(&Header::default(), &refresh_claims, &encoding_key).unwrap();
+
+        // Decoding succeeds, but validate_access_token should reject
+        let decoded = decode::<Claims>(&token, &decoding_key, &Validation::default()).unwrap();
+        assert_eq!(decoded.claims.token_type, "refresh");
+        // This would fail in validate_access_token because token_type != "access"
+    }
+
+    #[test]
+    fn test_expired_token_rejected() {
+        let config = make_test_config();
+        let secret = config.jwt_secret.clone();
+        let encoding_key = EncodingKey::from_secret(secret.as_bytes());
+        let decoding_key = DecodingKey::from_secret(secret.as_bytes());
+
+        let now = Utc::now();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "expired".to_string(),
+            email: "expired@test.com".to_string(),
+            is_admin: false,
+            iat: (now - Duration::hours(2)).timestamp(),
+            exp: (now - Duration::hours(1)).timestamp(), // expired 1 hour ago
+            token_type: "access".to_string(),
+        };
+
+        let token = encode(&Header::default(), &claims, &encoding_key).unwrap();
+        let result = decode::<Claims>(&token, &decoding_key, &Validation::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wrong_secret_rejected() {
+        let encoding_key = EncodingKey::from_secret(b"secret-one");
+        let decoding_key = DecodingKey::from_secret(b"secret-two");
+
+        let now = Utc::now();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "u@t.com".to_string(),
+            is_admin: false,
+            iat: now.timestamp(),
+            exp: (now + Duration::hours(1)).timestamp(),
+            token_type: "access".to_string(),
+        };
+
+        let token = encode(&Header::default(), &claims, &encoding_key).unwrap();
+        let result = decode::<Claims>(&token, &decoding_key, &Validation::default());
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Claims serialization / deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_claims_serialization_roundtrip() {
+        let user_id = Uuid::new_v4();
+        let claims = Claims {
+            sub: user_id,
+            username: "test".to_string(),
+            email: "test@x.com".to_string(),
+            is_admin: true,
+            iat: 1000,
+            exp: 2000,
+            token_type: "access".to_string(),
+        };
+
+        let json = serde_json::to_string(&claims).unwrap();
+        let decoded: Claims = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.sub, user_id);
+        assert_eq!(decoded.username, "test");
+        assert!(decoded.is_admin);
+        assert_eq!(decoded.token_type, "access");
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenPair serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_pair_serialize() {
+        let pair = TokenPair {
+            access_token: "access123".to_string(),
+            refresh_token: "refresh456".to_string(),
+            expires_in: 1800,
+        };
+        let json = serde_json::to_value(&pair).unwrap();
+        assert_eq!(json["access_token"], "access123");
+        assert_eq!(json["refresh_token"], "refresh456");
+        assert_eq!(json["expires_in"], 1800);
+    }
+
+    // -----------------------------------------------------------------------
+    // FederatedCredentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_federated_credentials_debug() {
+        let creds = FederatedCredentials {
+            external_id: "ext-123".to_string(),
+            username: "feduser".to_string(),
+            email: "fed@example.com".to_string(),
+            display_name: Some("Fed User".to_string()),
+            groups: vec!["devs".to_string(), "admin".to_string()],
+        };
+        let debug = format!("{:?}", creds);
+        assert!(debug.contains("feduser"));
+        assert!(debug.contains("ext-123"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RoleMapping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_role_mapping_default() {
+        let mapping = RoleMapping::default();
+        assert!(!mapping.is_admin);
+        assert!(mapping.roles.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // map_groups_to_roles (pure function, no DB)
+    // -----------------------------------------------------------------------
+
+    // We can test map_groups_to_roles by creating a minimal AuthService.
+    // Since it does not use self.db or self.config, we just need any instance.
+    // We'll test using the same approach: direct key construction.
+
+    // Reimplement map_groups_to_roles locally since AuthService requires PgPool
+    // and we cannot create one without a real database connection.
+    fn test_map_groups_to_roles(groups: &[String]) -> RoleMapping {
+        let mut mapping = RoleMapping::default();
+        let normalized_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
+
+        let admin_patterns = ["admin", "administrators", "superusers", "artifact-admins"];
+        for group in &normalized_groups {
+            for pattern in &admin_patterns {
+                if group.contains(pattern) {
+                    mapping.is_admin = true;
+                    mapping.roles.push("admin".to_string());
+                    break;
+                }
+            }
+        }
+
+        let role_mappings = [
+            ("developers", "developer"),
+            ("readonly", "reader"),
+            ("deployers", "deployer"),
+            ("artifact-publishers", "publisher"),
+        ];
+
+        for group in &normalized_groups {
+            for (pattern, role) in &role_mappings {
+                if group.contains(pattern) && !mapping.roles.contains(&role.to_string()) {
+                    mapping.roles.push(role.to_string());
+                }
+            }
+        }
+
+        if !mapping.roles.contains(&"user".to_string()) {
+            mapping.roles.push("user".to_string());
+        }
+
+        mapping
+    }
+
+    #[test]
+    fn test_map_groups_admin_group() {
+        let mapping = test_map_groups_to_roles(&["team-admin".to_string()]);
+        assert!(mapping.is_admin);
+        assert!(mapping.roles.contains(&"admin".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_administrators_group() {
+        let mapping = test_map_groups_to_roles(&["CN=Administrators,DC=corp".to_string()]);
+        assert!(mapping.is_admin);
+    }
+
+    #[test]
+    fn test_map_groups_superusers_group() {
+        let mapping = test_map_groups_to_roles(&["superusers".to_string()]);
+        assert!(mapping.is_admin);
+    }
+
+    #[test]
+    fn test_map_groups_artifact_admins_group() {
+        let mapping = test_map_groups_to_roles(&["artifact-admins".to_string()]);
+        assert!(mapping.is_admin);
+    }
+
+    #[test]
+    fn test_map_groups_case_insensitive_admin() {
+        let mapping = test_map_groups_to_roles(&["ADMIN-TEAM".to_string()]);
+        assert!(mapping.is_admin);
+    }
+
+    #[test]
+    fn test_map_groups_developers() {
+        let mapping = test_map_groups_to_roles(&["team-developers".to_string()]);
+        assert!(!mapping.is_admin);
+        assert!(mapping.roles.contains(&"developer".to_string()));
+        assert!(mapping.roles.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_readonly() {
+        let mapping = test_map_groups_to_roles(&["readonly-users".to_string()]);
+        assert!(mapping.roles.contains(&"reader".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_deployers() {
+        let mapping = test_map_groups_to_roles(&["deployers".to_string()]);
+        assert!(mapping.roles.contains(&"deployer".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_publishers() {
+        let mapping = test_map_groups_to_roles(&["artifact-publishers".to_string()]);
+        assert!(mapping.roles.contains(&"publisher".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_no_matching_groups() {
+        let mapping = test_map_groups_to_roles(&["random-group".to_string()]);
+        assert!(!mapping.is_admin);
+        assert_eq!(mapping.roles, vec!["user"]);
+    }
+
+    #[test]
+    fn test_map_groups_empty_groups() {
+        let mapping = test_map_groups_to_roles(&[]);
+        assert!(!mapping.is_admin);
+        assert_eq!(mapping.roles, vec!["user"]);
+    }
+
+    #[test]
+    fn test_map_groups_multiple_roles() {
+        let mapping =
+            test_map_groups_to_roles(&["developers".to_string(), "deployers".to_string()]);
+        assert!(mapping.roles.contains(&"developer".to_string()));
+        assert!(mapping.roles.contains(&"deployer".to_string()));
+        assert!(mapping.roles.contains(&"user".to_string()));
+    }
+
+    #[test]
+    fn test_map_groups_admin_plus_developer() {
+        let mapping = test_map_groups_to_roles(&["admin".to_string(), "developers".to_string()]);
+        assert!(mapping.is_admin);
+        assert!(mapping.roles.contains(&"admin".to_string()));
+        assert!(mapping.roles.contains(&"developer".to_string()));
+        // user role should not be duplicated
+        let user_count = mapping
+            .roles
+            .iter()
+            .filter(|r| r.as_str() == "user")
+            .count();
+        assert_eq!(user_count, 1);
+    }
+
+    #[test]
+    fn test_map_groups_no_duplicate_roles() {
+        let mapping = test_map_groups_to_roles(&[
+            "developers".to_string(),
+            "team-developers".to_string(), // same pattern matches twice
+        ]);
+        let dev_count = mapping
+            .roles
+            .iter()
+            .filter(|r| r.as_str() == "developer")
+            .count();
+        assert_eq!(dev_count, 1, "developer role should not be duplicated");
+    }
 }

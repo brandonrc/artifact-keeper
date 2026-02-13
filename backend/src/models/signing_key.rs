@@ -81,3 +81,84 @@ pub struct RepositorySigningConfig {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signing_key_public_from_signing_key() {
+        let now = chrono::Utc::now();
+        let key_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+
+        let key = SigningKey {
+            id: key_id,
+            repository_id: Some(repo_id),
+            name: "my-gpg-key".to_string(),
+            key_type: "gpg".to_string(),
+            fingerprint: Some("ABCDEF1234567890".to_string()),
+            key_id: Some("12345678".to_string()),
+            public_key_pem: "-----BEGIN PGP PUBLIC KEY BLOCK-----...".to_string(),
+            private_key_enc: vec![1, 2, 3, 4, 5],
+            algorithm: "RSA".to_string(),
+            uid_name: Some("Test User".to_string()),
+            uid_email: Some("test@example.com".to_string()),
+            expires_at: None,
+            is_active: true,
+            created_at: now,
+            created_by: None,
+            rotated_from: None,
+            last_used_at: Some(now),
+        };
+
+        let public: SigningKeyPublic = key.into();
+
+        assert_eq!(public.id, key_id);
+        assert_eq!(public.repository_id, Some(repo_id));
+        assert_eq!(public.name, "my-gpg-key");
+        assert_eq!(public.key_type, "gpg");
+        assert_eq!(public.fingerprint.as_deref(), Some("ABCDEF1234567890"));
+        assert_eq!(public.key_id.as_deref(), Some("12345678"));
+        assert!(public.public_key_pem.contains("BEGIN PGP"));
+        assert_eq!(public.algorithm, "RSA");
+        assert_eq!(public.uid_name.as_deref(), Some("Test User"));
+        assert_eq!(public.uid_email.as_deref(), Some("test@example.com"));
+        assert!(public.is_active);
+        assert!(public.last_used_at.is_some());
+        // Private key is NOT included in the public view
+    }
+
+    #[test]
+    fn test_signing_key_public_from_key_with_none_fields() {
+        let now = chrono::Utc::now();
+        let key = SigningKey {
+            id: Uuid::new_v4(),
+            repository_id: None,
+            name: "global-key".to_string(),
+            key_type: "ed25519".to_string(),
+            fingerprint: None,
+            key_id: None,
+            public_key_pem: "PEM".to_string(),
+            private_key_enc: vec![],
+            algorithm: "Ed25519".to_string(),
+            uid_name: None,
+            uid_email: None,
+            expires_at: None,
+            is_active: false,
+            created_at: now,
+            created_by: None,
+            rotated_from: None,
+            last_used_at: None,
+        };
+
+        let public: SigningKeyPublic = key.into();
+        assert!(public.repository_id.is_none());
+        assert!(public.fingerprint.is_none());
+        assert!(public.key_id.is_none());
+        assert!(public.uid_name.is_none());
+        assert!(public.uid_email.is_none());
+        assert!(!public.is_active);
+        assert!(public.last_used_at.is_none());
+    }
+}

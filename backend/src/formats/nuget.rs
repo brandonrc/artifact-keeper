@@ -530,6 +530,37 @@ pub struct CatalogEntry {
 mod tests {
     use super::*;
 
+    // ---- NugetHandler::new / Default ----
+
+    #[test]
+    fn test_new_and_default() {
+        let _h1 = NugetHandler::new();
+        let _h2 = NugetHandler::default();
+    }
+
+    // ---- normalize_id ----
+
+    #[test]
+    fn test_normalize_id() {
+        assert_eq!(
+            NugetHandler::normalize_id("Newtonsoft.Json"),
+            "newtonsoft.json"
+        );
+        assert_eq!(NugetHandler::normalize_id("MyPackage"), "mypackage");
+    }
+
+    #[test]
+    fn test_normalize_id_already_lower() {
+        assert_eq!(NugetHandler::normalize_id("mypackage"), "mypackage");
+    }
+
+    #[test]
+    fn test_normalize_id_empty() {
+        assert_eq!(NugetHandler::normalize_id(""), "");
+    }
+
+    // ---- parse_nupkg_filename ----
+
     #[test]
     fn test_parse_nupkg_filename() {
         let (id, version) =
@@ -546,10 +577,62 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_nupkg_filename_complex_id() {
+        let (id, version) = NugetHandler::parse_nupkg_filename(
+            "Microsoft.Extensions.DependencyInjection.8.0.0.nupkg",
+        )
+        .unwrap();
+        assert_eq!(id, "Microsoft.Extensions.DependencyInjection");
+        assert_eq!(version, "8.0.0");
+    }
+
+    #[test]
+    fn test_parse_nupkg_filename_prerelease() {
+        let (id, version) =
+            NugetHandler::parse_nupkg_filename("MyPackage.1.0.0-beta.1.nupkg").unwrap();
+        assert_eq!(id, "MyPackage");
+        // "1" starts with a digit so the version begins at "1.0.0-beta.1"
+        assert_eq!(version, "1.0.0-beta.1");
+    }
+
+    #[test]
+    fn test_parse_nupkg_filename_no_version() {
+        // All parts are alpha - no part starts with a digit
+        let result = NugetHandler::parse_nupkg_filename("AllAlpha.Parts.nupkg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_nupkg_filename_no_id() {
+        // Starts with digit immediately, so id_parts is empty
+        let result = NugetHandler::parse_nupkg_filename("1.0.0.nupkg");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: service index ----
+
+    #[test]
     fn test_parse_path_service_index() {
         let info = NugetHandler::parse_path("v3/index.json").unwrap();
         assert!(matches!(info.operation, NugetOperation::ServiceIndex));
+        assert!(info.id.is_none());
+        assert!(info.version.is_none());
+        assert!(info.filename.is_none());
     }
+
+    #[test]
+    fn test_parse_path_service_index_short() {
+        let info = NugetHandler::parse_path("index.json").unwrap();
+        assert!(matches!(info.operation, NugetOperation::ServiceIndex));
+    }
+
+    #[test]
+    fn test_parse_path_service_index_leading_slash() {
+        let info = NugetHandler::parse_path("/v3/index.json").unwrap();
+        assert!(matches!(info.operation, NugetOperation::ServiceIndex));
+    }
+
+    // ---- parse_path: registration ----
 
     #[test]
     fn test_parse_path_registration() {
@@ -559,7 +642,42 @@ mod tests {
             NugetOperation::PackageRegistration
         ));
         assert_eq!(info.id, Some("newtonsoft.json".to_string()));
+        assert!(info.version.is_none());
     }
+
+    #[test]
+    fn test_parse_path_registration_without_v3_prefix() {
+        let info = NugetHandler::parse_path("registration/newtonsoft.json/index.json").unwrap();
+        assert!(matches!(
+            info.operation,
+            NugetOperation::PackageRegistration
+        ));
+        assert_eq!(info.id, Some("newtonsoft.json".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_version_registration() {
+        let info = NugetHandler::parse_path("v3/registration/newtonsoft.json/13.0.1.json").unwrap();
+        assert!(matches!(
+            info.operation,
+            NugetOperation::VersionRegistration
+        ));
+        assert_eq!(info.id, Some("newtonsoft.json".to_string()));
+        assert_eq!(info.version, Some("13.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_version_registration_without_v3() {
+        let info = NugetHandler::parse_path("registration/mypackage/2.0.0.json").unwrap();
+        assert!(matches!(
+            info.operation,
+            NugetOperation::VersionRegistration
+        ));
+        assert_eq!(info.id, Some("mypackage".to_string()));
+        assert_eq!(info.version, Some("2.0.0".to_string()));
+    }
+
+    // ---- parse_path: flatcontainer ----
 
     #[test]
     fn test_parse_path_flatcontainer() {
@@ -569,14 +687,232 @@ mod tests {
         assert!(matches!(info.operation, NugetOperation::PackageContent));
         assert_eq!(info.id, Some("mypackage".to_string()));
         assert_eq!(info.version, Some("1.0.0".to_string()));
+        assert_eq!(info.filename, Some("mypackage.1.0.0.nupkg".to_string()));
     }
 
     #[test]
-    fn test_normalize_id() {
+    fn test_parse_path_flatcontainer_v3_prefix() {
+        let info =
+            NugetHandler::parse_path("v3/flatcontainer/mypackage/1.0.0/mypackage.1.0.0.nupkg")
+                .unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageContent));
+        assert_eq!(info.id, Some("mypackage".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_flatcontainer_no_prefix() {
+        let info = NugetHandler::parse_path("flatcontainer/mypackage/1.0.0/mypackage.1.0.0.nupkg")
+            .unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageContent));
+    }
+
+    #[test]
+    fn test_parse_path_flatcontainer_index() {
+        let info = NugetHandler::parse_path("v3/flatcontainer/mypackage/index.json").unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageVersions));
+        assert_eq!(info.id, Some("mypackage".to_string()));
+        assert!(info.version.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_flatcontainer_v3_dash_index() {
+        let info = NugetHandler::parse_path("v3-flatcontainer/mypackage/index.json").unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageVersions));
+        assert_eq!(info.id, Some("mypackage".to_string()));
+    }
+
+    // ---- parse_path: direct .nupkg ----
+
+    #[test]
+    fn test_parse_path_direct_nupkg() {
+        let info = NugetHandler::parse_path("MyPackage.1.0.0.nupkg").unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageContent));
+        assert_eq!(info.id, Some("MyPackage".to_string()));
+        assert_eq!(info.version, Some("1.0.0".to_string()));
+        assert_eq!(info.filename, Some("MyPackage.1.0.0.nupkg".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_nupkg_in_subdir() {
+        let info = NugetHandler::parse_path("some/path/Newtonsoft.Json.13.0.1.nupkg").unwrap();
+        assert!(matches!(info.operation, NugetOperation::PackageContent));
+        assert_eq!(info.id, Some("Newtonsoft.Json".to_string()));
+        assert_eq!(info.version, Some("13.0.1".to_string()));
+    }
+
+    // ---- parse_path: invalid ----
+
+    #[test]
+    fn test_parse_path_invalid() {
+        assert!(NugetHandler::parse_path("random/path/file.txt").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty() {
+        assert!(NugetHandler::parse_path("").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_registration_too_few_parts() {
+        // registration/<id> with no second part
+        // This falls through because parts.len() < 2
+        assert!(NugetHandler::parse_path("v3/registration/").is_err());
+    }
+
+    // ---- extract_nuspec: error cases ----
+
+    #[test]
+    fn test_extract_nuspec_invalid_bytes() {
+        let result = NugetHandler::extract_nuspec(b"not a zip");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_nuspec_empty() {
+        let result = NugetHandler::extract_nuspec(b"");
+        assert!(result.is_err());
+    }
+
+    // ---- generate_service_index ----
+
+    #[test]
+    fn test_generate_service_index() {
+        let index = generate_service_index("https://nuget.example.com");
+        assert_eq!(index.version, "3.0.0");
+        assert_eq!(index.resources.len(), 4);
+
+        let reg = &index.resources[0];
+        assert_eq!(reg.id, "https://nuget.example.com/v3/registration/");
+        assert_eq!(reg.resource_type, "RegistrationsBaseUrl/3.6.0");
+        assert!(reg.comment.is_some());
+
+        let flat = &index.resources[1];
+        assert_eq!(flat.id, "https://nuget.example.com/v3-flatcontainer/");
+        assert_eq!(flat.resource_type, "PackageBaseAddress/3.0.0");
+
+        let publish = &index.resources[2];
+        assert_eq!(publish.id, "https://nuget.example.com/api/v2/package");
+        assert_eq!(publish.resource_type, "PackagePublish/2.0.0");
+
+        let search = &index.resources[3];
+        assert_eq!(search.id, "https://nuget.example.com/query");
+        assert_eq!(search.resource_type, "SearchQueryService/3.5.0");
+    }
+
+    // ---- ServiceIndex serde roundtrip ----
+
+    #[test]
+    fn test_service_index_roundtrip() {
+        let index = generate_service_index("https://example.com");
+        let json = serde_json::to_string(&index).unwrap();
+        let parsed: ServiceIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.version, "3.0.0");
+        assert_eq!(parsed.resources.len(), 4);
+    }
+
+    // ---- CatalogEntry serde ----
+
+    #[test]
+    fn test_catalog_entry_deserialize() {
+        let json = r#"{
+            "id": "MyPackage",
+            "version": "1.0.0",
+            "authors": "Author",
+            "description": "Desc",
+            "licenseUrl": "https://license.example.com",
+            "projectUrl": "https://project.example.com",
+            "tags": ["tag1", "tag2"]
+        }"#;
+        let entry: CatalogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "MyPackage");
+        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.authors, Some("Author".to_string()));
+        assert_eq!(entry.description, Some("Desc".to_string()));
         assert_eq!(
-            NugetHandler::normalize_id("Newtonsoft.Json"),
-            "newtonsoft.json"
+            entry.tags,
+            Some(vec!["tag1".to_string(), "tag2".to_string()])
         );
-        assert_eq!(NugetHandler::normalize_id("MyPackage"), "mypackage");
+    }
+
+    #[test]
+    fn test_catalog_entry_minimal() {
+        let json = r#"{"id": "pkg", "version": "1.0.0"}"#;
+        let entry: CatalogEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "pkg");
+        assert!(entry.authors.is_none());
+        assert!(entry.description.is_none());
+        assert!(entry.tags.is_none());
+    }
+
+    // ---- PackageRegistration / RegistrationPage / RegistrationLeaf serde ----
+
+    #[test]
+    fn test_registration_types_roundtrip() {
+        let leaf = RegistrationLeaf {
+            catalog_entry: CatalogEntry {
+                id: "pkg".to_string(),
+                version: "1.0.0".to_string(),
+                authors: None,
+                description: None,
+                license_url: None,
+                project_url: None,
+                tags: None,
+            },
+            package_content: "https://example.com/pkg.1.0.0.nupkg".to_string(),
+            registration: "https://example.com/reg/pkg/1.0.0.json".to_string(),
+        };
+        let page = RegistrationPage {
+            count: 1,
+            items: vec![leaf],
+            lower: "1.0.0".to_string(),
+            upper: "1.0.0".to_string(),
+        };
+        let reg = PackageRegistration {
+            count: 1,
+            items: vec![page],
+        };
+        let json = serde_json::to_string(&reg).unwrap();
+        let parsed: PackageRegistration = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.count, 1);
+        assert_eq!(parsed.items.len(), 1);
+        assert_eq!(parsed.items[0].items[0].catalog_entry.id, "pkg");
+    }
+
+    // ---- parse_path: uppercase ID normalization ----
+
+    #[test]
+    fn test_parse_path_registration_normalizes_id() {
+        let info = NugetHandler::parse_path("v3/registration/Newtonsoft.Json/index.json").unwrap();
+        // normalize_id lowercases
+        assert_eq!(info.id, Some("newtonsoft.json".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_flatcontainer_normalizes_id() {
+        let info = NugetHandler::parse_path(
+            "v3/flatcontainer/Newtonsoft.Json/13.0.1/Newtonsoft.Json.13.0.1.nupkg",
+        )
+        .unwrap();
+        assert_eq!(info.id, Some("newtonsoft.json".to_string()));
+    }
+
+    // ---- NuSpecLicense / NuSpecRepository serde ----
+
+    #[test]
+    fn test_nuspec_license_deserialize() {
+        let json = r#"{"@type": "expression", "$value": "MIT"}"#;
+        let lic: NuSpecLicense = serde_json::from_str(json).unwrap();
+        assert_eq!(lic.license_type, Some("expression".to_string()));
+        assert_eq!(lic.value, Some("MIT".to_string()));
+    }
+
+    #[test]
+    fn test_nuspec_repository_deserialize() {
+        let json = r#"{"@type": "git", "@url": "https://github.com/user/repo", "@branch": "main", "@commit": "abc123"}"#;
+        let repo: NuSpecRepository = serde_json::from_str(json).unwrap();
+        assert_eq!(repo.repo_type, Some("git".to_string()));
+        assert_eq!(repo.url, Some("https://github.com/user/repo".to_string()));
+        assert_eq!(repo.branch, Some("main".to_string()));
+        assert_eq!(repo.commit, Some("abc123".to_string()));
     }
 }

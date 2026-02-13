@@ -140,3 +140,24 @@ pub struct VirtualRepoMember {
     pub priority: i32,
     pub created_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repository_type_is_staging() {
+        assert!(RepositoryType::Staging.is_staging());
+        assert!(!RepositoryType::Local.is_staging());
+        assert!(!RepositoryType::Remote.is_staging());
+        assert!(!RepositoryType::Virtual.is_staging());
+    }
+
+    #[test]
+    fn test_repository_type_is_hosted() {
+        assert!(RepositoryType::Local.is_hosted());
+        assert!(RepositoryType::Staging.is_hosted());
+        assert!(!RepositoryType::Remote.is_hosted());
+        assert!(!RepositoryType::Virtual.is_hosted());
+    }
+}

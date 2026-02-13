@@ -253,3 +253,168 @@ pub struct DashboardSummary {
     pub repos_grade_a: i64,
     pub repos_grade_f: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // Severity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_severity_penalty_weights() {
+        assert_eq!(Severity::Critical.penalty_weight(), 25);
+        assert_eq!(Severity::High.penalty_weight(), 10);
+        assert_eq!(Severity::Medium.penalty_weight(), 3);
+        assert_eq!(Severity::Low.penalty_weight(), 1);
+        assert_eq!(Severity::Info.penalty_weight(), 0);
+    }
+
+    #[test]
+    fn test_severity_from_str_loose_standard() {
+        assert_eq!(
+            Severity::from_str_loose("critical"),
+            Some(Severity::Critical)
+        );
+        assert_eq!(Severity::from_str_loose("high"), Some(Severity::High));
+        assert_eq!(Severity::from_str_loose("medium"), Some(Severity::Medium));
+        assert_eq!(Severity::from_str_loose("low"), Some(Severity::Low));
+        assert_eq!(Severity::from_str_loose("info"), Some(Severity::Info));
+    }
+
+    #[test]
+    fn test_severity_from_str_loose_aliases() {
+        assert_eq!(Severity::from_str_loose("moderate"), Some(Severity::Medium));
+        assert_eq!(
+            Severity::from_str_loose("informational"),
+            Some(Severity::Info)
+        );
+        assert_eq!(Severity::from_str_loose("none"), Some(Severity::Info));
+    }
+
+    #[test]
+    fn test_severity_from_str_loose_case_insensitive() {
+        assert_eq!(
+            Severity::from_str_loose("CRITICAL"),
+            Some(Severity::Critical)
+        );
+        assert_eq!(Severity::from_str_loose("High"), Some(Severity::High));
+        assert_eq!(Severity::from_str_loose("MEDIUM"), Some(Severity::Medium));
+    }
+
+    #[test]
+    fn test_severity_from_str_loose_unknown() {
+        assert_eq!(Severity::from_str_loose("unknown"), None);
+        assert_eq!(Severity::from_str_loose(""), None);
+        assert_eq!(Severity::from_str_loose("very-high"), None);
+    }
+
+    #[test]
+    fn test_severity_meets_threshold() {
+        // Critical meets all thresholds
+        assert!(Severity::Critical.meets_threshold(Severity::Critical));
+        assert!(Severity::Critical.meets_threshold(Severity::High));
+        assert!(Severity::Critical.meets_threshold(Severity::Info));
+
+        // High meets High and below but not Critical
+        assert!(!Severity::High.meets_threshold(Severity::Critical));
+        assert!(Severity::High.meets_threshold(Severity::High));
+        assert!(Severity::High.meets_threshold(Severity::Info));
+
+        // Info only meets Info
+        assert!(!Severity::Info.meets_threshold(Severity::Critical));
+        assert!(!Severity::Info.meets_threshold(Severity::Low));
+        assert!(Severity::Info.meets_threshold(Severity::Info));
+    }
+
+    #[test]
+    fn test_severity_ordering() {
+        // Critical < High < Medium < Low < Info (by discriminant values)
+        assert!(Severity::Critical < Severity::High);
+        assert!(Severity::High < Severity::Medium);
+        assert!(Severity::Medium < Severity::Low);
+        assert!(Severity::Low < Severity::Info);
+    }
+
+    // -----------------------------------------------------------------------
+    // Grade
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_grade_from_score_boundaries() {
+        assert_eq!(Grade::from_score(100), Grade::A);
+        assert_eq!(Grade::from_score(90), Grade::A);
+        assert_eq!(Grade::from_score(89), Grade::B);
+        assert_eq!(Grade::from_score(75), Grade::B);
+        assert_eq!(Grade::from_score(74), Grade::C);
+        assert_eq!(Grade::from_score(50), Grade::C);
+        assert_eq!(Grade::from_score(49), Grade::D);
+        assert_eq!(Grade::from_score(25), Grade::D);
+        assert_eq!(Grade::from_score(24), Grade::F);
+        assert_eq!(Grade::from_score(0), Grade::F);
+    }
+
+    #[test]
+    fn test_grade_from_score_negative() {
+        assert_eq!(Grade::from_score(-1), Grade::F);
+        assert_eq!(Grade::from_score(-100), Grade::F);
+    }
+
+    #[test]
+    fn test_grade_from_score_above_100() {
+        // Scores > 100 fall through to F because the match range is 90..=100
+        assert_eq!(Grade::from_score(101), Grade::F);
+    }
+
+    #[test]
+    fn test_grade_as_char() {
+        assert_eq!(Grade::A.as_char(), 'A');
+        assert_eq!(Grade::B.as_char(), 'B');
+        assert_eq!(Grade::C.as_char(), 'C');
+        assert_eq!(Grade::D.as_char(), 'D');
+        assert_eq!(Grade::F.as_char(), 'F');
+    }
+
+    // -----------------------------------------------------------------------
+    // ScanConfig::threshold
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_config_threshold_known() {
+        let config = ScanConfig {
+            id: uuid::Uuid::new_v4(),
+            repository_id: uuid::Uuid::new_v4(),
+            scan_enabled: true,
+            scan_on_upload: true,
+            scan_on_proxy: false,
+            block_on_policy_violation: true,
+            severity_threshold: "critical".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(config.threshold(), Severity::Critical);
+    }
+
+    #[test]
+    fn test_scan_config_threshold_unknown_defaults_to_high() {
+        let config = ScanConfig {
+            id: uuid::Uuid::new_v4(),
+            repository_id: uuid::Uuid::new_v4(),
+            scan_enabled: true,
+            scan_on_upload: false,
+            scan_on_proxy: false,
+            block_on_policy_violation: false,
+            severity_threshold: "garbage".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(config.threshold(), Severity::High);
+    }
+
+    // -----------------------------------------------------------------------
+    // Note: Grade::from_score(101) returns F.
+    // This may be a bug - scores above 100 should arguably map to A.
+    // Not fixing per instructions, but noting it.
+    // -----------------------------------------------------------------------
+}

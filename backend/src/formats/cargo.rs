@@ -473,6 +473,16 @@ pub fn generate_index_entry(
 mod tests {
     use super::*;
 
+    // ---- CargoHandler::new / Default ----
+
+    #[test]
+    fn test_new_and_default() {
+        let _h1 = CargoHandler::new();
+        let _h2 = CargoHandler::default();
+    }
+
+    // ---- get_index_path ----
+
     #[test]
     fn test_get_index_path() {
         assert_eq!(CargoHandler::get_index_path("a"), "1/a");
@@ -483,17 +493,76 @@ mod tests {
     }
 
     #[test]
+    fn test_get_index_path_uppercase_normalized() {
+        // get_index_path lowercases
+        assert_eq!(CargoHandler::get_index_path("A"), "1/a");
+        assert_eq!(CargoHandler::get_index_path("AB"), "2/ab");
+        assert_eq!(CargoHandler::get_index_path("AbC"), "3/a/abc");
+        assert_eq!(CargoHandler::get_index_path("Serde"), "se/rd/serde");
+    }
+
+    #[test]
+    fn test_get_index_path_long_name() {
+        // A longer crate name (e.g. 10 chars)
+        assert_eq!(
+            CargoHandler::get_index_path("tokio-core"),
+            "to/ki/tokio-core"
+        );
+    }
+
+    // ---- parse_path: config ----
+
+    #[test]
     fn test_parse_path_config() {
         let info = CargoHandler::parse_path("config.json").unwrap();
         assert!(matches!(info.operation, CargoOperation::Config));
+        assert!(info.name.is_none());
+        assert!(info.version.is_none());
     }
+
+    #[test]
+    fn test_parse_path_config_leading_slash() {
+        let info = CargoHandler::parse_path("/config.json").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Config));
+    }
+
+    // ---- parse_path: index (1-char) ----
 
     #[test]
     fn test_parse_path_index_1char() {
         let info = CargoHandler::parse_path("1/a").unwrap();
         assert!(matches!(info.operation, CargoOperation::Index));
         assert_eq!(info.name, Some("a".to_string()));
+        assert!(info.version.is_none());
     }
+
+    // ---- parse_path: index (2-char) ----
+
+    #[test]
+    fn test_parse_path_index_2char() {
+        let info = CargoHandler::parse_path("2/ab").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Index));
+        assert_eq!(info.name, Some("ab".to_string()));
+    }
+
+    // ---- parse_path: index (3-char) ----
+
+    #[test]
+    fn test_parse_path_index_3char() {
+        let info = CargoHandler::parse_path("3/a/abc").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Index));
+        assert_eq!(info.name, Some("abc".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_index_3char_mismatch_returns_none() {
+        // If the crate name doesn't start_with the first-char prefix, parse_index_path
+        // returns None, falling through to the Err branch.
+        let result = CargoHandler::parse_path("3/x/abc");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: index (4+ char) ----
 
     #[test]
     fn test_parse_path_index_4char() {
@@ -503,11 +572,110 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_path_index_4char_leading_slash() {
+        let info = CargoHandler::parse_path("/to/ki/tokio").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Index));
+        assert_eq!(info.name, Some("tokio".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_index_4char_mismatch_first2() {
+        // first2 doesn't match crate name prefix
+        let result = CargoHandler::parse_path("xx/rd/serde");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_index_4char_mismatch_second2() {
+        // second2 doesn't match crate name chars 2..4
+        let result = CargoHandler::parse_path("se/xx/serde");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_index_4char_name_too_short() {
+        // 3-part path but first2/second2 are 2-char each but crate_name is < 4 chars
+        // This doesn't match the 4+ char rule because crate_name.len() < 4
+        // AND doesn't match the 3-char rule because parts[0] != "3"
+        let result = CargoHandler::parse_path("ab/cd/abc");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: download (.crate) ----
+
+    #[test]
+    fn test_parse_path_download() {
+        let info = CargoHandler::parse_path("crates/serde/serde-1.0.193.crate").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Download));
+        assert_eq!(info.name, Some("serde".to_string()));
+        assert_eq!(info.version, Some("1.0.193".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_download_leading_slash() {
+        let info = CargoHandler::parse_path("/crates/tokio/tokio-1.34.0.crate").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Download));
+        assert_eq!(info.name, Some("tokio".to_string()));
+        assert_eq!(info.version, Some("1.34.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_download_hyphenated_name() {
+        let info = CargoHandler::parse_path("crates/my-crate/my-crate-0.1.0.crate").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Download));
+        assert_eq!(info.name, Some("my-crate".to_string()));
+        assert_eq!(info.version, Some("0.1.0".to_string()));
+    }
+
+    // ---- parse_path: invalid ----
+
+    #[test]
+    fn test_parse_path_invalid() {
+        assert!(CargoHandler::parse_path("random/path").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty() {
+        assert!(CargoHandler::parse_path("").is_err());
+    }
+
+    // ---- parse_crate_filename ----
+
+    #[test]
     fn test_parse_crate_filename() {
         let (name, version) = CargoHandler::parse_crate_filename("serde-1.0.193.crate").unwrap();
         assert_eq!(name, "serde");
         assert_eq!(version, "1.0.193");
     }
+
+    #[test]
+    fn test_parse_crate_filename_hyphenated() {
+        let (name, version) =
+            CargoHandler::parse_crate_filename("my-great-crate-2.3.4.crate").unwrap();
+        assert_eq!(name, "my-great-crate");
+        assert_eq!(version, "2.3.4");
+    }
+
+    #[test]
+    fn test_parse_crate_filename_prerelease() {
+        // rsplitn(2, '-') splits on the LAST hyphen, so for "foo-1.0.0-beta.1":
+        // parts = ["beta.1", "foo-1.0.0"], meaning version = "beta.1" and name = "foo-1.0.0"
+        // NOTE: This is a potential bug -- pre-release versions with hyphens (e.g. "1.0.0-beta.1")
+        // are incorrectly split because rsplitn splits on the last hyphen, not the name-version
+        // boundary. The real cargo registry uses a different mechanism (metadata in the upload).
+        let (name, version) = CargoHandler::parse_crate_filename("foo-1.0.0-beta.1.crate").unwrap();
+        assert_eq!(name, "foo-1.0.0");
+        assert_eq!(version, "beta.1");
+    }
+
+    #[test]
+    fn test_parse_crate_filename_no_hyphen() {
+        // A filename with no hyphen (after stripping .crate) can't be split
+        let result = CargoHandler::parse_crate_filename("nohyphen.crate");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_cargo_toml ----
 
     #[test]
     fn test_parse_cargo_toml() {
@@ -526,7 +694,103 @@ serde = "1.0"
         assert_eq!(package.name, "my-crate");
         assert_eq!(package.version, "0.1.0");
         assert_eq!(package.edition, Some("2021".to_string()));
+        assert_eq!(package.description, Some("A test crate".to_string()));
+        assert!(cargo_toml.dependencies.is_some());
     }
+
+    #[test]
+    fn test_parse_cargo_toml_full_fields() {
+        let content = r#"
+[package]
+name = "full-crate"
+version = "1.2.3"
+edition = "2021"
+rust-version = "1.75.0"
+description = "Full metadata"
+documentation = "https://docs.rs/full-crate"
+readme = "README.md"
+homepage = "https://example.com"
+repository = "https://github.com/user/full-crate"
+license = "MIT"
+license-file = "LICENSE"
+keywords = ["test", "full"]
+categories = ["development-tools"]
+exclude = ["/tests"]
+include = ["/src"]
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tokio = "1.0"
+
+[build-dependencies]
+cc = "1.0"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]
+members = ["crate-a", "crate-b"]
+exclude = ["examples"]
+"#;
+        let cargo_toml = CargoHandler::parse_cargo_toml(content).unwrap();
+        let pkg = cargo_toml.package.unwrap();
+        assert_eq!(pkg.name, "full-crate");
+        assert_eq!(pkg.version, "1.2.3");
+        assert_eq!(pkg.rust_version, Some("1.75.0".to_string()));
+        assert_eq!(pkg.license, Some("MIT".to_string()));
+        assert_eq!(pkg.license_file, Some("LICENSE".to_string()));
+        assert_eq!(
+            pkg.keywords,
+            Some(vec!["test".to_string(), "full".to_string()])
+        );
+        assert_eq!(pkg.categories, Some(vec!["development-tools".to_string()]));
+        assert!(pkg.homepage.is_some());
+        assert!(pkg.repository.is_some());
+        assert!(pkg.documentation.is_some());
+        assert!(pkg.readme.is_some());
+        assert!(pkg.exclude.is_some());
+        assert!(pkg.include.is_some());
+        assert!(pkg.publish.is_some());
+        assert!(cargo_toml.dev_dependencies.is_some());
+        assert!(cargo_toml.build_dependencies.is_some());
+        assert!(cargo_toml.features.is_some());
+        let ws = cargo_toml.workspace.unwrap();
+        assert_eq!(
+            ws.members,
+            Some(vec!["crate-a".to_string(), "crate-b".to_string()])
+        );
+        assert_eq!(ws.exclude, Some(vec!["examples".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_minimal_no_package() {
+        // A Cargo.toml with no [package] section (e.g. workspace-only)
+        let content = r#"
+[workspace]
+members = ["crate-a"]
+"#;
+        let cargo_toml = CargoHandler::parse_cargo_toml(content).unwrap();
+        assert!(cargo_toml.package.is_none());
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_invalid() {
+        let result = CargoHandler::parse_cargo_toml("not valid toml {{{{");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_cargo_toml_empty() {
+        // Empty string is valid TOML (no keys)
+        let cargo_toml = CargoHandler::parse_cargo_toml("").unwrap();
+        assert!(cargo_toml.package.is_none());
+    }
+
+    // ---- parse_index_entry ----
 
     #[test]
     fn test_parse_index_entry() {
@@ -534,5 +798,268 @@ serde = "1.0"
         let entry = CargoHandler::parse_index_entry(entry_json).unwrap();
         assert_eq!(entry.name, "serde");
         assert_eq!(entry.vers, "1.0.193");
+        assert!(!entry.yanked);
+        assert!(entry.deps.is_empty());
+        assert!(entry.features.is_empty());
+    }
+
+    #[test]
+    fn test_parse_index_entry_with_deps() {
+        let entry_json = r#"{
+            "name": "my-crate",
+            "vers": "0.1.0",
+            "deps": [
+                {
+                    "name": "serde",
+                    "req": "^1.0",
+                    "features": ["derive"],
+                    "optional": false,
+                    "kind": "normal",
+                    "target": null
+                }
+            ],
+            "cksum": "deadbeef",
+            "features": {"default": ["serde"]},
+            "yanked": true,
+            "rust-version": "1.75.0",
+            "v": 2
+        }"#;
+        let entry = CargoHandler::parse_index_entry(entry_json).unwrap();
+        assert_eq!(entry.name, "my-crate");
+        assert_eq!(entry.vers, "0.1.0");
+        assert!(entry.yanked);
+        assert_eq!(entry.deps.len(), 1);
+        assert_eq!(entry.deps[0].name, "serde");
+        assert_eq!(entry.deps[0].req, "^1.0");
+        assert_eq!(entry.deps[0].features, vec!["derive".to_string()]);
+        assert!(!entry.deps[0].optional);
+        assert_eq!(entry.deps[0].kind, "normal");
+        assert!(entry.features.contains_key("default"));
+        assert_eq!(entry.rust_version, Some("1.75.0".to_string()));
+        assert_eq!(entry.v, Some(2));
+    }
+
+    #[test]
+    fn test_parse_index_entry_dep_defaults() {
+        // Test that default_dep_kind provides "normal" when kind is missing
+        let entry_json = r#"{
+            "name": "x",
+            "vers": "0.1.0",
+            "deps": [{"name": "y", "req": "^1"}],
+            "cksum": "abcd"
+        }"#;
+        let entry = CargoHandler::parse_index_entry(entry_json).unwrap();
+        assert_eq!(entry.deps[0].kind, "normal");
+        assert!(!entry.deps[0].optional);
+        assert!(entry.deps[0].features.is_empty());
+        assert!(entry.deps[0].registry.is_none());
+        assert!(entry.deps[0].package.is_none());
+        assert!(entry.deps[0].target.is_none());
+    }
+
+    #[test]
+    fn test_parse_index_entry_with_features2() {
+        let entry_json = r#"{
+            "name": "x",
+            "vers": "0.1.0",
+            "deps": [],
+            "cksum": "aabb",
+            "features": {},
+            "features2": {"extra": ["dep:serde"]}
+        }"#;
+        let entry = CargoHandler::parse_index_entry(entry_json).unwrap();
+        assert!(entry.features2.is_some());
+        let f2 = entry.features2.unwrap();
+        assert!(f2.contains_key("extra"));
+    }
+
+    #[test]
+    fn test_parse_index_entry_with_links() {
+        let entry_json = r#"{
+            "name": "x",
+            "vers": "0.1.0",
+            "deps": [],
+            "cksum": "aabb",
+            "features": {},
+            "links": "openssl"
+        }"#;
+        let entry = CargoHandler::parse_index_entry(entry_json).unwrap();
+        assert_eq!(entry.links, Some("openssl".to_string()));
+    }
+
+    #[test]
+    fn test_parse_index_entry_invalid_json() {
+        assert!(CargoHandler::parse_index_entry("not json").is_err());
+    }
+
+    #[test]
+    fn test_parse_index_entry_missing_required_fields() {
+        // Missing "name" field
+        let result = CargoHandler::parse_index_entry(r#"{"vers":"1.0","cksum":"ab"}"#);
+        assert!(result.is_err());
+    }
+
+    // ---- parse_index_file ----
+
+    #[test]
+    fn test_parse_index_file_multiple_entries() {
+        let content = concat!(
+            r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"aa","features":{}}"#,
+            "\n",
+            r#"{"name":"serde","vers":"1.0.1","deps":[],"cksum":"bb","features":{}}"#,
+            "\n",
+        );
+        let entries = CargoHandler::parse_index_file(content).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].vers, "1.0.0");
+        assert_eq!(entries[1].vers, "1.0.1");
+    }
+
+    #[test]
+    fn test_parse_index_file_empty_lines_skipped() {
+        let content = concat!(
+            "\n",
+            r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"aa","features":{}}"#,
+            "\n\n",
+            r#"{"name":"serde","vers":"1.0.1","deps":[],"cksum":"bb","features":{}}"#,
+            "\n\n",
+        );
+        let entries = CargoHandler::parse_index_file(content).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_index_file_empty_content() {
+        let entries = CargoHandler::parse_index_file("").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_index_file_invalid_line() {
+        let content = "not valid json\n";
+        assert!(CargoHandler::parse_index_file(content).is_err());
+    }
+
+    // ---- generate_config ----
+
+    #[test]
+    fn test_generate_config() {
+        let config = generate_config("https://dl.example.com", Some("https://api.example.com"));
+        assert_eq!(config.dl, "https://dl.example.com");
+        assert_eq!(config.api, Some("https://api.example.com".to_string()));
+        assert!(config.auth_required.is_none());
+    }
+
+    #[test]
+    fn test_generate_config_no_api() {
+        let config = generate_config("https://dl.example.com", None);
+        assert_eq!(config.dl, "https://dl.example.com");
+        assert!(config.api.is_none());
+    }
+
+    // ---- generate_index_entry ----
+
+    #[test]
+    fn test_generate_index_entry() {
+        let deps = vec![IndexDependency {
+            name: "serde".to_string(),
+            req: "^1.0".to_string(),
+            features: vec![],
+            optional: false,
+            kind: "normal".to_string(),
+            registry: None,
+            package: None,
+            target: None,
+        }];
+        let mut features = HashMap::new();
+        features.insert("default".to_string(), vec!["serde".to_string()]);
+        let entry = generate_index_entry("my-crate", "0.1.0", "deadbeef", deps, features);
+        assert_eq!(entry.name, "my-crate");
+        assert_eq!(entry.vers, "0.1.0");
+        assert_eq!(entry.cksum, "deadbeef");
+        assert!(!entry.yanked);
+        assert_eq!(entry.deps.len(), 1);
+        assert!(entry.features.contains_key("default"));
+        assert!(entry.features2.is_none());
+        assert!(entry.links.is_none());
+        assert!(entry.rust_version.is_none());
+        assert_eq!(entry.v, Some(2));
+    }
+
+    #[test]
+    fn test_generate_index_entry_empty_deps_features() {
+        let entry = generate_index_entry("x", "1.0.0", "aabb", vec![], HashMap::new());
+        assert!(entry.deps.is_empty());
+        assert!(entry.features.is_empty());
+    }
+
+    // ---- RegistryConfig serde ----
+
+    #[test]
+    fn test_registry_config_serialization_roundtrip() {
+        let config = RegistryConfig {
+            dl: "https://dl.example.com".to_string(),
+            api: Some("https://api.example.com".to_string()),
+            auth_required: Some(true),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: RegistryConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.dl, config.dl);
+        assert_eq!(parsed.api, config.api);
+        assert_eq!(parsed.auth_required, Some(true));
+    }
+
+    #[test]
+    fn test_registry_config_defaults() {
+        let json = r#"{"dl":"https://example.com"}"#;
+        let config: RegistryConfig = serde_json::from_str(json).unwrap();
+        assert!(config.api.is_none());
+        assert!(config.auth_required.is_none());
+    }
+
+    // ---- parse_path: edge cases with parse_index_path ----
+
+    #[test]
+    fn test_parse_index_path_single_part_not_1_or_2() {
+        // A single-part path that isn't "1" or "2" prefix
+        let result = CargoHandler::parse_path("5/crate");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_3char_but_first_char_mismatch() {
+        // 3/x/abc -> "abc" starts with "a", not "x"
+        assert!(CargoHandler::parse_path("3/x/abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_direct_crate_file() {
+        // A .crate filename at root level
+        let info = CargoHandler::parse_path("my-crate-1.0.0.crate").unwrap();
+        assert!(matches!(info.operation, CargoOperation::Download));
+        assert_eq!(info.name, Some("my-crate".to_string()));
+        assert_eq!(info.version, Some("1.0.0".to_string()));
+    }
+
+    // ---- default_dep_kind ----
+
+    #[test]
+    fn test_default_dep_kind() {
+        assert_eq!(default_dep_kind(), "normal");
+    }
+
+    // ---- extract_cargo_toml: invalid content ----
+
+    #[test]
+    fn test_extract_cargo_toml_invalid_bytes() {
+        // Not a valid gzip
+        let result = CargoHandler::extract_cargo_toml(b"not gzip data");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_cargo_toml_empty() {
+        let result = CargoHandler::extract_cargo_toml(b"");
+        assert!(result.is_err());
     }
 }

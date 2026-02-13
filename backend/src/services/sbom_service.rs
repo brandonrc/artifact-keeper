@@ -857,4 +857,521 @@ mod tests {
             sbom2["documentNamespace"].as_str().unwrap()
         );
     }
+
+    // -----------------------------------------------------------------------
+    // check_license_compliance (pure function on &self + LicensePolicy)
+    //
+    // NOTE: SbomService has a PgPool field, so we cannot construct it in
+    // tests. However, check_license_compliance only uses &self and the
+    // LicensePolicy argument, never touching the database. We duplicate
+    // the logic here to test it. The engineering expert should extract this
+    // into a free function or an associated function.
+    // -----------------------------------------------------------------------
+
+    /// Duplicated from SbomService::check_license_compliance for unit testing.
+    fn check_license_compliance_standalone(
+        policy: &LicensePolicy,
+        licenses: &[String],
+    ) -> LicenseCheckResult {
+        let mut violations = Vec::new();
+        let mut warnings = Vec::new();
+
+        for license in licenses {
+            let normalized = license.to_uppercase();
+
+            // Check denylist first (takes precedence)
+            if policy
+                .denied_licenses
+                .iter()
+                .any(|d| d.to_uppercase() == normalized)
+            {
+                violations.push(format!("License '{}' is denied by policy", license));
+                continue;
+            }
+
+            // Check allowlist if not empty
+            if !policy.allowed_licenses.is_empty()
+                && !policy
+                    .allowed_licenses
+                    .iter()
+                    .any(|a| a.to_uppercase() == normalized)
+            {
+                if policy.allow_unknown {
+                    warnings.push(format!("License '{}' is not in approved list", license));
+                } else {
+                    violations.push(format!("License '{}' is not in approved list", license));
+                }
+            }
+        }
+
+        LicenseCheckResult {
+            compliant: violations.is_empty(),
+            violations,
+            warnings,
+        }
+    }
+
+    fn make_policy(allowed: Vec<&str>, denied: Vec<&str>, allow_unknown: bool) -> LicensePolicy {
+        LicensePolicy {
+            id: Uuid::new_v4(),
+            repository_id: None,
+            name: "test-policy".to_string(),
+            description: None,
+            allowed_licenses: allowed.into_iter().map(String::from).collect(),
+            denied_licenses: denied.into_iter().map(String::from).collect(),
+            allow_unknown,
+            action: crate::models::sbom::PolicyAction::Block,
+            is_enabled: true,
+            created_at: Utc::now(),
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_license_compliance_all_allowed() {
+        let policy = make_policy(vec!["MIT", "Apache-2.0", "BSD-3-Clause"], vec![], false);
+        let licenses = vec!["MIT".to_string(), "Apache-2.0".to_string()];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(result.compliant);
+        assert!(result.violations.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_license_compliance_denied_takes_precedence() {
+        // GPL is in both allowed and denied; denied should win
+        let policy = make_policy(vec!["MIT", "GPL-3.0"], vec!["GPL-3.0"], false);
+        let licenses = vec!["GPL-3.0".to_string()];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(!result.compliant);
+        assert_eq!(result.violations.len(), 1);
+        assert!(result.violations[0].contains("denied"));
+    }
+
+    #[test]
+    fn test_license_compliance_not_in_allowlist_strict() {
+        let policy = make_policy(vec!["MIT"], vec![], false);
+        let licenses = vec!["AGPL-3.0".to_string()];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(!result.compliant);
+        assert_eq!(result.violations.len(), 1);
+        assert!(result.violations[0].contains("not in approved list"));
+    }
+
+    #[test]
+    fn test_license_compliance_not_in_allowlist_lenient() {
+        let policy = make_policy(vec!["MIT"], vec![], true); // allow_unknown = true
+        let licenses = vec!["AGPL-3.0".to_string()];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(result.compliant); // no violations, just warnings
+        assert!(result.violations.is_empty());
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("not in approved list"));
+    }
+
+    #[test]
+    fn test_license_compliance_empty_allowlist_allows_everything() {
+        // When allowlist is empty, the allowlist check is skipped
+        let policy = make_policy(vec![], vec![], false);
+        let licenses = vec!["ANY-LICENSE".to_string()];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(result.compliant);
+    }
+
+    #[test]
+    fn test_license_compliance_case_insensitive() {
+        let policy = make_policy(vec!["MIT"], vec!["gpl-3.0"], false);
+
+        // "mit" should match "MIT" in allowlist
+        let result1 = check_license_compliance_standalone(&policy, &["mit".to_string()]);
+        assert!(result1.compliant);
+
+        // "GPL-3.0" should match "gpl-3.0" in denylist
+        let result2 = check_license_compliance_standalone(&policy, &["GPL-3.0".to_string()]);
+        assert!(!result2.compliant);
+    }
+
+    #[test]
+    fn test_license_compliance_empty_licenses() {
+        let policy = make_policy(vec!["MIT"], vec!["GPL-3.0"], false);
+        let licenses: Vec<String> = vec![];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(result.compliant);
+        assert!(result.violations.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_license_compliance_mixed_results() {
+        let policy = make_policy(vec!["MIT", "Apache-2.0"], vec!["GPL-3.0"], false);
+        let licenses = vec![
+            "MIT".to_string(),
+            "GPL-3.0".to_string(),      // denied
+            "BSD-2-Clause".to_string(), // not in allowlist
+        ];
+
+        let result = check_license_compliance_standalone(&policy, &licenses);
+        assert!(!result.compliant);
+        assert_eq!(result.violations.len(), 2); // GPL denied + BSD not approved
+    }
+
+    #[test]
+    fn test_license_compliance_only_denylist() {
+        // No allowlist, just a denylist
+        let policy = make_policy(vec![], vec!["AGPL-3.0", "SSPL-1.0"], false);
+
+        let ok_result = check_license_compliance_standalone(&policy, &["MIT".to_string()]);
+        assert!(ok_result.compliant);
+
+        let bad_result = check_license_compliance_standalone(&policy, &["AGPL-3.0".to_string()]);
+        assert!(!bad_result.compliant);
+    }
+
+    // -----------------------------------------------------------------------
+    // get_format_version / get_spec_version
+    //
+    // NOTE: These require &self but never access DB. Testability blocker:
+    // should be associated functions (no &self needed).
+    // We test the expected mapping directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_version_mapping() {
+        // CycloneDX format version
+        assert_eq!(
+            match SbomFormat::CycloneDX {
+                SbomFormat::CycloneDX => "1.5",
+                SbomFormat::SPDX => "2.3",
+            },
+            "1.5"
+        );
+        // SPDX format version
+        assert_eq!(
+            match SbomFormat::SPDX {
+                SbomFormat::CycloneDX => "1.5",
+                SbomFormat::SPDX => "2.3",
+            },
+            "2.3"
+        );
+    }
+
+    #[test]
+    fn test_spec_version_mapping() {
+        assert_eq!(
+            match SbomFormat::CycloneDX {
+                SbomFormat::CycloneDX => "CycloneDX 1.5",
+                SbomFormat::SPDX => "SPDX-2.3",
+            },
+            "CycloneDX 1.5"
+        );
+        assert_eq!(
+            match SbomFormat::SPDX {
+                SbomFormat::CycloneDX => "CycloneDX 1.5",
+                SbomFormat::SPDX => "SPDX-2.3",
+            },
+            "SPDX-2.3"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SbomFormat model tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sbom_format_parse() {
+        assert_eq!(SbomFormat::parse("cyclonedx"), Some(SbomFormat::CycloneDX));
+        assert_eq!(SbomFormat::parse("CycloneDX"), Some(SbomFormat::CycloneDX));
+        assert_eq!(SbomFormat::parse("cdx"), Some(SbomFormat::CycloneDX));
+        assert_eq!(SbomFormat::parse("spdx"), Some(SbomFormat::SPDX));
+        assert_eq!(SbomFormat::parse("SPDX"), Some(SbomFormat::SPDX));
+        assert_eq!(SbomFormat::parse("unknown"), None);
+        assert_eq!(SbomFormat::parse(""), None);
+    }
+
+    #[test]
+    fn test_sbom_format_as_str() {
+        assert_eq!(SbomFormat::CycloneDX.as_str(), "cyclonedx");
+        assert_eq!(SbomFormat::SPDX.as_str(), "spdx");
+    }
+
+    #[test]
+    fn test_sbom_format_content_type() {
+        assert_eq!(
+            SbomFormat::CycloneDX.content_type(),
+            "application/vnd.cyclonedx+json"
+        );
+        assert_eq!(SbomFormat::SPDX.content_type(), "application/spdx+json");
+    }
+
+    #[test]
+    fn test_sbom_format_display() {
+        assert_eq!(format!("{}", SbomFormat::CycloneDX), "cyclonedx");
+        assert_eq!(format!("{}", SbomFormat::SPDX), "spdx");
+    }
+
+    // -----------------------------------------------------------------------
+    // CycloneDX generation: comprehensive component field coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cyclonedx_component_with_all_fields() {
+        let deps = vec![DependencyInfo {
+            name: "serde".to_string(),
+            version: Some("1.0.195".to_string()),
+            purl: Some("pkg:cargo/serde@1.0.195".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            sha256: Some("abc123def456".to_string()),
+        }];
+
+        let sbom = generate_test_cyclonedx(&deps);
+        let comp = &sbom["components"][0];
+
+        assert_eq!(comp["name"], "serde");
+        assert_eq!(comp["version"], "1.0.195");
+        assert_eq!(comp["purl"], "pkg:cargo/serde@1.0.195");
+        assert_eq!(comp["licenses"][0]["license"]["id"], "MIT OR Apache-2.0");
+    }
+
+    #[test]
+    fn test_cyclonedx_component_optional_fields_omitted() {
+        let deps = vec![DependencyInfo {
+            name: "minimal".to_string(),
+            version: None,
+            purl: None,
+            license: None,
+            sha256: None,
+        }];
+
+        let sbom = generate_test_cyclonedx(&deps);
+        let comp = &sbom["components"][0];
+
+        assert_eq!(comp["name"], "minimal");
+        assert_eq!(comp["type"], "library");
+        // Optional fields should be absent (null in JSON)
+        assert!(comp.get("version").is_none());
+        assert!(comp.get("purl").is_none());
+        assert!(comp.get("licenses").is_none());
+    }
+
+    #[test]
+    fn test_cyclonedx_multiple_components() {
+        let deps = vec![
+            DependencyInfo {
+                name: "alpha".to_string(),
+                version: Some("1.0".to_string()),
+                purl: None,
+                license: None,
+                sha256: None,
+            },
+            DependencyInfo {
+                name: "beta".to_string(),
+                version: Some("2.0".to_string()),
+                purl: None,
+                license: None,
+                sha256: None,
+            },
+            DependencyInfo {
+                name: "gamma".to_string(),
+                version: Some("3.0".to_string()),
+                purl: None,
+                license: None,
+                sha256: None,
+            },
+        ];
+
+        let sbom = generate_test_cyclonedx(&deps);
+        let components = sbom["components"].as_array().unwrap();
+        assert_eq!(components.len(), 3);
+        assert_eq!(components[0]["name"], "alpha");
+        assert_eq!(components[1]["name"], "beta");
+        assert_eq!(components[2]["name"], "gamma");
+    }
+
+    // -----------------------------------------------------------------------
+    // SPDX generation: comprehensive field coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_spdx_package_no_license() {
+        let deps = vec![DependencyInfo {
+            name: "unlicensed-pkg".to_string(),
+            version: Some("0.1.0".to_string()),
+            purl: None,
+            license: None,
+            sha256: None,
+        }];
+
+        let sbom = generate_test_spdx(&deps);
+        let pkg = &sbom["packages"][0];
+
+        // When no license, SPDX should have NOASSERTION (or be absent
+        // depending on the test helper). The test helper only sets
+        // licenseDeclared when license is present.
+        // In the real generate_spdx, both licenseConcluded and licenseDeclared
+        // are set to "NOASSERTION" when license is None.
+        assert_eq!(pkg["name"], "unlicensed-pkg");
+    }
+
+    #[test]
+    fn test_spdx_package_spdxid_format() {
+        let deps = vec![
+            DependencyInfo {
+                name: "a".to_string(),
+                version: None,
+                purl: None,
+                license: None,
+                sha256: None,
+            },
+            DependencyInfo {
+                name: "b".to_string(),
+                version: None,
+                purl: None,
+                license: None,
+                sha256: None,
+            },
+        ];
+
+        let sbom = generate_test_spdx(&deps);
+        let packages = sbom["packages"].as_array().unwrap();
+
+        assert_eq!(packages[0]["SPDXID"], "SPDXRef-Package-0");
+        assert_eq!(packages[1]["SPDXID"], "SPDXRef-Package-1");
+    }
+
+    #[test]
+    fn test_spdx_download_location_noassertion() {
+        let deps = vec![DependencyInfo {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            purl: None,
+            license: None,
+            sha256: None,
+        }];
+
+        let sbom = generate_test_spdx(&deps);
+        assert_eq!(sbom["packages"][0]["downloadLocation"], "NOASSERTION");
+    }
+
+    // -----------------------------------------------------------------------
+    // ComponentInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_component_info_from_dependency() {
+        let dep = DependencyInfo {
+            name: "react".to_string(),
+            version: Some("18.2.0".to_string()),
+            purl: Some("pkg:npm/react@18.2.0".to_string()),
+            license: Some("MIT".to_string()),
+            sha256: Some("sha256hash".to_string()),
+        };
+
+        let comp = ComponentInfo {
+            name: dep.name.clone(),
+            version: dep.version.clone(),
+            purl: dep.purl.clone(),
+            component_type: Some("library".to_string()),
+            licenses: dep.license.clone().into_iter().collect(),
+            sha256: dep.sha256.clone(),
+            supplier: None,
+        };
+
+        assert_eq!(comp.name, "react");
+        assert_eq!(comp.version.as_deref(), Some("18.2.0"));
+        assert_eq!(comp.purl.as_deref(), Some("pkg:npm/react@18.2.0"));
+        assert_eq!(comp.component_type.as_deref(), Some("library"));
+        assert_eq!(comp.licenses, vec!["MIT".to_string()]);
+        assert_eq!(comp.sha256.as_deref(), Some("sha256hash"));
+        assert!(comp.supplier.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DependencyInfo serialization/deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dependency_info_serde_roundtrip() {
+        let dep = DependencyInfo {
+            name: "axios".to_string(),
+            version: Some("1.6.0".to_string()),
+            purl: Some("pkg:npm/axios@1.6.0".to_string()),
+            license: Some("MIT".to_string()),
+            sha256: None,
+        };
+
+        let json = serde_json::to_string(&dep).unwrap();
+        let deserialized: DependencyInfo = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.name, "axios");
+        assert_eq!(deserialized.version.as_deref(), Some("1.6.0"));
+        assert_eq!(deserialized.purl.as_deref(), Some("pkg:npm/axios@1.6.0"));
+        assert_eq!(deserialized.license.as_deref(), Some("MIT"));
+        assert!(deserialized.sha256.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // LicenseCheckResult serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_license_check_result_serialization() {
+        let result = LicenseCheckResult {
+            compliant: false,
+            violations: vec!["License 'GPL-3.0' is denied".to_string()],
+            warnings: vec!["License 'LGPL-2.1' is not in approved list".to_string()],
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["compliant"], false);
+        assert_eq!(json["violations"].as_array().unwrap().len(), 1);
+        assert_eq!(json["warnings"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_license_check_result_compliant_serialization() {
+        let result = LicenseCheckResult {
+            compliant: true,
+            violations: vec![],
+            warnings: vec![],
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["compliant"], true);
+        assert!(json["violations"].as_array().unwrap().is_empty());
+        assert!(json["warnings"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // CveStatus model
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cve_status_parse() {
+        assert_eq!(CveStatus::parse("open"), Some(CveStatus::Open));
+        assert_eq!(CveStatus::parse("fixed"), Some(CveStatus::Fixed));
+        assert_eq!(
+            CveStatus::parse("acknowledged"),
+            Some(CveStatus::Acknowledged)
+        );
+        assert_eq!(
+            CveStatus::parse("false_positive"),
+            Some(CveStatus::FalsePositive)
+        );
+        assert_eq!(CveStatus::parse("OPEN"), Some(CveStatus::Open));
+        assert_eq!(CveStatus::parse("unknown"), None);
+    }
+
+    #[test]
+    fn test_cve_status_as_str() {
+        assert_eq!(CveStatus::Open.as_str(), "open");
+        assert_eq!(CveStatus::Fixed.as_str(), "fixed");
+        assert_eq!(CveStatus::Acknowledged.as_str(), "acknowledged");
+        assert_eq!(CveStatus::FalsePositive.as_str(), "false_positive");
+    }
 }

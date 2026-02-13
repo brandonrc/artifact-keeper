@@ -173,3 +173,106 @@ fn is_secret_value(_value: &str) -> bool {
     // This is a placeholder - actual implementation would check is_secret field
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // PluginResourceLimits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_resource_limits_default() {
+        let limits = PluginResourceLimits::default();
+        assert_eq!(limits.memory_mb, 64);
+        assert_eq!(limits.timeout_secs, 5);
+        assert_eq!(limits.fuel, 500_000_000);
+    }
+
+    #[test]
+    fn test_plugin_resource_limits_serialize_deserialize() {
+        let limits = PluginResourceLimits {
+            memory_mb: 128,
+            timeout_secs: 10,
+            fuel: 1_000_000_000,
+        };
+        let json = serde_json::to_string(&limits).unwrap();
+        let deserialized: PluginResourceLimits = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.memory_mb, 128);
+        assert_eq!(deserialized.timeout_secs, 10);
+        assert_eq!(deserialized.fuel, 1_000_000_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginCapabilities
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_capabilities_default() {
+        let caps = PluginCapabilities::default();
+        assert!(caps.parse_metadata);
+        assert!(!caps.generate_index);
+        assert!(caps.validate_artifact);
+    }
+
+    #[test]
+    fn test_plugin_capabilities_serialize_deserialize() {
+        let caps = PluginCapabilities {
+            parse_metadata: false,
+            generate_index: true,
+            validate_artifact: false,
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        let deserialized: PluginCapabilities = serde_json::from_str(&json).unwrap();
+        assert!(!deserialized.parse_metadata);
+        assert!(deserialized.generate_index);
+        assert!(!deserialized.validate_artifact);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginStatus equality
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_status_equality() {
+        assert_eq!(PluginStatus::Active, PluginStatus::Active);
+        assert_ne!(PluginStatus::Active, PluginStatus::Disabled);
+        assert_ne!(PluginStatus::Active, PluginStatus::Error);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginType equality
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_type_equality() {
+        assert_eq!(PluginType::FormatHandler, PluginType::FormatHandler);
+        assert_ne!(PluginType::FormatHandler, PluginType::Webhook);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginSourceType equality
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_source_type_equality() {
+        assert_eq!(PluginSourceType::Core, PluginSourceType::Core);
+        assert_ne!(PluginSourceType::Core, PluginSourceType::WasmGit);
+        assert_eq!(PluginSourceType::WasmGit, PluginSourceType::WasmGit);
+        assert_eq!(PluginSourceType::WasmZip, PluginSourceType::WasmZip);
+        assert_eq!(PluginSourceType::WasmLocal, PluginSourceType::WasmLocal);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_secret_value
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_secret_value_always_false() {
+        // Current implementation is a placeholder returning false
+        assert!(!is_secret_value("any value"));
+        assert!(!is_secret_value(""));
+        assert!(!is_secret_value("super-secret"));
+    }
+}

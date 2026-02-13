@@ -142,3 +142,324 @@ impl Config {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Environment variable tests must be serialized because env is global state.
+    // We use a mutex to prevent parallel test interference.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    // -----------------------------------------------------------------------
+    // env_parse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_env_parse_returns_default_when_var_not_set() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Use a unique key unlikely to be set
+        env::remove_var("__TEST_ENV_PARSE_MISSING_12345__");
+        let result: u64 = env_parse("__TEST_ENV_PARSE_MISSING_12345__", 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_env_parse_parses_valid_value() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        env::set_var("__TEST_ENV_PARSE_VALID__", "100");
+        let result: u64 = env_parse("__TEST_ENV_PARSE_VALID__", 42);
+        assert_eq!(result, 100);
+        env::remove_var("__TEST_ENV_PARSE_VALID__");
+    }
+
+    #[test]
+    fn test_env_parse_returns_default_on_invalid_value() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        env::set_var("__TEST_ENV_PARSE_INVALID__", "not-a-number");
+        let result: u64 = env_parse("__TEST_ENV_PARSE_INVALID__", 42);
+        assert_eq!(result, 42);
+        env::remove_var("__TEST_ENV_PARSE_INVALID__");
+    }
+
+    #[test]
+    fn test_env_parse_bool() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        env::set_var("__TEST_ENV_PARSE_BOOL__", "true");
+        let result: bool = env_parse("__TEST_ENV_PARSE_BOOL__", false);
+        assert!(result);
+        env::remove_var("__TEST_ENV_PARSE_BOOL__");
+    }
+
+    #[test]
+    fn test_env_parse_i64() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        env::set_var("__TEST_ENV_PARSE_I64__", "-30");
+        let result: i64 = env_parse("__TEST_ENV_PARSE_I64__", 7);
+        assert_eq!(result, -30);
+        env::remove_var("__TEST_ENV_PARSE_I64__");
+    }
+
+    #[test]
+    fn test_env_parse_empty_string_falls_back_to_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        env::set_var("__TEST_ENV_PARSE_EMPTY__", "");
+        // Empty string is not parseable as u64, so default is used
+        let result: u64 = env_parse("__TEST_ENV_PARSE_EMPTY__", 99);
+        assert_eq!(result, 99);
+        env::remove_var("__TEST_ENV_PARSE_EMPTY__");
+    }
+
+    // -----------------------------------------------------------------------
+    // Config::from_env
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_from_env_missing_database_url_errors() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Save and remove required vars
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        env::remove_var("DATABASE_URL");
+        env::set_var("JWT_SECRET", "test-secret");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("DATABASE_URL"));
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_missing_jwt_secret_errors() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        env::set_var("DATABASE_URL", "postgresql://localhost/test");
+        env::remove_var("JWT_SECRET");
+
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("JWT_SECRET"));
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        }
+    }
+
+    #[test]
+    fn test_config_from_env_defaults() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Save existing env vars
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_bind = env::var("BIND_ADDRESS").ok();
+        let saved_log = env::var("LOG_LEVEL").ok();
+        let saved_storage = env::var("STORAGE_BACKEND").ok();
+        let saved_demo = env::var("DEMO_MODE").ok();
+
+        // Set only required vars
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "super-secret");
+
+        // Remove optional vars to test defaults
+        env::remove_var("BIND_ADDRESS");
+        env::remove_var("LOG_LEVEL");
+        env::remove_var("STORAGE_BACKEND");
+        env::remove_var("DEMO_MODE");
+
+        let config = Config::from_env().expect("Config should load with required vars");
+
+        assert_eq!(config.database_url, "postgresql://localhost/testdb");
+        assert_eq!(config.jwt_secret, "super-secret");
+        assert_eq!(config.bind_address, "0.0.0.0:8080");
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.storage_backend, "filesystem");
+        assert_eq!(config.jwt_expiration_secs, 86400);
+        assert_eq!(config.jwt_access_token_expiry_minutes, 30);
+        assert_eq!(config.jwt_refresh_token_expiry_days, 7);
+        assert!(!config.demo_mode);
+        assert_eq!(config.scan_workspace_path, "/scan-workspace");
+        assert_eq!(config.peer_instance_name, "artifact-keeper-local");
+        assert_eq!(config.peer_public_endpoint, "http://localhost:8080");
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_bind {
+            env::set_var("BIND_ADDRESS", v);
+        }
+        if let Some(v) = saved_log {
+            env::set_var("LOG_LEVEL", v);
+        }
+        if let Some(v) = saved_storage {
+            env::set_var("STORAGE_BACKEND", v);
+        }
+        if let Some(v) = saved_demo {
+            env::set_var("DEMO_MODE", v);
+        }
+    }
+
+    #[test]
+    fn test_config_demo_mode_true() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_demo = env::var("DEMO_MODE").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::set_var("DEMO_MODE", "true");
+
+        let config = Config::from_env().unwrap();
+        assert!(config.demo_mode);
+
+        // Also test "1"
+        env::set_var("DEMO_MODE", "1");
+        let config = Config::from_env().unwrap();
+        assert!(config.demo_mode);
+
+        // Test "false" is not demo mode
+        env::set_var("DEMO_MODE", "false");
+        let config = Config::from_env().unwrap();
+        assert!(!config.demo_mode);
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_demo {
+            env::set_var("DEMO_MODE", v);
+        } else {
+            env::remove_var("DEMO_MODE");
+        }
+    }
+
+    #[test]
+    fn test_config_custom_jwt_expiry() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_exp = env::var("JWT_EXPIRATION_SECS").ok();
+        let saved_access = env::var("JWT_ACCESS_TOKEN_EXPIRY_MINUTES").ok();
+        let saved_refresh = env::var("JWT_REFRESH_TOKEN_EXPIRY_DAYS").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::set_var("JWT_EXPIRATION_SECS", "3600");
+        env::set_var("JWT_ACCESS_TOKEN_EXPIRY_MINUTES", "15");
+        env::set_var("JWT_REFRESH_TOKEN_EXPIRY_DAYS", "14");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.jwt_expiration_secs, 3600);
+        assert_eq!(config.jwt_access_token_expiry_minutes, 15);
+        assert_eq!(config.jwt_refresh_token_expiry_days, 14);
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_exp {
+            env::set_var("JWT_EXPIRATION_SECS", v);
+        } else {
+            env::remove_var("JWT_EXPIRATION_SECS");
+        }
+        if let Some(v) = saved_access {
+            env::set_var("JWT_ACCESS_TOKEN_EXPIRY_MINUTES", v);
+        } else {
+            env::remove_var("JWT_ACCESS_TOKEN_EXPIRY_MINUTES");
+        }
+        if let Some(v) = saved_refresh {
+            env::set_var("JWT_REFRESH_TOKEN_EXPIRY_DAYS", v);
+        } else {
+            env::remove_var("JWT_REFRESH_TOKEN_EXPIRY_DAYS");
+        }
+    }
+
+    #[test]
+    fn test_config_optional_s3_fields() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_bucket = env::var("S3_BUCKET").ok();
+        let saved_region = env::var("S3_REGION").ok();
+        let saved_endpoint = env::var("S3_ENDPOINT").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::set_var("S3_BUCKET", "my-bucket");
+        env::set_var("S3_REGION", "us-east-1");
+        env::set_var("S3_ENDPOINT", "http://minio:9000");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.s3_bucket.as_deref(), Some("my-bucket"));
+        assert_eq!(config.s3_region.as_deref(), Some("us-east-1"));
+        assert_eq!(config.s3_endpoint.as_deref(), Some("http://minio:9000"));
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_bucket {
+            env::set_var("S3_BUCKET", v);
+        } else {
+            env::remove_var("S3_BUCKET");
+        }
+        if let Some(v) = saved_region {
+            env::set_var("S3_REGION", v);
+        } else {
+            env::remove_var("S3_REGION");
+        }
+        if let Some(v) = saved_endpoint {
+            env::set_var("S3_ENDPOINT", v);
+        } else {
+            env::remove_var("S3_ENDPOINT");
+        }
+    }
+}

@@ -636,4 +636,461 @@ mod tests {
         let error = WasmError::from(wasmtime::Error::msg("test error"));
         assert!(matches!(error, WasmError::EngineError(_)));
     }
+
+    // -----------------------------------------------------------------------
+    // WasmError conversion from wasmtime::Error - keyword matching
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_error_from_wasmtime_fuel_error() {
+        let error = WasmError::from(wasmtime::Error::msg("all fuel consumed by wasm"));
+        assert!(matches!(error, WasmError::FuelExhausted));
+    }
+
+    #[test]
+    fn test_wasm_error_from_wasmtime_memory_error() {
+        let error = WasmError::from(wasmtime::Error::msg("memory allocation failed"));
+        assert!(matches!(error, WasmError::MemoryExceeded(0)));
+    }
+
+    #[test]
+    fn test_wasm_error_from_wasmtime_generic_error() {
+        let error = WasmError::from(wasmtime::Error::msg("something unexpected"));
+        match error {
+            WasmError::EngineError(msg) => assert!(msg.contains("something unexpected")),
+            other => panic!("Expected EngineError, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmError Display implementations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_error_display_timeout() {
+        let err = WasmError::Timeout(30);
+        assert_eq!(err.to_string(), "WASM execution timed out after 30 seconds");
+    }
+
+    #[test]
+    fn test_wasm_error_display_fuel_exhausted() {
+        let err = WasmError::FuelExhausted;
+        assert_eq!(err.to_string(), "WASM execution exceeded fuel limit");
+    }
+
+    #[test]
+    fn test_wasm_error_display_memory_exceeded() {
+        let err = WasmError::MemoryExceeded(128);
+        assert_eq!(
+            err.to_string(),
+            "WASM execution exceeded memory limit (128 MB)"
+        );
+    }
+
+    #[test]
+    fn test_wasm_error_display_validation_failed() {
+        let err = WasmError::ValidationFailed("bad bytes".to_string());
+        assert_eq!(
+            err.to_string(),
+            "WASM component validation failed: bad bytes"
+        );
+    }
+
+    #[test]
+    fn test_wasm_error_display_compilation_failed() {
+        let err = WasmError::CompilationFailed("syntax error".to_string());
+        assert_eq!(err.to_string(), "WASM compilation failed: syntax error");
+    }
+
+    #[test]
+    fn test_wasm_error_display_instantiation_failed() {
+        let err = WasmError::InstantiationFailed("missing import".to_string());
+        assert_eq!(err.to_string(), "WASM instantiation failed: missing import");
+    }
+
+    #[test]
+    fn test_wasm_error_display_call_failed() {
+        let err = WasmError::CallFailed("trap: unreachable".to_string());
+        assert_eq!(
+            err.to_string(),
+            "WASM function call failed: trap: unreachable"
+        );
+    }
+
+    #[test]
+    fn test_wasm_error_display_engine_error() {
+        let err = WasmError::EngineError("config error".to_string());
+        assert_eq!(err.to_string(), "WASM engine error: config error");
+    }
+
+    #[test]
+    fn test_wasm_error_display_plugin_error() {
+        let err = WasmError::PluginError("unexpected error".to_string());
+        assert_eq!(err.to_string(), "Plugin returned error: unexpected error");
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmRuntime
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_runtime_default() {
+        // Default should succeed
+        let runtime = WasmRuntime::default();
+        // Just verify it was created successfully
+        let _ = &runtime.config;
+    }
+
+    #[test]
+    fn test_wasm_runtime_with_config() {
+        let mut config = Config::new();
+        config.async_support(true);
+        let runtime = WasmRuntime::with_config(config);
+        let _ = &runtime.config;
+    }
+
+    #[test]
+    fn test_wasm_runtime_validate_invalid_bytes() {
+        let runtime = WasmRuntime::new().unwrap();
+        let result = runtime.validate(b"this is not wasm");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(WasmError::ValidationFailed(_))));
+    }
+
+    #[test]
+    fn test_wasm_runtime_compile_invalid_bytes() {
+        let runtime = WasmRuntime::new().unwrap();
+        let result = runtime.compile(b"not a valid wasm component");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(WasmError::CompilationFailed(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmMetadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_metadata_to_json_with_none_values() {
+        let metadata = WasmMetadata {
+            path: "/artifacts/test.bin".to_string(),
+            version: None,
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 0,
+            checksum_sha256: None,
+        };
+
+        let json = metadata.to_json();
+        assert_eq!(json["path"], "/artifacts/test.bin");
+        assert!(json["version"].is_null());
+        assert_eq!(json["content_type"], "application/octet-stream");
+        assert_eq!(json["size_bytes"], 0);
+        assert!(json["checksum_sha256"].is_null());
+    }
+
+    #[test]
+    fn test_wasm_metadata_to_json_large_size() {
+        let metadata = WasmMetadata {
+            path: "/large/file.bin".to_string(),
+            version: Some("2.0.0".to_string()),
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: u64::MAX,
+            checksum_sha256: Some("deadbeef".to_string()),
+        };
+
+        let json = metadata.to_json();
+        assert_eq!(json["size_bytes"], u64::MAX);
+    }
+
+    #[test]
+    fn test_wasm_metadata_clone() {
+        let metadata = WasmMetadata {
+            path: "/test".to_string(),
+            version: Some("1.0.0".to_string()),
+            content_type: "text/plain".to_string(),
+            size_bytes: 100,
+            checksum_sha256: Some("abc".to_string()),
+        };
+        let cloned = metadata.clone();
+        assert_eq!(cloned.path, metadata.path);
+        assert_eq!(cloned.version, metadata.version);
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmValidationError
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_validation_error_display_with_field() {
+        let err = WasmValidationError {
+            message: "must be non-empty".to_string(),
+            field: Some("name".to_string()),
+        };
+        assert_eq!(err.to_string(), "must be non-empty (field: name)");
+    }
+
+    #[test]
+    fn test_wasm_validation_error_display_without_field() {
+        let err = WasmValidationError {
+            message: "general validation error".to_string(),
+            field: None,
+        };
+        assert_eq!(err.to_string(), "general validation error");
+    }
+
+    #[test]
+    fn test_wasm_validation_error_clone() {
+        let err = WasmValidationError {
+            message: "test".to_string(),
+            field: Some("f".to_string()),
+        };
+        let cloned = err.clone();
+        assert_eq!(cloned.message, err.message);
+        assert_eq!(cloned.field, err.field);
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmIndexFile
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_index_file() {
+        let index = WasmIndexFile {
+            path: "/index/metadata.json".to_string(),
+            content: Bytes::from_static(b"{\"version\": \"1.0\"}"),
+        };
+        assert_eq!(index.path, "/index/metadata.json");
+        assert_eq!(index.content.as_ref(), b"{\"version\": \"1.0\"}");
+    }
+
+    #[test]
+    fn test_wasm_index_file_clone() {
+        let index = WasmIndexFile {
+            path: "/path".to_string(),
+            content: Bytes::from_static(b"data"),
+        };
+        let cloned = index.clone();
+        assert_eq!(cloned.path, index.path);
+        assert_eq!(cloned.content, index.content);
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmExecutionMetrics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_execution_metrics_success() {
+        let metrics = WasmExecutionMetrics::success(150, 10_000_000);
+        assert_eq!(metrics.execution_time_ms, 150);
+        assert_eq!(metrics.fuel_consumed, 10_000_000);
+        assert!(metrics.success);
+        assert!(metrics.error_message.is_none());
+        assert!(metrics.peak_memory_bytes.is_none());
+    }
+
+    #[test]
+    fn test_wasm_execution_metrics_failure() {
+        let metrics = WasmExecutionMetrics::failure(200, "timeout occurred");
+        assert_eq!(metrics.execution_time_ms, 200);
+        assert_eq!(metrics.fuel_consumed, 0);
+        assert!(!metrics.success);
+        assert_eq!(metrics.error_message.as_deref(), Some("timeout occurred"));
+    }
+
+    #[test]
+    fn test_wasm_execution_metrics_with_memory() {
+        let metrics = WasmExecutionMetrics::success(100, 5000).with_memory(1024 * 1024);
+        assert_eq!(metrics.peak_memory_bytes, Some(1024 * 1024));
+        assert!(metrics.success);
+    }
+
+    #[test]
+    fn test_wasm_execution_metrics_default() {
+        let metrics = WasmExecutionMetrics::default();
+        assert_eq!(metrics.execution_time_ms, 0);
+        assert_eq!(metrics.fuel_consumed, 0);
+        assert!(!metrics.success);
+        assert!(metrics.error_message.is_none());
+        assert!(metrics.peak_memory_bytes.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_with_timeout
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_inner_error_passes_through() {
+        let result: WasmResult<()> =
+            execute_with_timeout(5, async { Err(WasmError::FuelExhausted) }).await;
+        assert!(matches!(result, Err(WasmError::FuelExhausted)));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_timeout_with_zero_timeout() {
+        // Timeout of 0 seconds means the wall clock adds 1 -> 1 second timeout
+        let result: WasmResult<()> = execute_with_timeout(0, async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(())
+        })
+        .await;
+        assert!(matches!(result, Err(WasmError::Timeout(0))));
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_with_metrics
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_with_metrics_success() {
+        let (result, metrics) =
+            execute_with_metrics(5, 100_000, async { Ok::<_, WasmError>("done") }, || 80_000).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "done");
+        assert!(metrics.success);
+        assert_eq!(metrics.fuel_consumed, 20_000); // 100_000 - 80_000
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_metrics_failure() {
+        let (result, metrics) = execute_with_metrics(
+            5,
+            100_000,
+            async { Err::<String, _>(WasmError::FuelExhausted) },
+            || 0,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!metrics.success);
+        assert!(metrics.error_message.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // isolate_crash
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_isolate_crash_normal_ok() {
+        let result = isolate_crash(|| Ok::<_, WasmError>(42));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_isolate_crash_normal_err() {
+        let result = isolate_crash(|| Err::<i32, _>(WasmError::FuelExhausted));
+        assert!(matches!(result, Err(WasmError::FuelExhausted)));
+    }
+
+    #[test]
+    fn test_isolate_crash_panic_str() {
+        let result = isolate_crash::<_, i32>(|| panic!("intentional panic"));
+        match result {
+            Err(WasmError::PluginError(msg)) => {
+                assert!(msg.contains("Plugin crashed"));
+                assert!(msg.contains("intentional panic"));
+            }
+            other => panic!("Expected PluginError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_isolate_crash_panic_string() {
+        let result = isolate_crash::<_, i32>(|| panic!("{}", "formatted panic".to_string()));
+        match result {
+            Err(WasmError::PluginError(msg)) => {
+                assert!(msg.contains("formatted panic"));
+            }
+            other => panic!("Expected PluginError, got {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ExecutionCleanup
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_execution_cleanup_complete() {
+        let mut cleanup = ExecutionCleanup::new("test-plugin");
+        assert!(!cleanup.cleaned_up);
+        assert_eq!(cleanup.plugin_id, "test-plugin");
+        cleanup.complete();
+        assert!(cleanup.cleaned_up);
+        // Dropping after complete() should not warn
+    }
+
+    #[test]
+    fn test_execution_cleanup_elapsed() {
+        let cleanup = ExecutionCleanup::new("test-plugin");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let elapsed = cleanup.elapsed();
+        assert!(elapsed >= std::time::Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_execution_cleanup_drop_without_complete_does_not_panic() {
+        // Dropping without calling complete() should log a warning but not panic
+        let _cleanup = ExecutionCleanup::new("uncompleted-plugin");
+        // Just let it drop
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_with_cleanup
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_with_cleanup_success() {
+        let result = execute_with_cleanup("test-plugin", 5, async { Ok::<_, WasmError>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_cleanup_error() {
+        let result: WasmResult<i32> = execute_with_cleanup("test-plugin", 5, async {
+            Err(WasmError::PluginError("crash".to_string()))
+        })
+        .await;
+        assert!(matches!(result, Err(WasmError::PluginError(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_with_isolation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execute_with_isolation_success() {
+        let result = execute_with_isolation(5, async { Ok::<_, WasmError>("isolated") }).await;
+        assert_eq!(result.unwrap(), "isolated");
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_isolation_error() {
+        let result: WasmResult<()> =
+            execute_with_isolation(5, async { Err(WasmError::FuelExhausted) }).await;
+        assert!(matches!(result, Err(WasmError::FuelExhausted)));
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginContext
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_context_custom_limits() {
+        let limits = PluginResourceLimits {
+            memory_mb: 128,
+            timeout_secs: 10,
+            fuel: 1_000_000_000,
+        };
+        let ctx = PluginContext::new("my-plugin".to_string(), "my-format".to_string(), &limits);
+        assert_eq!(ctx.plugin_id, "my-plugin");
+        assert_eq!(ctx.format_key, "my-format");
+    }
+
+    // -----------------------------------------------------------------------
+    // FUEL_PER_SECOND constant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fuel_per_second_constant() {
+        assert_eq!(FUEL_PER_SECOND, 100_000_000);
+    }
 }

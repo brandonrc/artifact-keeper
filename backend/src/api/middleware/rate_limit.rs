@@ -242,4 +242,175 @@ mod tests {
         let result = limiter.check_rate_limit("test_key").await;
         assert_eq!(result, Ok(3)); // 5 - 2 = 3 remaining
     }
+
+    // -----------------------------------------------------------------------
+    // Additional RateLimiter tests for improved coverage
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_rate_limiter_remaining_counts_down_to_zero() {
+        let limiter = RateLimiter::new(3, 60);
+
+        assert_eq!(limiter.check_rate_limit("k").await, Ok(2));
+        assert_eq!(limiter.check_rate_limit("k").await, Ok(1));
+        assert_eq!(limiter.check_rate_limit("k").await, Ok(0));
+        // Next should be blocked
+        assert!(limiter.check_rate_limit("k").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_window_reset() {
+        // Use a very short window (1 second) to test reset
+        let limiter = RateLimiter::new(1, 1);
+
+        // Use up the limit
+        assert!(limiter.check_rate_limit("reset_key").await.is_ok());
+        assert!(limiter.check_rate_limit("reset_key").await.is_err());
+
+        // Wait for the window to expire
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // Should be allowed again after window reset
+        let result = limiter.check_rate_limit("reset_key").await;
+        assert!(result.is_ok());
+        // After reset, remaining should be max_requests - 1
+        assert_eq!(result.unwrap(), 0); // 1 - 1 = 0
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup_expired() {
+        let limiter = RateLimiter::new(5, 1);
+
+        // Add some entries
+        let _ = limiter.check_rate_limit("key1").await;
+        let _ = limiter.check_rate_limit("key2").await;
+
+        // Wait for expiry
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // Add a fresh entry
+        let _ = limiter.check_rate_limit("key3").await;
+
+        // Cleanup should remove expired entries (key1, key2) but keep key3
+        limiter.cleanup_expired().await;
+
+        let requests = limiter.requests.read().await;
+        assert!(
+            !requests.contains_key("key1"),
+            "Expired key1 should be removed"
+        );
+        assert!(
+            !requests.contains_key("key2"),
+            "Expired key2 should be removed"
+        );
+        assert!(requests.contains_key("key3"), "Fresh key3 should be kept");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_retry_after_minimum_is_one() {
+        // When the limit is just reached, retry_after should be at least 1
+        let limiter = RateLimiter::new(1, 60);
+
+        let _ = limiter.check_rate_limit("key").await;
+        let result = limiter.check_rate_limit("key").await;
+
+        match result {
+            Err(retry_after) => {
+                assert!(
+                    retry_after >= 1,
+                    "retry_after should be at least 1, got {}",
+                    retry_after
+                );
+                assert!(
+                    retry_after <= 60,
+                    "retry_after should be <= window, got {}",
+                    retry_after
+                );
+            }
+            Ok(_) => panic!("Expected rate limit error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_single_request_limit() {
+        // With max_requests = 1, first request succeeds, second fails
+        let limiter = RateLimiter::new(1, 60);
+        assert_eq!(limiter.check_rate_limit("k").await, Ok(0)); // 1-1 = 0 remaining
+        assert!(limiter.check_rate_limit("k").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_many_independent_keys() {
+        let limiter = RateLimiter::new(1, 60);
+
+        for i in 0..100 {
+            let key = format!("key_{}", i);
+            assert!(limiter.check_rate_limit(&key).await.is_ok());
+        }
+
+        // Each key should now be exhausted
+        for i in 0..100 {
+            let key = format!("key_{}", i);
+            assert!(limiter.check_rate_limit(&key).await.is_err());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_client_ip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_client_ip_x_forwarded_for_single() {
+        let request = axum::extract::Request::builder()
+            .header("X-Forwarded-For", "192.168.1.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_forwarded_for_chain() {
+        let request = axum::extract::Request::builder()
+            .header("X-Forwarded-For", "10.0.0.1, 192.168.1.1, 172.16.0.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        // Should take the first IP (client IP)
+        assert_eq!(extract_client_ip(&request), "ip:10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_real_ip() {
+        let request = axum::extract::Request::builder()
+            .header("X-Real-IP", "10.20.30.40")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:10.20.30.40");
+    }
+
+    #[test]
+    fn test_extract_client_ip_forwarded_for_takes_priority_over_real_ip() {
+        let request = axum::extract::Request::builder()
+            .header("X-Forwarded-For", "1.2.3.4")
+            .header("X-Real-IP", "5.6.7.8")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:1.2.3.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_no_headers_returns_unknown() {
+        let request = axum::extract::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:unknown");
+    }
+
+    #[test]
+    fn test_extract_client_ip_x_forwarded_for_with_whitespace() {
+        let request = axum::extract::Request::builder()
+            .header("X-Forwarded-For", "  10.0.0.1  , 192.168.1.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:10.0.0.1");
+    }
 }

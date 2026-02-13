@@ -311,4 +311,336 @@ timeout_secs = 5
         assert!(manifest.capabilities.generate_index);
         assert!(manifest.validate().is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // Validation error cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_invalid_plugin_name() {
+        let toml = r#"
+[plugin]
+name = "INVALID_NAME"
+version = "1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidPluginName(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_invalid_version() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "v1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_invalid_format_key() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[format]
+key = "INVALID_KEY"
+display_name = "Something"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidFormatKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_missing_display_name() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[format]
+key = "valid-key"
+display_name = ""
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::MissingDisplayName)
+        ));
+    }
+
+    #[test]
+    fn test_validate_invalid_memory_limits() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+min_memory_mb = 128
+max_memory_mb = 32
+timeout_secs = 5
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidMemoryLimits { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_timeout_zero() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 0
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidTimeout(0))
+        ));
+    }
+
+    #[test]
+    fn test_validate_timeout_too_large() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 301
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidTimeout(301))
+        ));
+    }
+
+    #[test]
+    fn test_validate_timeout_boundary_300() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 300
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_timeout_boundary_1() {
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 1
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // to_capabilities
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_capabilities() {
+        let toml = r#"
+[plugin]
+name = "test-plugin"
+version = "1.0.0"
+
+[capabilities]
+parse_metadata = true
+generate_index = true
+validate_artifact = false
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let caps = manifest.to_capabilities();
+        assert!(caps.parse_metadata);
+        assert!(caps.generate_index);
+        assert!(!caps.validate_artifact);
+    }
+
+    // -----------------------------------------------------------------------
+    // to_resource_limits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_to_resource_limits() {
+        let toml = r#"
+[plugin]
+name = "test-plugin"
+version = "1.0.0"
+
+[requirements]
+max_memory_mb = 128
+timeout_secs = 10
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let limits = manifest.to_resource_limits();
+        assert_eq!(limits.memory_mb, 128);
+        assert_eq!(limits.timeout_secs, 10);
+        assert_eq!(limits.fuel, 10 * 100_000_000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_requirements_config_default() {
+        let req = RequirementsConfig::default();
+        assert_eq!(req.min_memory_mb, 32);
+        assert_eq!(req.max_memory_mb, 64);
+        assert_eq!(req.timeout_secs, 5);
+        assert!(req.min_wasmtime.is_none());
+    }
+
+    #[test]
+    fn test_capabilities_config_default() {
+        // NOTE (potential bug): CapabilitiesConfig derives Default which sets all bools
+        // to false, but serde(default = "default_true") sets parse_metadata and
+        // validate_artifact to true during deserialization. These two defaults disagree.
+        // Direct Default::default() produces false for all fields.
+        let caps = CapabilitiesConfig::default();
+        assert!(!caps.parse_metadata); // false from #[derive(Default)], not serde default
+        assert!(!caps.generate_index);
+        assert!(!caps.validate_artifact); // false from #[derive(Default)], not serde default
+    }
+
+    #[test]
+    fn test_capabilities_config_serde_defaults() {
+        // When deserialized from empty object, serde uses default_true
+        let caps: CapabilitiesConfig = serde_json::from_str("{}").unwrap();
+        assert!(caps.parse_metadata); // true from serde(default = "default_true")
+        assert!(!caps.generate_index); // false from serde(default)
+        assert!(caps.validate_artifact); // true from serde(default = "default_true")
+    }
+
+    #[test]
+    fn test_parse_minimal_manifest() {
+        let toml = r#"
+[plugin]
+name = "minimal"
+version = "0.1"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert_eq!(manifest.plugin.name, "minimal");
+        assert!(manifest.format.is_none());
+        // NOTE: When the [capabilities] section is entirely missing, serde uses
+        // #[serde(default)] which calls CapabilitiesConfig::default() (derive Default),
+        // giving all false. This differs from when the section is present but fields
+        // are missing (which uses serde(default = "default_true")).
+        assert!(!manifest.capabilities.parse_metadata); // derive Default -> false
+        assert_eq!(manifest.requirements.timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_parse_manifest_with_empty_capabilities_section() {
+        let toml = r#"
+[plugin]
+name = "test-plugin"
+version = "1.0"
+
+[capabilities]
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        // When [capabilities] section exists but fields are missing,
+        // serde(default = "default_true") kicks in
+        assert!(manifest.capabilities.parse_metadata);
+        assert!(!manifest.capabilities.generate_index);
+        assert!(manifest.capabilities.validate_artifact);
+    }
+
+    // -----------------------------------------------------------------------
+    // Identifier validation edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_valid_identifier_max_length() {
+        let name = "a".repeat(100);
+        assert!(is_valid_identifier(&name));
+    }
+
+    #[test]
+    fn test_valid_identifier_too_long() {
+        let name = "a".repeat(101);
+        assert!(!is_valid_identifier(&name));
+    }
+
+    #[test]
+    fn test_valid_identifier_trailing_hyphen() {
+        assert!(is_valid_identifier("name-")); // allowed per implementation
+    }
+
+    // -----------------------------------------------------------------------
+    // Semver validation edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_semver_two_parts() {
+        assert!(is_valid_semver("1.0"));
+    }
+
+    #[test]
+    fn test_semver_prerelease_with_build() {
+        assert!(is_valid_semver("1.0.0-alpha+build123"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ManifestValidationError Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_validation_error_display() {
+        let err = ManifestValidationError::InvalidPluginName("Bad_Name".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("Bad_Name"));
+
+        let err = ManifestValidationError::InvalidVersion("v1".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("v1"));
+
+        let err = ManifestValidationError::InvalidMemoryLimits { min: 128, max: 64 };
+        let msg = err.to_string();
+        assert!(msg.contains("128"));
+        assert!(msg.contains("64"));
+
+        let err = ManifestValidationError::InvalidTimeout(500);
+        let msg = err.to_string();
+        assert!(msg.contains("500"));
+
+        let err = ManifestValidationError::MissingDisplayName;
+        assert!(err.to_string().contains("display_name"));
+    }
 }
