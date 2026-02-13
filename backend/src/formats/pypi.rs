@@ -1066,6 +1066,6 @@ Project-URL: Documentation, https://docs.example.com
 
     #[test]
     fn test_pypi_handler_default() {
-        let _handler = PypiHandler::default();
+        let _handler = PypiHandler;
     }
 }

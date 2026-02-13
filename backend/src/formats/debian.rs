@@ -1144,6 +1144,6 @@ Source: full-pkg-src
 
     #[test]
     fn test_debian_handler_default() {
-        let _handler = DebianHandler::default();
+        let _handler = DebianHandler;
     }
 }

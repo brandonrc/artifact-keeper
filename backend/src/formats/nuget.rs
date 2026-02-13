@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = NugetHandler::new();
-        let _h2 = NugetHandler::default();
+        let _h2 = NugetHandler;
     }
 
     // ---- normalize_id ----

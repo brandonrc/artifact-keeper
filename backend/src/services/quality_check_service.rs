@@ -1393,16 +1393,16 @@ mod tests {
 
     #[test]
     fn test_security_has_highest_weight() {
-        assert!(WEIGHT_SECURITY > WEIGHT_QUALITY);
-        assert!(WEIGHT_SECURITY > WEIGHT_LICENSE);
-        assert!(WEIGHT_SECURITY > WEIGHT_METADATA);
+        const { assert!(WEIGHT_SECURITY > WEIGHT_QUALITY) };
+        const { assert!(WEIGHT_SECURITY > WEIGHT_LICENSE) };
+        const { assert!(WEIGHT_SECURITY > WEIGHT_METADATA) };
     }
 
     #[test]
     fn test_metadata_has_lowest_weight() {
-        assert!(WEIGHT_METADATA < WEIGHT_SECURITY);
-        assert!(WEIGHT_METADATA < WEIGHT_QUALITY);
-        assert!(WEIGHT_METADATA < WEIGHT_LICENSE);
+        const { assert!(WEIGHT_METADATA < WEIGHT_SECURITY) };
+        const { assert!(WEIGHT_METADATA < WEIGHT_QUALITY) };
+        const { assert!(WEIGHT_METADATA < WEIGHT_LICENSE) };
     }
 
     // =======================================================================
@@ -2033,7 +2033,7 @@ mod tests {
 
     #[test]
     fn test_quality_score_from_check_rows() {
-        let rows = vec![
+        let rows = &[
             CheckScoreRow {
                 check_type: "metadata_completeness".to_string(),
                 score: Some(80),
@@ -2083,7 +2083,7 @@ mod tests {
 
     #[test]
     fn test_quality_score_no_non_metadata_checks() {
-        let rows = vec![CheckScoreRow {
+        let rows = &[CheckScoreRow {
             check_type: "metadata_completeness".to_string(),
             score: Some(80),
             passed: Some(true),
@@ -2102,7 +2102,7 @@ mod tests {
 
     #[test]
     fn test_quality_score_with_none_scores_filtered() {
-        let rows = vec![
+        let rows = &[
             CheckScoreRow {
                 check_type: "helm_lint".to_string(),
                 score: None,

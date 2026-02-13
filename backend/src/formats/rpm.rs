@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_rpm_handler_default() {
-        let _handler = RpmHandler::default();
+        let _handler = RpmHandler;
     }
 
     // ========================================================================

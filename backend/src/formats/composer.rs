@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = ComposerHandler::new();
-        let _h2 = ComposerHandler::default();
+        let _h2 = ComposerHandler;
     }
 
     // ---- parse_path: packages.json (index) ----

@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = NpmHandler::new();
-        let _h2 = NpmHandler::default();
+        let _h2 = NpmHandler;
     }
 
     // ---- parse_path: unscoped tarball ----

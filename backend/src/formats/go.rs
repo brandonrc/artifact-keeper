@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = GoHandler::new();
-        let _h2 = GoHandler::default();
+        let _h2 = GoHandler;
     }
 
     // ---- parse_path: list ----

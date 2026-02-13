@@ -992,6 +992,6 @@ summary: A summary
 
     #[test]
     fn test_rubygems_handler_default() {
-        let _handler = RubygemsHandler::default();
+        let _handler = RubygemsHandler;
     }
 }

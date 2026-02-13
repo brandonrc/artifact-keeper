@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = HelmHandler::new();
-        let _h2 = HelmHandler::default();
+        let _h2 = HelmHandler;
     }
 
     // ---- parse_chart_filename ----

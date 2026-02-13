@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn test_new_and_default() {
         let _h1 = CargoHandler::new();
-        let _h2 = CargoHandler::default();
+        let _h2 = CargoHandler;
     }
 
     // ---- get_index_path ----
