@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Artifact Health Scoring & Quality Gates** (#129)
+  - Pluggable quality check system with composite health scores (A-F grade) and configurable quality gates for promotion gating
+  - MetadataCompletenessChecker (all formats) and HelmLintChecker (in-process chart.tgz validation)
+  - QualityCheckService orchestrator with weighted scoring (security=40, quality=25, license=20, metadata=15)
+  - 15 new API endpoints under `/api/v1/quality`; async checks triggered on artifact upload
+- **Sync Policy Engine & Background Sync Worker** (#109, #122)
+  - Declarative label-based replication policies with JSONB selectors for repos and peers
+  - 8 new API endpoints (`/api/v1/sync-policies`) for CRUD, evaluation, and preview
+  - Peer instance labels API (`GET/PUT/POST/DELETE /api/v1/peers/:id/labels`) for `match_labels` resolution (#122)
+  - Auto-evaluate triggers on repo label, peer label, and new peer registration changes (#122)
+  - 5-minute periodic re-evaluation scheduler to catch drift (#122)
+  - Background sync worker with per-peer sync windows, exponential backoff, and concurrent transfer limits
 - **Remote Proxy Repositories** (#112)
   - Remote repos now proxy artifacts from upstream registries (npmjs.org, PyPI, Maven Central, etc.) on cache miss
   - Automatic local caching with 24-hour TTL and ETag-based revalidation
@@ -18,18 +30,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Metadata merging for npm (`get_package_metadata`) and PyPI (`simple_project`) so native clients (`npm install`, `pip install`) work through virtual repos
   - Write guards return 400 Bad Request on virtual repos
   - Tarball URL rewriting to route downloads through the virtual repo key
+- **Protobuf/BSR Format Support** (#119)
+  - New `protobuf` repository format implementing BSR-compatible Connect RPC endpoints
+  - 10 endpoints: GetModules, CreateModules, GetCommits, ListCommits, Upload, Download, GetLabels, CreateOrUpdateLabels, GetGraph, GetResources
+  - Full proxy/virtual repository resolution support
+- **Repository Key Renames** (#120) — `PATCH /api/v1/repositories/{key}` now accepts a `key` field to rename the URL slug
+- **Repository Labels API** (#108)
+- **Artifact Upload Sync Trigger** (#108)
+- **Full-stack Kubernetes Manifest** (#104)
 - **Proxy/Virtual E2E Test Suite** (#112)
   - 21-test script covering proxy downloads, write rejection, virtual resolution, and native client integration
   - Docker Compose `proxy` profile for CI
   - Bootstrap script creates remote, local, and virtual repos with member wiring
-- **Repository Labels API** (#108)
-- **Artifact Upload Sync Trigger** (#108)
-- **Full-stack Kubernetes Manifest** (#104)
+- **Mesh Replication E2E Workflow** (#127) — GitHub Actions workflow for automated mesh replication testing via ArgoCD
+- **Stale Bot** (#121) — auto-labels inactive issues
 
 ### Fixed
 - **Proxy cache key collision**: Metadata cached as file blocked tarball paths that needed same prefix as directory; fixed with `__content__` leaf file scheme (#112)
+- Fix `replication_mode` enum type cast in sync policy evaluate (#126)
+- Fix `format` column type mismatch in sync policy evaluate (#125)
+- Fix peer instance labels auth middleware mismatch (#124)
 - Use AWS default credential chain instead of env vars only (#106)
 - Ensure admin login works on fresh installs and fix Dependency-Track startup race (#102)
+- Add setup instructions to `admin.password` file so users know to login first (#100)
+- Auto-enable NVD API 2.0 and add proxy passthrough for Dependency-Track (#98)
+- Set global 512 MB body limit to prevent silent upload truncation (#97)
+
+### Changed
+- Moved `site/` to separate `artifact-keeper-site` repository (#101)
 
 ## [1.0.0-rc.3] - 2026-02-08
 
