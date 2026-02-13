@@ -157,8 +157,14 @@ flowchart TD
 
 | Format | Aliases | Ecosystem |
 |--------|---------|-----------|
-| **VS Code** | Cursor, Windsurf, Kiro | Extension marketplace |
+| **VS Code** | | Extension marketplace (VS Code, Cursor, Windsurf, Kiro) |
 | **JetBrains** | | Plugin repository |
+
+### Schemas
+
+| Format | Ecosystem |
+|--------|-----------|
+| **Protobuf / BSR** | Buf Schema Registry, Connect RPC |
 
 ### Other
 
