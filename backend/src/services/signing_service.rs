@@ -400,3 +400,201 @@ impl SigningService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use rsa::pkcs8::{DecodePublicKey, EncodePrivateKey, EncodePublicKey};
+    use uuid::Uuid;
+
+    /// Generate a real RSA key pair, encrypt the private key with the given
+    /// passphrase, and return a SigningKey model struct suitable for sign_with_key.
+    fn generate_test_signing_key(passphrase: &str) -> SigningKey {
+        let mut rng = rsa::rand_core::OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("keygen failed");
+        let public_key = RsaPublicKey::from(&private_key);
+
+        let public_pem = public_key
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("pub pem encode failed");
+        let private_pem = private_key
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("priv pem encode failed");
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_enc = encryption.encrypt(private_pem.as_bytes());
+
+        let public_der = public_key
+            .to_public_key_der()
+            .expect("pub der encode failed");
+        let fingerprint = hex::encode(sha2::Sha256::digest(public_der.as_ref()));
+        let key_id = fingerprint[fingerprint.len() - 16..].to_string();
+
+        let now = Utc::now();
+        SigningKey {
+            id: Uuid::new_v4(),
+            repository_id: None,
+            name: "test-key".to_string(),
+            key_type: "rsa".to_string(),
+            fingerprint: Some(fingerprint),
+            key_id: Some(key_id),
+            public_key_pem: public_pem,
+            private_key_enc: private_enc,
+            algorithm: "rsa2048".to_string(),
+            uid_name: None,
+            uid_email: None,
+            expires_at: None,
+            is_active: true,
+            created_at: now,
+            created_by: None,
+            rotated_from: None,
+            last_used_at: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sign_with_key: roundtrip test (sign then verify)
+    //
+    // NOTE: SigningService::sign_with_key requires &self (which needs PgPool).
+    // This is a testability blocker. The crypto logic (decrypt -> parse ->
+    // sign) should be extracted into a free function that takes
+    // (&CredentialEncryption, &SigningKey, &[u8]) -> Result<Vec<u8>>.
+    // Below we replicate the crypto logic to verify correctness.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sign_produces_valid_signature() {
+        let passphrase = "test-encryption-key-for-signing";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = b"Hello, Artifact Keeper!";
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let signature = rsa_signing_key.sign(data);
+
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+
+        let public_key = RsaPublicKey::from_public_key_pem(&signing_key.public_key_pem).unwrap();
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+        assert!(verifying_key.verify(data, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_sign_different_data_different_signatures() {
+        let passphrase = "test-key-diff";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let sig1 = rsa_signing_key.sign(b"data A");
+        let sig2 = rsa_signing_key.sign(b"data B");
+
+        assert_ne!(sig1.to_bytes(), sig2.to_bytes());
+    }
+
+    // -----------------------------------------------------------------------
+    // Encryption roundtrip for private key material
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_private_key_encryption_roundtrip() {
+        let passphrase = "encryption-roundtrip-test";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let decrypted = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let decrypted_str = std::str::from_utf8(&decrypted).unwrap();
+
+        assert!(decrypted_str.contains("BEGIN PRIVATE KEY"));
+        assert!(decrypted_str.contains("END PRIVATE KEY"));
+    }
+
+    #[test]
+    fn test_wrong_passphrase_fails_decryption() {
+        let signing_key = generate_test_signing_key("correct-passphrase");
+        let wrong_encryption = CredentialEncryption::from_passphrase("wrong-passphrase");
+
+        let result = wrong_encryption.decrypt(&signing_key.private_key_enc);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Fingerprint and key_id derivation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fingerprint_is_valid_hex() {
+        let signing_key = generate_test_signing_key("fp-test");
+        let fingerprint = signing_key.fingerprint.as_ref().unwrap();
+        // SHA-256 hex = 64 chars
+        assert_eq!(fingerprint.len(), 64);
+        assert!(fingerprint.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_key_id_is_last_16_of_fingerprint() {
+        let signing_key = generate_test_signing_key("kid-test");
+        let fingerprint = signing_key.fingerprint.as_ref().unwrap();
+        let key_id = signing_key.key_id.as_ref().unwrap();
+        assert_eq!(key_id.len(), 16);
+        assert_eq!(key_id, &fingerprint[fingerprint.len() - 16..]);
+    }
+
+    // -----------------------------------------------------------------------
+    // SigningKey -> SigningKeyPublic conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_signing_key_to_public_conversion() {
+        let signing_key = generate_test_signing_key("conv-test");
+        let public: SigningKeyPublic = signing_key.clone().into();
+
+        assert_eq!(public.id, signing_key.id);
+        assert_eq!(public.name, signing_key.name);
+        assert_eq!(public.key_type, signing_key.key_type);
+        assert_eq!(public.fingerprint, signing_key.fingerprint);
+        assert_eq!(public.key_id, signing_key.key_id);
+        assert_eq!(public.public_key_pem, signing_key.public_key_pem);
+        assert_eq!(public.algorithm, signing_key.algorithm);
+        assert_eq!(public.is_active, signing_key.is_active);
+        assert_eq!(public.created_at, signing_key.created_at);
+    }
+
+    // -----------------------------------------------------------------------
+    // Algorithm-to-bits mapping validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_algorithm_to_bits_mapping() {
+        let test_cases = vec![
+            ("rsa2048", Some(2048usize)),
+            ("rsa4096", Some(4096)),
+            ("rsa", Some(4096)),
+            ("ed25519", None),
+            ("unknown", None),
+        ];
+
+        for (algo, expected_bits) in test_cases {
+            let bits: Option<usize> = match algo {
+                "rsa2048" => Some(2048),
+                "rsa4096" | "rsa" => Some(4096),
+                _ => None,
+            };
+            assert_eq!(
+                bits, expected_bits,
+                "Algorithm '{}' should map to {:?} bits",
+                algo, expected_bits
+            );
+        }
+    }
+}

@@ -546,6 +546,10 @@ pub fn generate_simple_package_index(
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // normalize_name tests
+    // ========================================================================
+
     #[test]
     fn test_normalize_name() {
         assert_eq!(PypiHandler::normalize_name("My_Package"), "my-package");
@@ -554,10 +558,100 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_name_empty() {
+        assert_eq!(PypiHandler::normalize_name(""), "");
+    }
+
+    #[test]
+    fn test_normalize_name_already_normalized() {
+        assert_eq!(PypiHandler::normalize_name("requests"), "requests");
+        assert_eq!(PypiHandler::normalize_name("my-package"), "my-package");
+    }
+
+    #[test]
+    fn test_normalize_name_uppercase() {
+        assert_eq!(PypiHandler::normalize_name("REQUESTS"), "requests");
+        assert_eq!(PypiHandler::normalize_name("Flask"), "flask");
+    }
+
+    #[test]
+    fn test_normalize_name_mixed_separators() {
+        assert_eq!(
+            PypiHandler::normalize_name("My.Package_Name"),
+            "my-package-name"
+        );
+        assert_eq!(PypiHandler::normalize_name("a__b..c--d"), "a-b-c-d");
+    }
+
+    #[test]
+    fn test_normalize_name_leading_separator() {
+        // Leading non-alphanumeric characters are dropped (last_was_separator starts true)
+        assert_eq!(PypiHandler::normalize_name("_package"), "package");
+        assert_eq!(PypiHandler::normalize_name(".package"), "package");
+    }
+
+    #[test]
+    fn test_normalize_name_trailing_separator() {
+        assert_eq!(PypiHandler::normalize_name("package_"), "package");
+        assert_eq!(PypiHandler::normalize_name("package."), "package");
+    }
+
+    #[test]
+    fn test_normalize_name_only_separators() {
+        assert_eq!(PypiHandler::normalize_name("___"), "");
+        assert_eq!(PypiHandler::normalize_name("..."), "");
+    }
+
+    #[test]
+    fn test_normalize_name_single_char() {
+        assert_eq!(PypiHandler::normalize_name("a"), "a");
+        assert_eq!(PypiHandler::normalize_name("Z"), "z");
+    }
+
+    #[test]
+    fn test_normalize_name_digits() {
+        assert_eq!(PypiHandler::normalize_name("package2"), "package2");
+        assert_eq!(PypiHandler::normalize_name("3to2"), "3to2");
+    }
+
+    // ========================================================================
+    // parse_filename tests (wheel, sdist, zip)
+    // ========================================================================
+
+    #[test]
     fn test_parse_wheel_filename() {
         let info = PypiHandler::parse_filename("requests-2.28.0-py3-none-any.whl").unwrap();
         assert_eq!(info.name, Some("requests".to_string()));
         assert_eq!(info.version, Some("2.28.0".to_string()));
+        assert_eq!(
+            info.filename,
+            Some("requests-2.28.0-py3-none-any.whl".to_string())
+        );
+        assert!(!info.is_simple_index);
+        assert!(!info.is_package_index);
+    }
+
+    #[test]
+    fn test_parse_wheel_filename_with_build_tag() {
+        // PEP 427: {dist}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+        // 6 parts means there is a build tag
+        let info =
+            PypiHandler::parse_filename("package-1.0.0-1-cp39-cp39-manylinux1_x86_64.whl").unwrap();
+        assert_eq!(info.name, Some("package".to_string()));
+        assert_eq!(info.version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_wheel_filename_too_few_parts() {
+        // Less than 5 parts (after removing .whl) should fail
+        let result = PypiHandler::parse_filename("invalid-name.whl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_wheel_filename_normalized_name() {
+        let info = PypiHandler::parse_filename("My_Package-1.0.0-py3-none-any.whl").unwrap();
+        assert_eq!(info.name, Some("my-package".to_string()));
     }
 
     #[test]
@@ -565,13 +659,56 @@ mod tests {
         let info = PypiHandler::parse_filename("requests-2.28.0.tar.gz").unwrap();
         assert_eq!(info.name, Some("requests".to_string()));
         assert_eq!(info.version, Some("2.28.0".to_string()));
+        assert_eq!(info.filename, Some("requests-2.28.0.tar.gz".to_string()));
     }
+
+    #[test]
+    fn test_parse_sdist_filename_with_hyphens_in_name() {
+        // rsplitn(2, '-') splits on the LAST hyphen, so name can contain hyphens
+        let info = PypiHandler::parse_filename("my-package-1.0.0.tar.gz").unwrap();
+        assert_eq!(info.name, Some("my-package".to_string()));
+        assert_eq!(info.version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_sdist_filename_no_version_separator() {
+        // No hyphen after removing .tar.gz means rsplitn returns only 1 part
+        let result = PypiHandler::parse_filename("package.tar.gz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_zip_filename() {
+        let info = PypiHandler::parse_filename("requests-2.28.0.zip").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert_eq!(info.version, Some("2.28.0".to_string()));
+        assert_eq!(info.filename, Some("requests-2.28.0.zip".to_string()));
+    }
+
+    #[test]
+    fn test_parse_zip_filename_no_version() {
+        let result = PypiHandler::parse_filename("package.zip");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_filename_unknown_format() {
+        let result = PypiHandler::parse_filename("package-1.0.0.egg");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Unknown Python package format"));
+    }
+
+    // ========================================================================
+    // parse_path tests
+    // ========================================================================
 
     #[test]
     fn test_parse_simple_path() {
         let info = PypiHandler::parse_path("simple/requests/").unwrap();
         assert_eq!(info.name, Some("requests".to_string()));
         assert!(info.is_package_index);
+        assert!(!info.is_simple_index);
     }
 
     #[test]
@@ -580,6 +717,106 @@ mod tests {
         assert!(info.is_simple_index);
         assert!(info.name.is_none());
     }
+
+    #[test]
+    fn test_parse_root_index_without_trailing_slash() {
+        let info = PypiHandler::parse_path("simple").unwrap();
+        assert!(info.is_simple_index);
+        assert!(info.name.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_leading_slash() {
+        let info = PypiHandler::parse_path("/simple/requests/").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert!(info.is_package_index);
+    }
+
+    #[test]
+    fn test_parse_path_simple_package_without_trailing_slash() {
+        let info = PypiHandler::parse_path("simple/requests").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert!(info.is_package_index);
+    }
+
+    #[test]
+    fn test_parse_path_simple_package_normalized() {
+        let info = PypiHandler::parse_path("simple/My_Package/").unwrap();
+        assert_eq!(info.name, Some("my-package".to_string()));
+        assert!(info.is_package_index);
+    }
+
+    #[test]
+    fn test_parse_path_packages_format() {
+        let info =
+            PypiHandler::parse_path("packages/requests/2.28.0/requests-2.28.0.tar.gz").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert_eq!(info.version, Some("2.28.0".to_string()));
+        assert_eq!(info.filename, Some("requests-2.28.0.tar.gz".to_string()));
+        assert!(!info.is_simple_index);
+        assert!(!info.is_package_index);
+    }
+
+    #[test]
+    fn test_parse_path_packages_normalized_name() {
+        let info =
+            PypiHandler::parse_path("packages/My_Package/1.0.0/My_Package-1.0.0.tar.gz").unwrap();
+        assert_eq!(info.name, Some("my-package".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_packages_too_few_parts() {
+        // packages/ with less than 3 parts after the prefix should fallback
+        // "packages/requests/2.28.0" has only 2 parts, no filename
+        // This doesn't end with .whl/.tar.gz/.zip so it should error
+        let result = PypiHandler::parse_path("packages/requests");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_direct_wheel() {
+        let info = PypiHandler::parse_path("requests-2.28.0-py3-none-any.whl").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert_eq!(info.version, Some("2.28.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_sdist() {
+        let info = PypiHandler::parse_path("requests-2.28.0.tar.gz").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert_eq!(info.version, Some("2.28.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_zip() {
+        let info = PypiHandler::parse_path("requests-2.28.0.zip").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+        assert_eq!(info.version, Some("2.28.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_nested_wheel() {
+        let info =
+            PypiHandler::parse_path("some/nested/path/requests-2.28.0-py3-none-any.whl").unwrap();
+        assert_eq!(info.name, Some("requests".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_invalid() {
+        let result = PypiHandler::parse_path("invalid/path/no/extension");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty_simple_subpath() {
+        // "simple/" with nothing after it returns root index
+        let info = PypiHandler::parse_path("simple/").unwrap();
+        assert!(info.is_simple_index);
+    }
+
+    // ========================================================================
+    // parse_pkg_info tests
+    // ========================================================================
 
     #[test]
     fn test_parse_pkg_info() {
@@ -602,5 +839,233 @@ Requires-Dist: idna (<4,>=2.5)
         assert_eq!(info.requires_python, Some(">=3.7".to_string()));
         assert_eq!(info.classifiers.as_ref().map(|c| c.len()), Some(2));
         assert_eq!(info.requires_dist.as_ref().map(|d| d.len()), Some(2));
+    }
+
+    #[test]
+    fn test_parse_pkg_info_missing_name() {
+        let content = "Version: 1.0.0\nSummary: No name\n";
+        let result = PypiHandler::parse_pkg_info(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pkg_info_empty() {
+        let result = PypiHandler::parse_pkg_info("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pkg_info_all_fields() {
+        let content = r#"Metadata-Version: 2.1
+Name: my-package
+Version: 1.0.0
+Summary: A test package
+Description: Long description here
+Description-Content-Type: text/markdown
+Keywords: test,package,rust
+Home-Page: https://example.com
+Download-URL: https://example.com/download
+Author: John Doe
+Author-Email: john@example.com
+Maintainer: Jane Smith
+Maintainer-Email: jane@example.com
+License: MIT
+Platform: linux
+Platform: win32
+Requires-Python: >=3.8
+Provides-Extra: dev
+Provides-Extra: test
+Project-URL: Homepage, https://example.com
+Project-URL: Documentation, https://docs.example.com
+"#;
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert_eq!(info.metadata_version, Some("2.1".to_string()));
+        assert_eq!(info.name, "my-package");
+        assert_eq!(info.version, "1.0.0");
+        assert_eq!(info.summary, Some("A test package".to_string()));
+        assert_eq!(info.description, Some("Long description here".to_string()));
+        assert_eq!(
+            info.description_content_type,
+            Some("text/markdown".to_string())
+        );
+        assert_eq!(
+            info.keywords,
+            Some(vec![
+                "test".to_string(),
+                "package".to_string(),
+                "rust".to_string()
+            ])
+        );
+        assert_eq!(info.home_page, Some("https://example.com".to_string()));
+        assert_eq!(
+            info.download_url,
+            Some("https://example.com/download".to_string())
+        );
+        assert_eq!(info.author, Some("John Doe".to_string()));
+        assert_eq!(info.author_email, Some("john@example.com".to_string()));
+        assert_eq!(info.maintainer, Some("Jane Smith".to_string()));
+        assert_eq!(info.maintainer_email, Some("jane@example.com".to_string()));
+        assert_eq!(info.license, Some("MIT".to_string()));
+        assert_eq!(
+            info.platforms,
+            Some(vec!["linux".to_string(), "win32".to_string()])
+        );
+        assert_eq!(info.requires_python, Some(">=3.8".to_string()));
+        assert_eq!(
+            info.provides_extra,
+            Some(vec!["dev".to_string(), "test".to_string()])
+        );
+        let urls = info.project_urls.unwrap();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(
+            urls.get("Homepage"),
+            Some(&"https://example.com".to_string())
+        );
+        assert_eq!(
+            urls.get("Documentation"),
+            Some(&"https://docs.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_pkg_info_continuation_lines() {
+        let content =
+            "Name: test-pkg\nVersion: 1.0\nDescription: Line one\n  Line two\n  Line three\n";
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert_eq!(info.name, "test-pkg");
+        // Description should include continuation lines joined with newlines
+        assert!(info
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("Line one\nLine two\nLine three"));
+    }
+
+    #[test]
+    fn test_parse_pkg_info_tab_continuation() {
+        let content = "Name: test-pkg\nVersion: 1.0\nDescription: First\n\tSecond\n";
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert!(info.description.as_ref().unwrap().contains("Second"));
+    }
+
+    #[test]
+    fn test_parse_pkg_info_project_url_malformed() {
+        // project-url without a comma separator: should not add to map
+        let content = "Name: test\nVersion: 1.0\nProject-URL: no-comma-here\n";
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert!(info.project_urls.is_none());
+    }
+
+    #[test]
+    fn test_parse_pkg_info_unknown_fields_ignored() {
+        let content = "Name: test\nVersion: 1.0\nX-Custom-Header: custom value\n";
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert_eq!(info.name, "test");
+    }
+
+    #[test]
+    fn test_parse_pkg_info_name_only() {
+        let content = "Name: minimal\n";
+        let info = PypiHandler::parse_pkg_info(content).unwrap();
+        assert_eq!(info.name, "minimal");
+        assert_eq!(info.version, "");
+    }
+
+    // ========================================================================
+    // generate_simple_root_index tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_simple_root_index_empty() {
+        let html = generate_simple_root_index(&[]);
+        assert!(html.contains("<h1>Simple Index</h1>"));
+        assert!(html.contains("</body>"));
+        assert!(!html.contains("<a href="));
+    }
+
+    #[test]
+    fn test_generate_simple_root_index_with_packages() {
+        let packages = vec!["requests".to_string(), "Flask".to_string()];
+        let html = generate_simple_root_index(&packages);
+        assert!(html.contains("<a href=\"/simple/requests/\">requests</a>"));
+        assert!(html.contains("<a href=\"/simple/flask/\">Flask</a>"));
+    }
+
+    #[test]
+    fn test_generate_simple_root_index_normalizes_names() {
+        let packages = vec!["My_Package".to_string()];
+        let html = generate_simple_root_index(&packages);
+        assert!(html.contains("<a href=\"/simple/my-package/\">My_Package</a>"));
+    }
+
+    // ========================================================================
+    // generate_simple_package_index tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_simple_package_index_empty() {
+        let html = generate_simple_package_index("requests", &[]);
+        assert!(html.contains("<title>Links for requests</title>"));
+        assert!(html.contains("<h1>Links for requests</h1>"));
+        assert!(!html.contains("<a href="));
+    }
+
+    #[test]
+    fn test_generate_simple_package_index_with_files() {
+        let files = vec![(
+            "requests-2.28.0.tar.gz".to_string(),
+            "/packages/requests/2.28.0/requests-2.28.0.tar.gz".to_string(),
+            None,
+        )];
+        let html = generate_simple_package_index("requests", &files);
+        assert!(html.contains("requests-2.28.0.tar.gz</a>"));
+        assert!(html.contains("href=\"/packages/requests/2.28.0/requests-2.28.0.tar.gz\""));
+    }
+
+    #[test]
+    fn test_generate_simple_package_index_with_hash() {
+        let files = vec![(
+            "requests-2.28.0.tar.gz".to_string(),
+            "/packages/requests/2.28.0/requests-2.28.0.tar.gz".to_string(),
+            Some("abc123def456".to_string()),
+        )];
+        let html = generate_simple_package_index("requests", &files);
+        assert!(html.contains("data-dist-info-metadata=\"sha256=abc123def456\""));
+    }
+
+    #[test]
+    fn test_generate_simple_package_index_multiple_files() {
+        let files = vec![
+            ("pkg-1.0.tar.gz".to_string(), "/url1".to_string(), None),
+            (
+                "pkg-2.0.tar.gz".to_string(),
+                "/url2".to_string(),
+                Some("hash2".to_string()),
+            ),
+        ];
+        let html = generate_simple_package_index("pkg", &files);
+        assert!(html.contains("pkg-1.0.tar.gz</a>"));
+        assert!(html.contains("pkg-2.0.tar.gz</a>"));
+    }
+
+    #[test]
+    fn test_generate_simple_package_index_has_pypi_version() {
+        let html = generate_simple_package_index("pkg", &[]);
+        assert!(html.contains("pypi:repository-version"));
+        assert!(html.contains("content=\"1.0\""));
+    }
+
+    // ========================================================================
+    // PypiHandler::new / Default tests
+    // ========================================================================
+
+    #[test]
+    fn test_pypi_handler_new() {
+        let _handler = PypiHandler::new();
+    }
+
+    #[test]
+    fn test_pypi_handler_default() {
+        let _handler = PypiHandler;
     }
 }

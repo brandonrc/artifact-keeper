@@ -558,6 +558,10 @@ pub fn generate_release(
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // parse_deb_filename tests
+    // ========================================================================
+
     #[test]
     fn test_parse_deb_filename() {
         let (pkg, ver, arch) =
@@ -566,6 +570,58 @@ mod tests {
         assert_eq!(ver, "1.24.0-1");
         assert_eq!(arch, "amd64");
     }
+
+    #[test]
+    fn test_parse_deb_filename_all_arch() {
+        let (pkg, ver, arch) =
+            DebianHandler::parse_deb_filename("python3-pip_23.0.1-1_all.deb").unwrap();
+        assert_eq!(pkg, "python3-pip");
+        assert_eq!(ver, "23.0.1-1");
+        assert_eq!(arch, "all");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_arm64() {
+        let (pkg, ver, arch) = DebianHandler::parse_deb_filename("libc6_2.36-9_arm64.deb").unwrap();
+        assert_eq!(pkg, "libc6");
+        assert_eq!(ver, "2.36-9");
+        assert_eq!(arch, "arm64");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_udeb() {
+        let (pkg, ver, arch) =
+            DebianHandler::parse_deb_filename("base-installer_1.200_amd64.udeb").unwrap();
+        assert_eq!(pkg, "base-installer");
+        assert_eq!(ver, "1.200");
+        assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_epoch_in_version() {
+        // Debian allows epoch: "1:1.0-1" but _ separates fields
+        let (pkg, ver, arch) =
+            DebianHandler::parse_deb_filename("pkg_1%3a2.0-1_amd64.deb").unwrap();
+        assert_eq!(pkg, "pkg");
+        assert_eq!(ver, "1%3a2.0-1");
+        assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_too_few_underscores() {
+        let result = DebianHandler::parse_deb_filename("invalid_name.deb");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_no_underscores() {
+        let result = DebianHandler::parse_deb_filename("invalidname.deb");
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // parse_path tests
+    // ========================================================================
 
     #[test]
     fn test_parse_path_package() {
@@ -583,6 +639,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_path_release_gpg() {
+        let info = DebianHandler::parse_path("dists/jammy/Release.gpg").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Release));
+        assert_eq!(info.distribution, Some("jammy".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_inrelease() {
+        let info = DebianHandler::parse_path("dists/focal/InRelease").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Release));
+        assert_eq!(info.distribution, Some("focal".to_string()));
+    }
+
+    #[test]
     fn test_parse_path_packages() {
         let info = DebianHandler::parse_path("dists/jammy/main/binary-amd64/Packages.gz").unwrap();
         assert!(matches!(info.operation, DebianOperation::Packages));
@@ -592,11 +662,139 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_path_packages_xz() {
+        let info =
+            DebianHandler::parse_path("dists/bookworm/main/binary-arm64/Packages.xz").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Packages));
+        assert_eq!(info.arch, Some("arm64".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_packages_uncompressed() {
+        let info = DebianHandler::parse_path("dists/jammy/universe/binary-i386/Packages").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Packages));
+        assert_eq!(info.component, Some("universe".to_string()));
+        assert_eq!(info.arch, Some("i386".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_pool_with_lib_prefix() {
+        let info =
+            DebianHandler::parse_path("pool/main/libo/libopenssl/libopenssl_3.0.0-1_amd64.deb")
+                .unwrap();
+        assert!(matches!(info.operation, DebianOperation::Package));
+        assert_eq!(info.component, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_deb_file() {
+        let info = DebianHandler::parse_path("nginx_1.24.0-1_amd64.deb").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Package));
+        assert_eq!(info.package, Some("nginx".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_udeb_file() {
+        let info = DebianHandler::parse_path("base_1.0_amd64.udeb").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Package));
+        assert_eq!(info.package, Some("base".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_leading_slash() {
+        let info = DebianHandler::parse_path("/dists/jammy/Release").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Release));
+    }
+
+    #[test]
+    fn test_parse_path_invalid() {
+        let result = DebianHandler::parse_path("some/random/path.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_release_no_dist_prefix() {
+        // Path contains "/Release" but doesn't start with "dists/"
+        let info = DebianHandler::parse_path("other/Release").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Release));
+        assert!(info.distribution.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_packages_short_path() {
+        // Packages file but not enough path segments for dist/comp/arch
+        let info = DebianHandler::parse_path("some/Packages").unwrap();
+        assert!(matches!(info.operation, DebianOperation::Packages));
+        assert!(info.distribution.is_none());
+        assert!(info.component.is_none());
+        assert!(info.arch.is_none());
+    }
+
+    // ========================================================================
+    // get_pool_prefix tests
+    // ========================================================================
+
+    #[test]
     fn test_get_pool_prefix() {
         assert_eq!(DebianHandler::get_pool_prefix("nginx"), "n");
         assert_eq!(DebianHandler::get_pool_prefix("libc6"), "libc");
         assert_eq!(DebianHandler::get_pool_prefix("libssl3"), "libs");
     }
+
+    #[test]
+    fn test_get_pool_prefix_short_lib() {
+        // "lib" is only 3 chars, which is not > 4 in length, so just first char
+        assert_eq!(DebianHandler::get_pool_prefix("lib"), "l");
+    }
+
+    #[test]
+    fn test_get_pool_prefix_liba() {
+        // "liba" has length 4, not > 4, so just first char
+        assert_eq!(DebianHandler::get_pool_prefix("liba"), "l");
+    }
+
+    #[test]
+    fn test_get_pool_prefix_libab() {
+        // "libab" has length 5, which is > 4, so first 4 chars
+        assert_eq!(DebianHandler::get_pool_prefix("libab"), "liba");
+    }
+
+    #[test]
+    fn test_get_pool_prefix_single_char() {
+        assert_eq!(DebianHandler::get_pool_prefix("a"), "a");
+    }
+
+    #[test]
+    fn test_get_pool_prefix_empty() {
+        // Empty string: chars().next() is None, so '_'
+        assert_eq!(DebianHandler::get_pool_prefix(""), "_");
+    }
+
+    // ========================================================================
+    // get_pool_path tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_pool_path_normal() {
+        let path = DebianHandler::get_pool_path("main", "nginx", "nginx_1.24.0-1_amd64.deb");
+        assert_eq!(path, "pool/main/n/nginx/nginx_1.24.0-1_amd64.deb");
+    }
+
+    #[test]
+    fn test_get_pool_path_lib_package() {
+        let path = DebianHandler::get_pool_path("main", "libssl3", "libssl3_3.0.0-1_amd64.deb");
+        assert_eq!(path, "pool/main/libs/libssl3/libssl3_3.0.0-1_amd64.deb");
+    }
+
+    #[test]
+    fn test_get_pool_path_universe_component() {
+        let path = DebianHandler::get_pool_path("universe", "vim", "vim_9.0.1000-1_amd64.deb");
+        assert_eq!(path, "pool/universe/v/vim/vim_9.0.1000-1_amd64.deb");
+    }
+
+    // ========================================================================
+    // parse_control tests
+    // ========================================================================
 
     #[test]
     fn test_parse_control() {
@@ -615,5 +813,337 @@ Description: High performance web server
         assert_eq!(control.version, "1.24.0-1");
         assert_eq!(control.architecture, "amd64");
         assert_eq!(control.depends.as_ref().map(|d| d.len()), Some(2));
+    }
+
+    #[test]
+    fn test_parse_control_missing_package() {
+        let content = "Version: 1.0\nArchitecture: amd64\n";
+        let result = DebianHandler::parse_control(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_control_empty() {
+        let result = DebianHandler::parse_control("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_control_all_fields() {
+        let content = r#"Package: full-pkg
+Version: 2.0.0-1
+Architecture: amd64
+Maintainer: Admin <admin@example.com>
+Installed-Size: 5678
+Depends: libc6, libssl3
+Pre-Depends: dpkg (>= 1.17.5)
+Recommends: vim
+Suggests: emacs
+Conflicts: old-pkg
+Provides: virtual-pkg
+Replaces: old-pkg
+Section: admin
+Priority: important
+Homepage: https://example.com
+Description: A full package
+Source: full-pkg-src
+"#;
+        let control = DebianHandler::parse_control(content).unwrap();
+        assert_eq!(control.package, "full-pkg");
+        assert_eq!(control.version, "2.0.0-1");
+        assert_eq!(control.architecture, "amd64");
+        assert_eq!(
+            control.maintainer,
+            Some("Admin <admin@example.com>".to_string())
+        );
+        assert_eq!(control.installed_size, Some(5678));
+        assert_eq!(
+            control.depends,
+            Some(vec!["libc6".to_string(), "libssl3".to_string()])
+        );
+        assert_eq!(
+            control.pre_depends,
+            Some(vec!["dpkg (>= 1.17.5)".to_string()])
+        );
+        assert_eq!(control.recommends, Some(vec!["vim".to_string()]));
+        assert_eq!(control.suggests, Some(vec!["emacs".to_string()]));
+        assert_eq!(control.conflicts, Some(vec!["old-pkg".to_string()]));
+        assert_eq!(control.provides, Some(vec!["virtual-pkg".to_string()]));
+        assert_eq!(control.replaces, Some(vec!["old-pkg".to_string()]));
+        assert_eq!(control.section, Some("admin".to_string()));
+        assert_eq!(control.priority, Some("important".to_string()));
+        assert_eq!(control.homepage, Some("https://example.com".to_string()));
+        assert_eq!(control.description, Some("A full package".to_string()));
+        assert_eq!(control.source, Some("full-pkg-src".to_string()));
+    }
+
+    #[test]
+    fn test_parse_control_continuation_lines() {
+        let content = "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDescription: Short desc\n Extended description line 1\n Extended description line 2\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        assert!(control
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("Short desc\nExtended description line 1\nExtended description line 2"));
+    }
+
+    #[test]
+    fn test_parse_control_tab_continuation() {
+        let content =
+            "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDescription: Desc\n\tMore desc\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        assert!(control.description.as_ref().unwrap().contains("More desc"));
+    }
+
+    #[test]
+    fn test_parse_control_unknown_fields_go_to_extra() {
+        let content = "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nX-Custom: custom-value\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        assert_eq!(
+            control.extra.get("X-Custom"),
+            Some(&"custom-value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_control_installed_size_invalid() {
+        let content =
+            "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nInstalled-Size: not-a-number\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        assert!(control.installed_size.is_none());
+    }
+
+    #[test]
+    fn test_parse_control_empty_depends() {
+        let content = "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDepends: \n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        // parse_dependency_list on empty string: split(',') gives [""], but filtered empty
+        assert_eq!(control.depends, Some(vec![]));
+    }
+
+    #[test]
+    fn test_parse_control_multiple_depends() {
+        let content = "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDepends: libc6, libm, libpthread, libdl\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        let deps = control.depends.unwrap();
+        assert_eq!(deps.len(), 4);
+        assert_eq!(deps[0], "libc6");
+        assert_eq!(deps[3], "libdl");
+    }
+
+    // ========================================================================
+    // parse_dependency_list tests (indirectly)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_dependency_list_with_versions() {
+        let content = "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDepends: libc6 (>= 2.34), libssl3 (>= 3.0)\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        let deps = control.depends.unwrap();
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0], "libc6 (>= 2.34)");
+        assert_eq!(deps[1], "libssl3 (>= 3.0)");
+    }
+
+    #[test]
+    fn test_parse_dependency_list_with_alternatives() {
+        let content =
+            "Package: pkg\nVersion: 1.0\nArchitecture: amd64\nDepends: editor | vim | nano\n";
+        let control = DebianHandler::parse_control(content).unwrap();
+        let deps = control.depends.unwrap();
+        // No comma separation, so entire "editor | vim | nano" is one entry
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "editor | vim | nano");
+    }
+
+    // ========================================================================
+    // extract_control tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_control_invalid_ar_magic() {
+        let result = DebianHandler::extract_control(b"not-an-ar-archive-at-all!!");
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("not an ar archive"));
+    }
+
+    #[test]
+    fn test_extract_control_too_short() {
+        let result = DebianHandler::extract_control(b"short");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_control_valid_magic_no_control() {
+        // Valid ar magic but no control.tar inside
+        let mut data = Vec::new();
+        data.extend_from_slice(b"!<arch>\n");
+        // Add a dummy member that is NOT control.tar
+        // ar header: 60 bytes (name[16], mtime[12], uid[6], gid[6], mode[8], size[10], magic[2])
+        let mut header = [b' '; 60];
+        header[..12].copy_from_slice(b"debian-binar");
+        // size = "0" padded
+        header[48] = b'0';
+        header[58] = b'`';
+        header[59] = b'\n';
+        data.extend_from_slice(&header);
+
+        let result = DebianHandler::extract_control(&data);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("control.tar not found"));
+    }
+
+    // ========================================================================
+    // generate_packages_entry tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_packages_entry_basic() {
+        let control = DebControl {
+            package: "nginx".to_string(),
+            version: "1.24.0-1".to_string(),
+            architecture: "amd64".to_string(),
+            maintainer: Some("Admin <admin@test.com>".to_string()),
+            installed_size: Some(1024),
+            depends: Some(vec!["libc6".to_string(), "libssl3".to_string()]),
+            section: Some("web".to_string()),
+            priority: Some("optional".to_string()),
+            homepage: Some("https://nginx.org".to_string()),
+            description: Some("Web server".to_string()),
+            ..Default::default()
+        };
+        let entry = generate_packages_entry(
+            &control,
+            "pool/main/n/nginx/nginx_1.24.0-1_amd64.deb",
+            2048,
+            "md5hash",
+            "sha256hash",
+        );
+        assert!(entry.contains("Package: nginx\n"));
+        assert!(entry.contains("Version: 1.24.0-1\n"));
+        assert!(entry.contains("Architecture: amd64\n"));
+        assert!(entry.contains("Maintainer: Admin <admin@test.com>\n"));
+        assert!(entry.contains("Installed-Size: 1024\n"));
+        assert!(entry.contains("Depends: libc6, libssl3\n"));
+        assert!(entry.contains("Section: web\n"));
+        assert!(entry.contains("Priority: optional\n"));
+        assert!(entry.contains("Homepage: https://nginx.org\n"));
+        assert!(entry.contains("Description: Web server\n"));
+        assert!(entry.contains("Filename: pool/main/n/nginx/nginx_1.24.0-1_amd64.deb\n"));
+        assert!(entry.contains("Size: 2048\n"));
+        assert!(entry.contains("MD5sum: md5hash\n"));
+        assert!(entry.contains("SHA256: sha256hash\n"));
+    }
+
+    #[test]
+    fn test_generate_packages_entry_minimal() {
+        let control = DebControl {
+            package: "minimal".to_string(),
+            version: "0.1".to_string(),
+            architecture: "all".to_string(),
+            ..Default::default()
+        };
+        let entry = generate_packages_entry(&control, "file.deb", 100, "md5", "sha");
+        assert!(entry.contains("Package: minimal\n"));
+        assert!(entry.contains("Version: 0.1\n"));
+        assert!(entry.contains("Architecture: all\n"));
+        assert!(!entry.contains("Maintainer:"));
+        assert!(!entry.contains("Installed-Size:"));
+        assert!(!entry.contains("Depends:"));
+        assert!(!entry.contains("Section:"));
+        assert!(!entry.contains("Priority:"));
+        assert!(!entry.contains("Homepage:"));
+        assert!(!entry.contains("Description:"));
+    }
+
+    #[test]
+    fn test_generate_packages_entry_empty_depends() {
+        let control = DebControl {
+            package: "pkg".to_string(),
+            version: "1.0".to_string(),
+            architecture: "amd64".to_string(),
+            depends: Some(vec![]),
+            ..Default::default()
+        };
+        let entry = generate_packages_entry(&control, "f.deb", 10, "m", "s");
+        // Empty depends should not generate a Depends line
+        assert!(!entry.contains("Depends:"));
+    }
+
+    // ========================================================================
+    // generate_release tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_release_basic() {
+        let release = generate_release(
+            "jammy",
+            Some("jammy"),
+            &["amd64".to_string(), "arm64".to_string()],
+            &["main".to_string(), "universe".to_string()],
+            vec![],
+        );
+        assert!(release.contains("Suite: jammy\n"));
+        assert!(release.contains("Codename: jammy\n"));
+        assert!(release.contains("Architectures: amd64 arm64\n"));
+        assert!(release.contains("Components: main universe\n"));
+        assert!(release.contains("Date:"));
+        assert!(!release.contains("SHA256:"));
+    }
+
+    #[test]
+    fn test_generate_release_no_codename() {
+        let release = generate_release(
+            "stable",
+            None,
+            &["amd64".to_string()],
+            &["main".to_string()],
+            vec![],
+        );
+        assert!(release.contains("Suite: stable\n"));
+        assert!(!release.contains("Codename:"));
+    }
+
+    #[test]
+    fn test_generate_release_with_hashes() {
+        let hashes = vec![
+            ReleaseHash {
+                hash: "abc123".to_string(),
+                size: 1024,
+                path: "main/binary-amd64/Packages".to_string(),
+            },
+            ReleaseHash {
+                hash: "def456".to_string(),
+                size: 512,
+                path: "main/binary-amd64/Packages.gz".to_string(),
+            },
+        ];
+        let release = generate_release(
+            "jammy",
+            None,
+            &["amd64".to_string()],
+            &["main".to_string()],
+            hashes,
+        );
+        assert!(release.contains("SHA256:\n"));
+        assert!(release.contains(" abc123 1024 main/binary-amd64/Packages\n"));
+        assert!(release.contains(" def456 512 main/binary-amd64/Packages.gz\n"));
+    }
+
+    // ========================================================================
+    // DebianHandler::new / Default tests
+    // ========================================================================
+
+    #[test]
+    fn test_debian_handler_new() {
+        let _handler = DebianHandler::new();
+    }
+
+    #[test]
+    fn test_debian_handler_default() {
+        let _handler = DebianHandler;
     }
 }

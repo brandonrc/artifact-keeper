@@ -552,6 +552,10 @@ pub struct PrimaryFormat {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // parse_rpm_filename tests
+    // ========================================================================
+
     #[test]
     fn test_parse_rpm_filename() {
         let info = RpmHandler::parse_rpm_filename("nginx-1.24.0-1.el9.x86_64.rpm").unwrap();
@@ -559,6 +563,7 @@ mod tests {
         assert_eq!(info.version, Some("1.24.0".to_string()));
         assert_eq!(info.release, Some("1.el9".to_string()));
         assert_eq!(info.arch, Some("x86_64".to_string()));
+        assert!(matches!(info.operation, RpmOperation::Package));
     }
 
     #[test]
@@ -570,8 +575,74 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_rpm_filename_noarch() {
+        let info = RpmHandler::parse_rpm_filename("bash-completion-2.11-5.el9.noarch.rpm").unwrap();
+        assert_eq!(info.name, Some("bash-completion".to_string()));
+        assert_eq!(info.version, Some("2.11".to_string()));
+        assert_eq!(info.release, Some("5.el9".to_string()));
+        assert_eq!(info.arch, Some("noarch".to_string()));
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_src() {
+        let info = RpmHandler::parse_rpm_filename("nginx-1.24.0-1.el9.src.rpm").unwrap();
+        assert_eq!(info.name, Some("nginx".to_string()));
+        assert_eq!(info.arch, Some("src".to_string()));
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_i686() {
+        let info = RpmHandler::parse_rpm_filename("glibc-2.34-60.el9.i686.rpm").unwrap();
+        assert_eq!(info.name, Some("glibc".to_string()));
+        assert_eq!(info.arch, Some("i686".to_string()));
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_aarch64() {
+        let info = RpmHandler::parse_rpm_filename("kernel-5.14.0-1.el9.aarch64.rpm").unwrap();
+        assert_eq!(info.name, Some("kernel".to_string()));
+        assert_eq!(info.arch, Some("aarch64".to_string()));
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_no_arch_dot() {
+        // Missing dot before arch means rsplit_once('.') returns None
+        let result = RpmHandler::parse_rpm_filename("invalidname.rpm");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_too_few_hyphens() {
+        // Only 1 hyphen after removing arch: rsplitn(3, '-') gives 2 parts, not 3
+        let result = RpmHandler::parse_rpm_filename("name-1.0.x86_64.rpm");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_rpm_filename_many_hyphens_in_name() {
+        let info = RpmHandler::parse_rpm_filename("a-b-c-d-1.0-1.el9.x86_64.rpm").unwrap();
+        assert_eq!(info.name, Some("a-b-c-d".to_string()));
+        assert_eq!(info.version, Some("1.0".to_string()));
+        assert_eq!(info.release, Some("1.el9".to_string()));
+    }
+
+    // ========================================================================
+    // parse_path tests
+    // ========================================================================
+
+    #[test]
     fn test_parse_path_repomd() {
         let info = RpmHandler::parse_path("repodata/repomd.xml").unwrap();
+        assert!(matches!(info.operation, RpmOperation::RepoMd));
+        assert!(info.name.is_none());
+        assert!(info.version.is_none());
+        assert!(info.release.is_none());
+        assert!(info.arch.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_repomd_nested() {
+        let info = RpmHandler::parse_path("centos/9/repodata/repomd.xml").unwrap();
         assert!(matches!(info.operation, RpmOperation::RepoMd));
     }
 
@@ -582,9 +653,397 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_path_filelists() {
+        let info = RpmHandler::parse_path("repodata/abc123-filelists.xml.gz").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Filelists));
+    }
+
+    #[test]
+    fn test_parse_path_other() {
+        let info = RpmHandler::parse_path("repodata/abc123-other.xml.gz").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Other));
+    }
+
+    #[test]
+    fn test_parse_path_comps() {
+        let info = RpmHandler::parse_path("repodata/comps.xml").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Comps));
+    }
+
+    #[test]
+    fn test_parse_path_updateinfo() {
+        let info = RpmHandler::parse_path("repodata/updateinfo.xml.gz").unwrap();
+        assert!(matches!(info.operation, RpmOperation::UpdateInfo));
+    }
+
+    #[test]
+    fn test_parse_path_repodata_unknown_defaults_to_repomd() {
+        let info = RpmHandler::parse_path("repodata/something-unknown.xml").unwrap();
+        assert!(matches!(info.operation, RpmOperation::RepoMd));
+    }
+
+    #[test]
     fn test_parse_path_package() {
         let info = RpmHandler::parse_path("Packages/nginx-1.24.0-1.el9.x86_64.rpm").unwrap();
         assert!(matches!(info.operation, RpmOperation::Package));
         assert_eq!(info.name, Some("nginx".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_rpm() {
+        let info = RpmHandler::parse_path("nginx-1.24.0-1.el9.x86_64.rpm").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Package));
+        assert_eq!(info.name, Some("nginx".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_leading_slash() {
+        let info = RpmHandler::parse_path("/repodata/repomd.xml").unwrap();
+        assert!(matches!(info.operation, RpmOperation::RepoMd));
+    }
+
+    #[test]
+    fn test_parse_path_invalid() {
+        let result = RpmHandler::parse_path("some/random/path.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty_after_strip() {
+        let result = RpmHandler::parse_path("just/a/dir/");
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // parse_repodata_operation tests (indirectly via parse_path)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_repodata_operation_primary_with_hash() {
+        let info = RpmHandler::parse_path("repodata/a1b2c3d4e5f6-primary.xml.gz").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Primary));
+    }
+
+    #[test]
+    fn test_parse_repodata_operation_filelists_sqlite() {
+        let info = RpmHandler::parse_path("repodata/hash-filelists.sqlite.bz2").unwrap();
+        assert!(matches!(info.operation, RpmOperation::Filelists));
+    }
+
+    // ========================================================================
+    // parse_rpm_header tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_rpm_header_too_small() {
+        let result = RpmHandler::parse_rpm_header(&[0u8; 50]);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("too small"));
+    }
+
+    #[test]
+    fn test_parse_rpm_header_invalid_magic() {
+        let mut data = vec![0u8; 200];
+        // Wrong magic
+        data[0] = 0x00;
+        data[1] = 0x00;
+        data[2] = 0x00;
+        data[3] = 0x00;
+        let result = RpmHandler::parse_rpm_header(&data);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Invalid RPM magic"));
+    }
+
+    #[test]
+    fn test_parse_rpm_header_valid_magic_fallback() {
+        // Create a minimal RPM with valid magic but no header section after signature
+        let mut data = vec![0u8; 200];
+        // RPM magic
+        data[0] = 0xed;
+        data[1] = 0xab;
+        data[2] = 0xee;
+        data[3] = 0xdb;
+        // Major/minor
+        data[4] = 3;
+        data[5] = 0;
+        // Lead name at offset 10: "test-package"
+        let name = b"test-package";
+        data[10..10 + name.len()].copy_from_slice(name);
+        // No valid signature header at offset 96 (leave as zeros)
+        // No valid main header either, so it falls back to lead name
+        let metadata = RpmHandler::parse_rpm_header(&data).unwrap();
+        assert_eq!(metadata.name, "test-package");
+        assert_eq!(metadata.version, "");
+    }
+
+    #[test]
+    fn test_parse_rpm_header_with_signature_and_main_header() {
+        // Build a synthetic RPM with magic, signature header, and main header
+        let mut data = vec![0u8; 2048];
+
+        // RPM magic
+        data[0] = 0xed;
+        data[1] = 0xab;
+        data[2] = 0xee;
+        data[3] = 0xdb;
+        data[4] = 3; // major
+        data[5] = 0; // minor
+
+        // Lead name at offset 10
+        let lead_name = b"pkg-from-lead";
+        data[10..10 + lead_name.len()].copy_from_slice(lead_name);
+
+        // Signature header at offset 96
+        let sig_offset = 96;
+        data[sig_offset] = 0x8e; // RPM_HEADER_MAGIC
+        data[sig_offset + 1] = 0xad;
+        data[sig_offset + 2] = 0xe8;
+        data[sig_offset + 3] = 1; // version
+                                  // nindex = 0 (no signature entries)
+        data[sig_offset + 8] = 0;
+        data[sig_offset + 9] = 0;
+        data[sig_offset + 10] = 0;
+        data[sig_offset + 11] = 0;
+        // hsize = 0
+        data[sig_offset + 12] = 0;
+        data[sig_offset + 13] = 0;
+        data[sig_offset + 14] = 0;
+        data[sig_offset + 15] = 0;
+
+        // After signature: offset = 96 + 16 + 0 + 0 = 112, aligned to 8 = 112
+        let main_offset = 112;
+
+        // Main header magic
+        data[main_offset] = 0x8e;
+        data[main_offset + 1] = 0xad;
+        data[main_offset + 2] = 0xe8;
+        data[main_offset + 3] = 1; // version
+
+        // nindex = 2 (name and version tags)
+        data[main_offset + 8] = 0;
+        data[main_offset + 9] = 0;
+        data[main_offset + 10] = 0;
+        data[main_offset + 11] = 2;
+
+        // Store: "mypackage\0" at offset 0, "2.0.1\0" at offset 10
+        let store_data = b"mypackage\x002.0.1\x00";
+        let hsize = store_data.len();
+        data[main_offset + 12] = 0;
+        data[main_offset + 13] = 0;
+        data[main_offset + 14] = 0;
+        data[main_offset + 15] = hsize as u8;
+
+        let index_start = main_offset + 16;
+
+        // Index entry 0: RPMTAG_NAME (1000), type=6 (STRING), offset=0, count=1
+        let tag_name: u32 = 1000;
+        data[index_start..index_start + 4].copy_from_slice(&tag_name.to_be_bytes());
+        data[index_start + 4..index_start + 8].copy_from_slice(&6u32.to_be_bytes());
+        data[index_start + 8..index_start + 12].copy_from_slice(&0u32.to_be_bytes());
+        data[index_start + 12..index_start + 16].copy_from_slice(&1u32.to_be_bytes());
+
+        // Index entry 1: RPMTAG_VERSION (1001), type=6, offset=10, count=1
+        let idx1_start = index_start + 16;
+        let tag_version: u32 = 1001;
+        data[idx1_start..idx1_start + 4].copy_from_slice(&tag_version.to_be_bytes());
+        data[idx1_start + 4..idx1_start + 8].copy_from_slice(&6u32.to_be_bytes());
+        data[idx1_start + 8..idx1_start + 12].copy_from_slice(&10u32.to_be_bytes());
+        data[idx1_start + 12..idx1_start + 16].copy_from_slice(&1u32.to_be_bytes());
+
+        // Store starts after index entries
+        let store_start = index_start + 2 * 16;
+        data[store_start..store_start + store_data.len()].copy_from_slice(store_data);
+
+        let metadata = RpmHandler::parse_rpm_header(&data).unwrap();
+        assert_eq!(metadata.name, "mypackage");
+        assert_eq!(metadata.version, "2.0.1");
+    }
+
+    // ========================================================================
+    // parse_header_section tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_header_section_too_short() {
+        let result = RpmHandler::parse_header_section(&[0u8; 10]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_header_section_invalid_magic() {
+        let mut data = vec![0u8; 100];
+        data[0] = 0x00;
+        let result = RpmHandler::parse_header_section(&data);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("Invalid RPM header"));
+    }
+
+    #[test]
+    fn test_parse_header_section_truncated() {
+        let mut data = vec![0u8; 20];
+        // Valid magic
+        data[0] = 0x8e;
+        data[1] = 0xad;
+        data[2] = 0xe8;
+        data[3] = 1;
+        // nindex = 1
+        data[11] = 1;
+        // hsize = 255 (bigger than available data)
+        data[15] = 255;
+        let result = RpmHandler::parse_header_section(&data);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("truncated"));
+    }
+
+    #[test]
+    fn test_parse_header_section_no_entries() {
+        let mut data = vec![0u8; 20];
+        data[0] = 0x8e;
+        data[1] = 0xad;
+        data[2] = 0xe8;
+        data[3] = 1;
+        // nindex = 0, hsize = 0
+        let metadata = RpmHandler::parse_header_section(&data).unwrap();
+        assert_eq!(metadata.name, "");
+        assert_eq!(metadata.version, "");
+    }
+
+    #[test]
+    fn test_parse_header_section_with_summary_and_license() {
+        // Build a header section with multiple tags
+        let store_data = b"pkg\x001.0\x00rel1\x00x86_64\x00A summary\x00MIT\x00";
+        let nindex: u32 = 6;
+        let hsize = store_data.len() as u32;
+        let header_size = 16 + (nindex as usize * 16) + store_data.len();
+        let mut data = vec![0u8; header_size];
+
+        // Magic + version
+        data[0] = 0x8e;
+        data[1] = 0xad;
+        data[2] = 0xe8;
+        data[3] = 1;
+        data[8..12].copy_from_slice(&nindex.to_be_bytes());
+        data[12..16].copy_from_slice(&hsize.to_be_bytes());
+
+        // Offsets: "pkg\0" = 0, "1.0\0" = 4, "rel1\0" = 8, "x86_64\0" = 13, "A summary\0" = 20, "MIT\0" = 30
+        let offsets = [0u32, 4, 8, 13, 20, 30];
+        let tags = [
+            RPMTAG_NAME,
+            RPMTAG_VERSION,
+            RPMTAG_RELEASE,
+            RPMTAG_ARCH,
+            RPMTAG_SUMMARY,
+            RPMTAG_LICENSE,
+        ];
+
+        for i in 0..nindex as usize {
+            let idx_off = 16 + i * 16;
+            data[idx_off..idx_off + 4].copy_from_slice(&tags[i].to_be_bytes());
+            data[idx_off + 4..idx_off + 8].copy_from_slice(&6u32.to_be_bytes());
+            data[idx_off + 8..idx_off + 12].copy_from_slice(&offsets[i].to_be_bytes());
+            data[idx_off + 12..idx_off + 16].copy_from_slice(&1u32.to_be_bytes());
+        }
+
+        let store_start = 16 + nindex as usize * 16;
+        data[store_start..store_start + store_data.len()].copy_from_slice(store_data);
+
+        let metadata = RpmHandler::parse_header_section(&data).unwrap();
+        assert_eq!(metadata.name, "pkg");
+        assert_eq!(metadata.version, "1.0");
+        assert_eq!(metadata.release, "rel1");
+        assert_eq!(metadata.arch, "x86_64");
+        assert_eq!(metadata.summary, Some("A summary".to_string()));
+        assert_eq!(metadata.license, Some("MIT".to_string()));
+    }
+
+    #[test]
+    fn test_parse_header_section_empty_optional_fields_become_none() {
+        // Only name tag, all others missing -> optional fields should be None
+        let store_data = b"mypkg\x00";
+        let nindex: u32 = 1;
+        let hsize = store_data.len() as u32;
+        let header_size = 16 + 16 + store_data.len();
+        let mut data = vec![0u8; header_size];
+
+        data[0] = 0x8e;
+        data[1] = 0xad;
+        data[2] = 0xe8;
+        data[3] = 1;
+        data[8..12].copy_from_slice(&nindex.to_be_bytes());
+        data[12..16].copy_from_slice(&hsize.to_be_bytes());
+
+        let idx_off = 16;
+        data[idx_off..idx_off + 4].copy_from_slice(&RPMTAG_NAME.to_be_bytes());
+        data[idx_off + 4..idx_off + 8].copy_from_slice(&6u32.to_be_bytes());
+        data[idx_off + 8..idx_off + 12].copy_from_slice(&0u32.to_be_bytes());
+        data[idx_off + 12..idx_off + 16].copy_from_slice(&1u32.to_be_bytes());
+
+        let store_start = 16 + 16;
+        data[store_start..store_start + store_data.len()].copy_from_slice(store_data);
+
+        let metadata = RpmHandler::parse_header_section(&data).unwrap();
+        assert_eq!(metadata.name, "mypkg");
+        assert!(metadata.summary.is_none());
+        assert!(metadata.description.is_none());
+        assert!(metadata.license.is_none());
+        assert!(metadata.group.is_none());
+        assert!(metadata.url.is_none());
+        assert!(metadata.size.is_none());
+        assert!(metadata.source_rpm.is_none());
+        assert!(metadata.provides.is_empty());
+        assert!(metadata.requires.is_empty());
+    }
+
+    // ========================================================================
+    // RpmHandler::new / Default tests
+    // ========================================================================
+
+    #[test]
+    fn test_rpm_handler_new() {
+        let _handler = RpmHandler::new();
+    }
+
+    #[test]
+    fn test_rpm_handler_default() {
+        let _handler = RpmHandler;
+    }
+
+    // ========================================================================
+    // generate_repomd tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_repomd_empty_data() {
+        let result = generate_repomd(vec![]);
+        assert!(result.is_ok());
+        let xml = result.unwrap();
+        assert!(xml.contains("repomd"));
+    }
+
+    #[test]
+    fn test_generate_repomd_with_data() {
+        let data = vec![RepoMdData {
+            data_type: "primary".to_string(),
+            checksum: RepoMdChecksum {
+                checksum_type: "sha256".to_string(),
+                value: "abc123".to_string(),
+            },
+            open_checksum: None,
+            location: RepoMdLocation {
+                href: "repodata/primary.xml.gz".to_string(),
+            },
+            timestamp: 1700000000,
+            size: 1024,
+            open_size: Some(4096),
+        }];
+        let result = generate_repomd(data);
+        assert!(result.is_ok());
+        let xml = result.unwrap();
+        assert!(xml.contains("primary"));
+        assert!(xml.contains("abc123"));
     }
 }

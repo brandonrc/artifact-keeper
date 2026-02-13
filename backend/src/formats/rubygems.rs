@@ -547,6 +547,10 @@ pub fn generate_gem_info(gemspec: &GemSpec, sha256: &str, downloads: u64) -> Gem
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // parse_gem_filename tests
+    // ========================================================================
+
     #[test]
     fn test_parse_gem_filename() {
         let (name, version, platform) =
@@ -575,6 +579,129 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_gem_filename_java_platform() {
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("jruby-openssl-0.14.0-java.gem").unwrap();
+        assert_eq!(name, "jruby-openssl");
+        assert_eq!(version, "0.14.0");
+        assert_eq!(platform, Some("java".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gem_filename_mingw32_platform() {
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("ffi-1.15.5-x86-mingw32.gem").unwrap();
+        assert_eq!(name, "ffi");
+        assert_eq!(version, "1.15.5");
+        assert_eq!(platform, Some("x86-mingw32".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gem_filename_arm64_darwin() {
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("grpc-1.50.0-arm64-darwin.gem").unwrap();
+        assert_eq!(name, "grpc");
+        assert_eq!(version, "1.50.0");
+        assert_eq!(platform, Some("arm64-darwin".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gem_filename_no_hyphen() {
+        // Only one part (no hyphen), should fail
+        let result = RubygemsHandler::parse_gem_filename("singlename.gem");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gem_filename_no_version_digits() {
+        // All parts start with non-digit: name_parts takes everything, version_parts empty
+        let result = RubygemsHandler::parse_gem_filename("abc-def-ghi.gem");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gem_filename_simple_version() {
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("rake-13.0.6.gem").unwrap();
+        assert_eq!(name, "rake");
+        assert_eq!(version, "13.0.6");
+        assert_eq!(platform, None);
+    }
+
+    #[test]
+    fn test_parse_gem_filename_prerelease_version() {
+        let (name, version, platform) =
+            RubygemsHandler::parse_gem_filename("rails-7.1.0.beta1.gem").unwrap();
+        assert_eq!(name, "rails");
+        // "7.1.0.beta1" - after splitting on '-', "7" starts the version,
+        // then "beta1" doesn't match version start so it becomes part of version
+        // Actually "7.1.0.beta1" is a single part after "rails" with no extra hyphens
+        assert_eq!(version, "7.1.0.beta1");
+        assert_eq!(platform, None);
+    }
+
+    // ========================================================================
+    // parse_gemspec_name tests (indirectly via parse_gem_filename)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_gemspec_name_version_starts_with_digit() {
+        // The version detection looks for a part starting with an ASCII digit
+        let (name, version, _) = RubygemsHandler::parse_gem_filename("my-gem-2.0.gem").unwrap();
+        assert_eq!(name, "my-gem");
+        assert_eq!(version, "2.0");
+    }
+
+    // ========================================================================
+    // is_platform tests (indirectly via parse_gem_filename)
+    // ========================================================================
+
+    #[test]
+    fn test_is_platform_known() {
+        assert!(RubygemsHandler::is_platform("java"));
+        assert!(RubygemsHandler::is_platform("jruby"));
+        assert!(RubygemsHandler::is_platform("mswin32"));
+        assert!(RubygemsHandler::is_platform("mswin64"));
+        assert!(RubygemsHandler::is_platform("mingw32"));
+        assert!(RubygemsHandler::is_platform("mingw64"));
+        assert!(RubygemsHandler::is_platform("x86-mingw32"));
+        assert!(RubygemsHandler::is_platform("x64-mingw32"));
+        assert!(RubygemsHandler::is_platform("x86_64-linux"));
+        assert!(RubygemsHandler::is_platform("x86-linux"));
+        assert!(RubygemsHandler::is_platform("aarch64-linux"));
+        assert!(RubygemsHandler::is_platform("arm64-darwin"));
+        assert!(RubygemsHandler::is_platform("x86_64-darwin"));
+    }
+
+    #[test]
+    fn test_is_platform_ruby() {
+        // "ruby" is in the known list
+        assert!(RubygemsHandler::is_platform("ruby"));
+    }
+
+    #[test]
+    fn test_is_platform_unknown_no_hyphen() {
+        // No hyphen and not in known list, first char doesn't matter
+        assert!(!RubygemsHandler::is_platform("something"));
+    }
+
+    #[test]
+    fn test_is_platform_pattern_match_with_hyphen() {
+        // Has a hyphen and first char is not a digit -> treated as platform
+        assert!(RubygemsHandler::is_platform("unknown-os"));
+    }
+
+    #[test]
+    fn test_is_platform_digit_start_with_hyphen() {
+        // First char is a digit and has a hyphen; returns false (unless it matches known)
+        assert!(!RubygemsHandler::is_platform("1-something"));
+    }
+
+    // ========================================================================
+    // parse_path tests
+    // ========================================================================
+
+    #[test]
     fn test_parse_path_gem() {
         let info = RubygemsHandler::parse_path("gems/rails-7.0.8.gem").unwrap();
         assert!(matches!(info.operation, RubygemsOperation::Gem));
@@ -586,6 +713,13 @@ mod tests {
     fn test_parse_path_specs() {
         let info = RubygemsHandler::parse_path("specs.4.8.gz").unwrap();
         assert!(matches!(info.operation, RubygemsOperation::Specs));
+        assert!(info.name.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_specs_uncompressed() {
+        let info = RubygemsHandler::parse_path("specs.4.8").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Specs));
     }
 
     #[test]
@@ -595,9 +729,269 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_path_prerelease_specs() {
+        let info = RubygemsHandler::parse_path("prerelease_specs.4.8.gz").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::PrereleaseSpecs));
+    }
+
+    #[test]
+    fn test_parse_path_prerelease_specs_uncompressed() {
+        let info = RubygemsHandler::parse_path("prerelease_specs.4.8").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::PrereleaseSpecs));
+    }
+
+    #[test]
+    fn test_parse_path_quick_index() {
+        let info = RubygemsHandler::parse_path("quick/Marshal.4.8/rails-7.0.8.gemspec.rz").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::QuickIndex));
+        assert_eq!(info.name, Some("rails".to_string()));
+        assert_eq!(info.version, Some("7.0.8".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_quick_index_with_platform() {
+        let info = RubygemsHandler::parse_path(
+            "quick/Marshal.4.8/nokogiri-1.15.4-x86_64-linux.gemspec.rz",
+        )
+        .unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::QuickIndex));
+        assert_eq!(info.name, Some("nokogiri".to_string()));
+        assert_eq!(info.version, Some("1.15.4".to_string()));
+        assert_eq!(info.platform, Some("x86_64-linux".to_string()));
+    }
+
+    #[test]
     fn test_parse_path_api() {
         let info = RubygemsHandler::parse_path("api/v1/gems/rails.json").unwrap();
         assert!(matches!(info.operation, RubygemsOperation::GemInfo));
         assert_eq!(info.name, Some("rails".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_api_versions() {
+        let info = RubygemsHandler::parse_path("api/v1/versions/rails.json").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Versions));
+        assert_eq!(info.name, Some("rails".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_api_dependencies() {
+        let info = RubygemsHandler::parse_path("api/v1/dependencies").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Dependencies));
+        assert!(info.name.is_none());
+    }
+
+    #[test]
+    fn test_parse_path_api_dependencies_with_query() {
+        let info = RubygemsHandler::parse_path("api/v1/dependencies?gems=rails").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Dependencies));
+    }
+
+    #[test]
+    fn test_parse_path_invalid() {
+        let result = RubygemsHandler::parse_path("unknown/path/here");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_leading_slash() {
+        let info = RubygemsHandler::parse_path("/gems/rails-7.0.8.gem").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Gem));
+        assert_eq!(info.name, Some("rails".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_direct_gem_file() {
+        // A path ending in .gem but not under gems/ directory
+        let info = RubygemsHandler::parse_path("some/path/rake-13.0.gem").unwrap();
+        assert!(matches!(info.operation, RubygemsOperation::Gem));
+        assert_eq!(info.name, Some("rake".to_string()));
+    }
+
+    // ========================================================================
+    // parse_gemspec_yaml tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_gemspec_yaml_basic() {
+        let content = r#"---
+name: rails
+version: 7.0.8
+summary: Full-stack web framework
+description: Ruby on Rails framework
+homepage: https://rubyonrails.org
+license: MIT
+"#;
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.name, "rails");
+        assert_eq!(spec.version, "7.0.8");
+        assert_eq!(spec.summary, Some("Full-stack web framework".to_string()));
+        assert_eq!(
+            spec.description,
+            Some("Ruby on Rails framework".to_string())
+        );
+        assert_eq!(spec.homepage, Some("https://rubyonrails.org".to_string()));
+        assert_eq!(spec.license, Some("MIT".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_ruby_object_version() {
+        let content = r#"---
+name: mygem
+version: !ruby/object:Gem::Version
+  version: 2.3.1
+summary: A gem
+"#;
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.name, "mygem");
+        assert_eq!(spec.version, "2.3.1");
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_quoted_values() {
+        let content = r#"---
+name: "my-gem"
+version: "1.0.0"
+summary: "A quoted summary"
+"#;
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.name, "my-gem");
+        assert_eq!(spec.version, "1.0.0");
+        assert_eq!(spec.summary, Some("A quoted summary".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_missing_name() {
+        let content = "---\nversion: 1.0.0\nsummary: No name\n";
+        let result = RubygemsHandler::parse_gemspec_yaml(content);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_empty() {
+        let result = RubygemsHandler::parse_gemspec_yaml("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_with_platform() {
+        let content = "---\nname: mygem\nversion: 1.0.0\nplatform: x86_64-linux\n";
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.platform, Some("x86_64-linux".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_platform_ruby_ignored() {
+        let content = "---\nname: mygem\nversion: 1.0.0\nplatform: ruby\n";
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.platform, None);
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_empty_platform() {
+        let content = "---\nname: mygem\nversion: 1.0.0\nplatform: \n";
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.platform, None);
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_comments_and_blank_lines() {
+        let content = r#"---
+# This is a comment
+name: mygem
+
+version: 1.0.0
+# Another comment
+summary: A summary
+"#;
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.name, "mygem");
+        assert_eq!(spec.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_plain_version_no_ruby_object() {
+        let content = "---\nname: simplgem\nversion: 3.2.1\n";
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.version, "3.2.1");
+    }
+
+    #[test]
+    fn test_parse_gemspec_yaml_single_quoted_version() {
+        let content = "---\nname: mygem\nversion: '4.5.6'\n";
+        let spec = RubygemsHandler::parse_gemspec_yaml(content).unwrap();
+        assert_eq!(spec.version, "4.5.6");
+    }
+
+    // ========================================================================
+    // generate_gem_info tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_gem_info_basic() {
+        let gemspec = GemSpec {
+            name: "mygem".to_string(),
+            version: "1.0.0".to_string(),
+            platform: None,
+            authors: Some(vec!["Alice".to_string(), "Bob".to_string()]),
+            email: None,
+            summary: Some("A gem".to_string()),
+            description: Some("A longer description".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            licenses: Some(vec!["MIT".to_string()]),
+            required_ruby_version: None,
+            dependencies: None,
+        };
+        let info = generate_gem_info(&gemspec, "sha256hash", 100);
+        assert_eq!(info.name, "mygem");
+        assert_eq!(info.version, "1.0.0");
+        assert_eq!(info.authors, "Alice, Bob");
+        assert_eq!(info.info, "A longer description");
+        assert_eq!(info.licenses, vec!["MIT".to_string()]);
+        assert_eq!(info.homepage_uri, Some("https://example.com".to_string()));
+        assert_eq!(info.sha, Some("sha256hash".to_string()));
+        assert_eq!(info.downloads, 100);
+        assert_eq!(info.version_downloads, 100);
+    }
+
+    #[test]
+    fn test_generate_gem_info_no_authors() {
+        let gemspec = GemSpec {
+            name: "mygem".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        let info = generate_gem_info(&gemspec, "hash", 0);
+        assert_eq!(info.authors, "");
+        assert_eq!(info.info, "");
+        assert!(info.licenses.is_empty());
+        assert!(info.homepage_uri.is_none());
+    }
+
+    #[test]
+    fn test_generate_gem_info_with_platform() {
+        let gemspec = GemSpec {
+            name: "native-gem".to_string(),
+            version: "2.0.0".to_string(),
+            platform: Some("x86_64-linux".to_string()),
+            ..Default::default()
+        };
+        let info = generate_gem_info(&gemspec, "h", 50);
+        assert_eq!(info.platform, Some("x86_64-linux".to_string()));
+    }
+
+    // ========================================================================
+    // RubygemsHandler::new / Default tests
+    // ========================================================================
+
+    #[test]
+    fn test_rubygems_handler_new() {
+        let _handler = RubygemsHandler::new();
+    }
+
+    #[test]
+    fn test_rubygems_handler_default() {
+        let _handler = RubygemsHandler;
     }
 }

@@ -1239,3 +1239,891 @@ impl ScannerService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn make_artifact(name: &str, path: &str, version: Option<&str>) -> Artifact {
+        Artifact {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            path: path.to_string(),
+            name: name.to_string(),
+            version: version.map(String::from),
+            size_bytes: 100,
+            checksum_sha256: "abc123".to_string(),
+            checksum_md5: None,
+            checksum_sha1: None,
+            content_type: "application/octet-stream".to_string(),
+            storage_key: "key".to_string(),
+            is_deleted: false,
+            uploaded_by: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_xml_value
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_xml_value_basic() {
+        let line = "<groupId>com.example</groupId>";
+        assert_eq!(
+            DependencyScanner::extract_xml_value(line, "groupId"),
+            Some("com.example".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_value_with_whitespace() {
+        let line = "    <artifactId>my-lib</artifactId>   ";
+        assert_eq!(
+            DependencyScanner::extract_xml_value(line, "artifactId"),
+            Some("my-lib".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_value_missing_tag() {
+        let line = "<groupId>com.example</groupId>";
+        assert_eq!(
+            DependencyScanner::extract_xml_value(line, "artifactId"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_value_missing_close_tag() {
+        let line = "<groupId>com.example";
+        assert_eq!(DependencyScanner::extract_xml_value(line, "groupId"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_value_empty_value() {
+        let line = "<version></version>";
+        // start == end so None (start < end check fails for empty)
+        assert_eq!(DependencyScanner::extract_xml_value(line, "version"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_xml_attr
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_xml_attr_basic() {
+        let line = r#"<package id="Newtonsoft.Json" version="13.0.1" />"#;
+        assert_eq!(
+            DependencyScanner::extract_xml_attr(line, "id"),
+            Some("Newtonsoft.Json".to_string())
+        );
+        assert_eq!(
+            DependencyScanner::extract_xml_attr(line, "version"),
+            Some("13.0.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_attr_missing() {
+        let line = r#"<package id="Foo" />"#;
+        assert_eq!(DependencyScanner::extract_xml_attr(line, "version"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_attr_empty_value() {
+        let line = r#"<package id="" version="1.0" />"#;
+        assert_eq!(
+            DependencyScanner::extract_xml_attr(line, "id"),
+            Some("".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_npm
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_npm_basic() {
+        let content = r#"{
+            "dependencies": {
+                "express": "^4.18.2",
+                "lodash": "~4.17.21"
+            },
+            "devDependencies": {
+                "jest": "29.0.0"
+            }
+        }"#;
+        let deps = DependencyScanner::parse_npm(content);
+        assert_eq!(deps.len(), 3);
+
+        // Check all ecosystems are npm
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "npm");
+        }
+
+        // Check that ^ and ~ are stripped from versions
+        let express = deps.iter().find(|d| d.name == "express").unwrap();
+        assert_eq!(express.version.as_deref(), Some("4.18.2"));
+
+        let lodash = deps.iter().find(|d| d.name == "lodash").unwrap();
+        assert_eq!(lodash.version.as_deref(), Some("4.17.21"));
+
+        let jest = deps.iter().find(|d| d.name == "jest").unwrap();
+        assert_eq!(jest.version.as_deref(), Some("29.0.0"));
+    }
+
+    #[test]
+    fn test_parse_npm_peer_dependencies() {
+        let content = r#"{
+            "peerDependencies": {
+                "react": "^18.0.0"
+            }
+        }"#;
+        let deps = DependencyScanner::parse_npm(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "react");
+        assert_eq!(deps[0].version.as_deref(), Some("18.0.0"));
+    }
+
+    #[test]
+    fn test_parse_npm_empty() {
+        let content = r#"{}"#;
+        let deps = DependencyScanner::parse_npm(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_npm_invalid_json() {
+        let content = "not json at all";
+        let deps = DependencyScanner::parse_npm(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_npm_non_string_version() {
+        // Workspace protocol or other non-string value
+        let content = r#"{
+            "dependencies": {
+                "my-lib": true
+            }
+        }"#;
+        let deps = DependencyScanner::parse_npm(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "my-lib");
+        assert_eq!(deps[0].version, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_cargo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cargo_basic() {
+        let content = r#"
+            [dependencies]
+            serde = "1.0"
+            tokio = { version = "1.35", features = ["full"] }
+
+            [dev-dependencies]
+            proptest = "1.0"
+        "#;
+        let deps = DependencyScanner::parse_cargo(content);
+        assert_eq!(deps.len(), 3);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "crates.io");
+        }
+
+        let serde = deps.iter().find(|d| d.name == "serde").unwrap();
+        assert_eq!(serde.version.as_deref(), Some("1.0"));
+
+        let tokio = deps.iter().find(|d| d.name == "tokio").unwrap();
+        assert_eq!(tokio.version.as_deref(), Some("1.35"));
+    }
+
+    #[test]
+    fn test_parse_cargo_build_dependencies() {
+        let content = r#"
+            [build-dependencies]
+            cc = "1.0"
+        "#;
+        let deps = DependencyScanner::parse_cargo(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "cc");
+    }
+
+    #[test]
+    fn test_parse_cargo_git_dep_no_version() {
+        let content = r#"
+            [dependencies]
+            my-crate = { git = "https://github.com/foo/bar" }
+        "#;
+        let deps = DependencyScanner::parse_cargo(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "my-crate");
+        assert_eq!(deps[0].version, None);
+    }
+
+    #[test]
+    fn test_parse_cargo_empty() {
+        let content = r#"
+            [package]
+            name = "my-app"
+            version = "0.1.0"
+        "#;
+        let deps = DependencyScanner::parse_cargo(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cargo_invalid_toml() {
+        let content = "not valid toml [[[";
+        let deps = DependencyScanner::parse_cargo(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_pip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_pip_various_specifiers() {
+        let content = "flask==2.3.0\nrequests>=2.28.0\nnumpy~=1.24\npandas<=2.0.0\nsimplepkg\n";
+        let deps = DependencyScanner::parse_pip(content);
+        assert_eq!(deps.len(), 5);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "PyPI");
+        }
+
+        let flask = deps.iter().find(|d| d.name == "flask").unwrap();
+        assert_eq!(flask.version.as_deref(), Some("2.3.0"));
+
+        let requests = deps.iter().find(|d| d.name == "requests").unwrap();
+        assert_eq!(requests.version.as_deref(), Some("2.28.0"));
+
+        let numpy = deps.iter().find(|d| d.name == "numpy").unwrap();
+        assert_eq!(numpy.version.as_deref(), Some("1.24"));
+
+        let pandas = deps.iter().find(|d| d.name == "pandas").unwrap();
+        assert_eq!(pandas.version.as_deref(), Some("2.0.0"));
+
+        let simple = deps.iter().find(|d| d.name == "simplepkg").unwrap();
+        assert_eq!(simple.version, None);
+    }
+
+    #[test]
+    fn test_parse_pip_skips_comments_blank_lines_flags() {
+        let content = "# This is a comment\n\n-r other.txt\n-e git+https://foo.git\nflask==1.0\n";
+        let deps = DependencyScanner::parse_pip(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "flask");
+    }
+
+    #[test]
+    fn test_parse_pip_empty() {
+        let content = "";
+        let deps = DependencyScanner::parse_pip(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_go
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_go_basic() {
+        let content = "golang.org/x/net v0.17.0 h1:abc=\ngolang.org/x/net v0.17.0/go.mod h1:def=\ngolang.org/x/text v0.13.0 h1:xyz=\n";
+        let deps = DependencyScanner::parse_go(content);
+        // Deduplication: golang.org/x/net should appear only once
+        assert_eq!(deps.len(), 2);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "Go");
+        }
+
+        let net = deps.iter().find(|d| d.name == "golang.org/x/net").unwrap();
+        // v prefix stripped
+        assert_eq!(net.version.as_deref(), Some("0.17.0"));
+    }
+
+    #[test]
+    fn test_parse_go_empty() {
+        let content = "";
+        let deps = DependencyScanner::parse_go(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_go_single_word_line_ignored() {
+        let content = "just-one-word\n";
+        let deps = DependencyScanner::parse_go(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_maven
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_maven_basic() {
+        let content = r#"
+        <dependencies>
+            <dependency>
+                <groupId>org.apache</groupId>
+                <artifactId>commons-lang3</artifactId>
+                <version>3.12.0</version>
+            </dependency>
+            <dependency>
+                <groupId>junit</groupId>
+                <artifactId>junit</artifactId>
+            </dependency>
+        </dependencies>
+        "#;
+        let deps = DependencyScanner::parse_maven(content);
+        assert_eq!(deps.len(), 2);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "Maven");
+        }
+
+        let lang3 = deps
+            .iter()
+            .find(|d| d.name == "org.apache:commons-lang3")
+            .unwrap();
+        assert_eq!(lang3.version.as_deref(), Some("3.12.0"));
+
+        let junit = deps.iter().find(|d| d.name == "junit:junit").unwrap();
+        assert_eq!(junit.version, None);
+    }
+
+    #[test]
+    fn test_parse_maven_empty() {
+        let content = "<project></project>";
+        let deps = DependencyScanner::parse_maven(content);
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_parse_maven_incomplete_dependency() {
+        // Missing artifactId: should not produce a dependency
+        let content = r#"
+        <dependency>
+            <groupId>org.example</groupId>
+        </dependency>
+        "#;
+        let deps = DependencyScanner::parse_maven(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_rubygems
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_rubygems_gemfile_lock() {
+        let content = "    rails (7.0.8)\n    nokogiri (1.15.4)\n    actionpack (7.0.8)\n";
+        let deps = DependencyScanner::parse_rubygems(content);
+        assert_eq!(deps.len(), 3);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "RubyGems");
+        }
+
+        let rails = deps.iter().find(|d| d.name == "rails").unwrap();
+        assert_eq!(rails.version.as_deref(), Some("7.0.8"));
+    }
+
+    #[test]
+    fn test_parse_rubygems_no_match() {
+        let content = "GEM\n  remote: https://rubygems.org/\n  specs:\n";
+        let deps = DependencyScanner::parse_rubygems(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_nuget
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_nuget_packages_config() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<packages>
+  <package id="Newtonsoft.Json" version="13.0.1" targetFramework="net472" />
+  <package id="NUnit" version="3.14.0" targetFramework="net472" />
+</packages>"#;
+        let deps = DependencyScanner::parse_nuget(content);
+        assert_eq!(deps.len(), 2);
+
+        for dep in &deps {
+            assert_eq!(dep.ecosystem, "NuGet");
+        }
+
+        let nj = deps.iter().find(|d| d.name == "Newtonsoft.Json").unwrap();
+        assert_eq!(nj.version.as_deref(), Some("13.0.1"));
+    }
+
+    #[test]
+    fn test_parse_nuget_empty() {
+        let content = "<packages></packages>";
+        let deps = DependencyScanner::parse_nuget(content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_dependencies (integration of parsers by filename matching)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_dependencies_package_json() {
+        let artifact = make_artifact("package.json", "/npm/package.json", None);
+        let content = Bytes::from(r#"{"dependencies":{"axios":"^1.6.0"}}"#);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "axios");
+        assert_eq!(deps[0].ecosystem, "npm");
+    }
+
+    #[test]
+    fn test_extract_dependencies_nested_package_json() {
+        let artifact = make_artifact(
+            "libs/core/package.json",
+            "/npm/libs/core/package.json",
+            None,
+        );
+        let content = Bytes::from(r#"{"dependencies":{"react":"^18.0.0"}}"#);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "npm");
+    }
+
+    #[test]
+    fn test_extract_dependencies_cargo_toml() {
+        let artifact = make_artifact("Cargo.toml", "/rust/Cargo.toml", None);
+        let content = Bytes::from("[dependencies]\nserde = \"1.0\"\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "crates.io");
+    }
+
+    #[test]
+    fn test_extract_dependencies_requirements_txt() {
+        let artifact = make_artifact("requirements.txt", "/pypi/requirements.txt", None);
+        let content = Bytes::from("flask==2.3.0\nrequests>=2.28.0\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 2);
+        assert_eq!(deps[0].ecosystem, "PyPI");
+    }
+
+    #[test]
+    fn test_extract_dependencies_go_sum() {
+        let artifact = make_artifact("go.sum", "/go/go.sum", None);
+        let content = Bytes::from("golang.org/x/net v0.17.0 h1:abc=\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Go");
+    }
+
+    #[test]
+    fn test_extract_dependencies_pom_xml() {
+        let artifact = make_artifact("pom.xml", "/maven/pom.xml", None);
+        let content = Bytes::from(
+            "<dependency>\n<groupId>org.apache</groupId>\n<artifactId>commons</artifactId>\n<version>3.12</version>\n</dependency>\n",
+        );
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Maven");
+    }
+
+    #[test]
+    fn test_extract_dependencies_gemfile_lock() {
+        let artifact = make_artifact("Gemfile.lock", "/ruby/Gemfile.lock", None);
+        let content = Bytes::from("    rails (7.0.8)\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "RubyGems");
+    }
+
+    #[test]
+    fn test_extract_dependencies_nuspec() {
+        let artifact = make_artifact("My.nuspec", "/nuget/My.nuspec", None);
+        let content = Bytes::from(r#"<package id="Newtonsoft.Json" version="13.0.1" />"#);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "NuGet");
+    }
+
+    #[test]
+    fn test_extract_dependencies_packages_config() {
+        let artifact = make_artifact("packages.config", "/nuget/packages.config", None);
+        let content = Bytes::from(r#"<package id="NUnit" version="3.14" />"#);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "NuGet");
+    }
+
+    #[test]
+    fn test_extract_dependencies_binary_content() {
+        let artifact = make_artifact("package.json", "/npm/package.json", None);
+        // Invalid UTF-8 bytes
+        let content = Bytes::from(vec![0xFF, 0xFE, 0x00, 0x01]);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // infer_dependencies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_infer_dependencies_rpm() {
+        let artifact = make_artifact("my-package.rpm", "/rpm/my-package.rpm", Some("1.0"));
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Linux");
+        assert_eq!(deps[0].name, "my-package.rpm");
+    }
+
+    #[test]
+    fn test_infer_dependencies_deb() {
+        let artifact = make_artifact("my-package.deb", "/deb/my-package.deb", Some("2.0"));
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Linux");
+    }
+
+    #[test]
+    fn test_infer_dependencies_apk() {
+        let artifact = make_artifact("my-package.apk", "/alpine/my-package.apk", Some("1.0"));
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Linux");
+    }
+
+    #[test]
+    fn test_infer_dependencies_rpm_path() {
+        let artifact = make_artifact("foo.bin", "/rpm/centos/foo.bin", Some("1.0"));
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "Linux");
+    }
+
+    #[test]
+    fn test_infer_dependencies_unknown() {
+        let artifact = make_artifact("random.txt", "/misc/random.txt", None);
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert!(deps.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_osv_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_osv_response_basic() {
+        let deps = vec![Dependency {
+            name: "lodash".to_string(),
+            version: Some("4.17.20".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{
+                    "id": "GHSA-abcd-1234-efgh",
+                    "summary": "Prototype Pollution in lodash",
+                    "details": "lodash before 4.17.21 is vulnerable",
+                    "aliases": ["CVE-2021-23337"],
+                    "database_specific": {
+                        "severity": "HIGH"
+                    },
+                    "affected": [{
+                        "ranges": [{
+                            "type": "SEMVER",
+                            "events": [
+                                {"introduced": "0"},
+                                {"fixed": "4.17.21"}
+                            ]
+                        }]
+                    }]
+                }]
+            }]
+        });
+
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+
+        let m = &matches[0];
+        assert_eq!(m.id, "GHSA-abcd-1234-efgh");
+        assert_eq!(m.summary.as_deref(), Some("Prototype Pollution in lodash"));
+        assert_eq!(
+            m.details.as_deref(),
+            Some("lodash before 4.17.21 is vulnerable")
+        );
+        assert_eq!(m.severity, "high"); // lowercased
+        assert_eq!(m.aliases, vec!["CVE-2021-23337".to_string()]);
+        assert_eq!(m.fixed_version.as_deref(), Some("4.17.21"));
+        assert_eq!(m.affected_version.as_deref(), Some("4.17.20"));
+        assert_eq!(m.source, "osv.dev");
+        assert!(m
+            .source_url
+            .as_ref()
+            .unwrap()
+            .contains("GHSA-abcd-1234-efgh"));
+    }
+
+    #[test]
+    fn test_parse_osv_response_empty_results() {
+        let deps = vec![Dependency {
+            name: "safe-pkg".to_string(),
+            version: Some("1.0.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+
+        let body = serde_json::json!({ "results": [{}] });
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_parse_osv_response_no_results_key() {
+        let deps = vec![];
+        let body = serde_json::json!({});
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_parse_osv_response_severity_fallback_to_medium() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+
+        // No severity field at all
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{
+                    "id": "OSV-2024-001"
+                }]
+            }]
+        });
+
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].severity, "medium"); // default fallback
+    }
+
+    #[test]
+    fn test_parse_osv_response_severity_from_severity_array() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{
+                    "id": "OSV-2024-002",
+                    "severity": [{"type": "CRITICAL", "score": "9.8"}]
+                }]
+            }]
+        });
+
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+        // falls back to severity[0].type
+        assert_eq!(matches[0].severity, "critical");
+    }
+
+    #[test]
+    fn test_parse_osv_response_multiple_vulns_single_dep() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [
+                    {"id": "VULN-1", "summary": "First"},
+                    {"id": "VULN-2", "summary": "Second"}
+                ]
+            }]
+        });
+
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].id, "VULN-1");
+        assert_eq!(matches[1].id, "VULN-2");
+    }
+
+    #[test]
+    fn test_parse_osv_response_multiple_deps() {
+        let deps = vec![
+            Dependency {
+                name: "pkg-a".to_string(),
+                version: Some("1.0".to_string()),
+                ecosystem: "npm".to_string(),
+            },
+            Dependency {
+                name: "pkg-b".to_string(),
+                version: Some("2.0".to_string()),
+                ecosystem: "npm".to_string(),
+            },
+        ];
+
+        let body = serde_json::json!({
+            "results": [
+                {"vulns": [{"id": "VULN-A"}]},
+                {"vulns": [{"id": "VULN-B"}]}
+            ]
+        });
+
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 2);
+        // First vuln should get version from deps[0], second from deps[1]
+        assert_eq!(matches[0].affected_version.as_deref(), Some("1.0"));
+        assert_eq!(matches[1].affected_version.as_deref(), Some("2.0"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_github_advisory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_github_advisory_basic() {
+        let dep = Dependency {
+            name: "express".to_string(),
+            version: Some("4.17.1".to_string()),
+            ecosystem: "npm".to_string(),
+        };
+
+        let adv = serde_json::json!({
+            "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
+            "summary": "Open Redirect in Express",
+            "description": "Express < 4.17.3 allows open redirect",
+            "severity": "medium",
+            "cve_id": "CVE-2022-24999",
+            "html_url": "https://github.com/advisories/GHSA-xxxx-yyyy-zzzz",
+            "vulnerabilities": [{
+                "first_patched_version": {
+                    "identifier": "4.17.3"
+                }
+            }]
+        });
+
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep);
+        assert!(result.is_some());
+
+        let m = result.unwrap();
+        assert_eq!(m.id, "GHSA-xxxx-yyyy-zzzz");
+        assert_eq!(m.summary.as_deref(), Some("Open Redirect in Express"));
+        assert_eq!(m.severity, "medium");
+        assert_eq!(
+            m.aliases,
+            vec![
+                "GHSA-xxxx-yyyy-zzzz".to_string(),
+                "CVE-2022-24999".to_string()
+            ]
+        );
+        assert_eq!(m.fixed_version.as_deref(), Some("4.17.3"));
+        assert_eq!(m.affected_version.as_deref(), Some("4.17.1"));
+        assert_eq!(m.source, "github");
+        assert_eq!(
+            m.source_url.as_deref(),
+            Some("https://github.com/advisories/GHSA-xxxx-yyyy-zzzz")
+        );
+    }
+
+    #[test]
+    fn test_parse_github_advisory_missing_ghsa_id() {
+        let dep = Dependency {
+            name: "pkg".to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        };
+        let adv = serde_json::json!({"summary": "no ghsa_id"});
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_github_advisory_minimal() {
+        let dep = Dependency {
+            name: "pkg".to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        };
+        let adv = serde_json::json!({
+            "ghsa_id": "GHSA-min-imal-data"
+        });
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep);
+        assert!(result.is_some());
+
+        let m = result.unwrap();
+        assert_eq!(m.id, "GHSA-min-imal-data");
+        assert_eq!(m.severity, "medium"); // default
+        assert_eq!(m.aliases, vec!["GHSA-min-imal-data".to_string()]);
+        assert_eq!(m.summary, None);
+        assert_eq!(m.details, None);
+        assert_eq!(m.fixed_version, None);
+        assert_eq!(m.affected_version, None);
+    }
+
+    #[test]
+    fn test_parse_github_advisory_no_cve() {
+        let dep = Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        };
+        let adv = serde_json::json!({
+            "ghsa_id": "GHSA-no-cve-here",
+            "severity": "high"
+        });
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep).unwrap();
+        // aliases should only contain GHSA id
+        assert_eq!(result.aliases, vec!["GHSA-no-cve-here".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // DependencyScanner name/scan_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dependency_scanner_name_and_type() {
+        let advisory = Arc::new(AdvisoryClient::new(None));
+        let scanner = DependencyScanner::new(advisory);
+        assert_eq!(scanner.name(), "DependencyScanner");
+        assert_eq!(scanner.scan_type(), "dependency");
+    }
+
+    // -----------------------------------------------------------------------
+    // AdvisoryClient::new
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_advisory_client_new_no_github_token() {
+        let client = AdvisoryClient::new(None);
+        assert!(client.github_token.is_none());
+    }
+
+    #[test]
+    fn test_advisory_client_new_with_github_token() {
+        let client = AdvisoryClient::new(Some("ghp_test123".to_string()));
+        assert_eq!(client.github_token.as_deref(), Some("ghp_test123"));
+    }
+}

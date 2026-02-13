@@ -115,3 +115,77 @@ pub struct FormatHandlerListResponse {
     pub items: Vec<FormatHandlerResponse>,
     pub total: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_handler_response_from_record() {
+        let now = chrono::Utc::now();
+        let id = Uuid::new_v4();
+        let plugin_id = Uuid::new_v4();
+
+        let record = FormatHandlerRecord {
+            id,
+            format_key: "custom-format".to_string(),
+            plugin_id: Some(plugin_id),
+            handler_type: FormatHandlerType::Wasm,
+            display_name: "Custom Format".to_string(),
+            description: Some("A custom format handler".to_string()),
+            extensions: vec![".custom".to_string(), ".cst".to_string()],
+            is_enabled: true,
+            priority: 10,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response: FormatHandlerResponse = record.into();
+
+        assert_eq!(response.id, id);
+        assert_eq!(response.format_key, "custom-format");
+        assert_eq!(response.plugin_id, Some(plugin_id));
+        assert_eq!(response.handler_type, FormatHandlerType::Wasm);
+        assert_eq!(response.display_name, "Custom Format");
+        assert_eq!(
+            response.description.as_deref(),
+            Some("A custom format handler")
+        );
+        assert_eq!(response.extensions.len(), 2);
+        assert!(response.is_enabled);
+        assert_eq!(response.priority, 10);
+        // Computed fields should be None
+        assert!(response.repository_count.is_none());
+        assert!(response.capabilities.is_none());
+    }
+
+    #[test]
+    fn test_format_handler_response_from_core_record() {
+        let now = chrono::Utc::now();
+        let record = FormatHandlerRecord {
+            id: Uuid::new_v4(),
+            format_key: "maven".to_string(),
+            plugin_id: None,
+            handler_type: FormatHandlerType::Core,
+            display_name: "Maven".to_string(),
+            description: None,
+            extensions: vec![".jar".to_string(), ".pom".to_string()],
+            is_enabled: true,
+            priority: 100,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response: FormatHandlerResponse = record.into();
+        assert_eq!(response.handler_type, FormatHandlerType::Core);
+        assert!(response.plugin_id.is_none());
+        assert!(response.description.is_none());
+    }
+
+    #[test]
+    fn test_format_handler_type_equality() {
+        assert_eq!(FormatHandlerType::Core, FormatHandlerType::Core);
+        assert_eq!(FormatHandlerType::Wasm, FormatHandlerType::Wasm);
+        assert_ne!(FormatHandlerType::Core, FormatHandlerType::Wasm);
+    }
+}

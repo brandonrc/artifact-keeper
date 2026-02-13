@@ -979,7 +979,8 @@ mod tests {
     #[test]
     fn test_config_from_env_disabled() {
         // When DEPENDENCY_TRACK_ENABLED is not set, should return None
-        std::env::remove_var("DEPENDENCY_TRACK_ENABLED");
+        // SAFETY: Test-only, single-threaded access to env vars
+        unsafe { std::env::remove_var("DEPENDENCY_TRACK_ENABLED") };
         assert!(DependencyTrackConfig::from_env().is_none());
     }
 

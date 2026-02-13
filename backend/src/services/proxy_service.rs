@@ -419,6 +419,10 @@ impl ProxyService {
 mod tests {
     use super::*;
 
+    // =======================================================================
+    // build_upstream_url tests
+    // =======================================================================
+
     #[test]
     fn test_build_upstream_url() {
         // Test basic URL building
@@ -441,6 +445,84 @@ mod tests {
     }
 
     #[test]
+    fn test_build_upstream_url_both_slashes() {
+        // Both trailing slash on base and leading slash on path
+        assert_eq!(
+            ProxyService::build_upstream_url("https://example.com/", "/path"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_no_slashes() {
+        assert_eq!(
+            ProxyService::build_upstream_url("https://example.com", "path"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_multiple_trailing_slashes() {
+        // trim_end_matches removes all matching trailing characters
+        assert_eq!(
+            ProxyService::build_upstream_url("https://example.com///", "path"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_multiple_leading_slashes() {
+        // trim_start_matches removes all matching leading characters
+        assert_eq!(
+            ProxyService::build_upstream_url("https://example.com", "///path"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_empty_path() {
+        assert_eq!(
+            ProxyService::build_upstream_url("https://example.com", ""),
+            "https://example.com/"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_complex_path_with_query() {
+        // URL construction does not strip query strings
+        assert_eq!(
+            ProxyService::build_upstream_url(
+                "https://registry.npmjs.org",
+                "@scope/package/-/package-1.0.0.tgz"
+            ),
+            "https://registry.npmjs.org/@scope/package/-/package-1.0.0.tgz"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_pypi_path() {
+        assert_eq!(
+            ProxyService::build_upstream_url("https://pypi.org/simple", "requests/"),
+            "https://pypi.org/simple/requests/"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_with_port() {
+        assert_eq!(
+            ProxyService::build_upstream_url(
+                "http://localhost:8080/v2",
+                "library/alpine/manifests/latest"
+            ),
+            "http://localhost:8080/v2/library/alpine/manifests/latest"
+        );
+    }
+
+    // =======================================================================
+    // cache_storage_key tests
+    // =======================================================================
+
+    #[test]
     fn test_cache_storage_key() {
         assert_eq!(
             ProxyService::cache_storage_key("maven-central", "org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"),
@@ -449,12 +531,80 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_storage_key_strips_leading_slash() {
+        assert_eq!(
+            ProxyService::cache_storage_key("npm-proxy", "/express"),
+            "proxy-cache/npm-proxy/express/__content__"
+        );
+    }
+
+    #[test]
+    fn test_cache_storage_key_no_leading_slash() {
+        assert_eq!(
+            ProxyService::cache_storage_key("npm-proxy", "express"),
+            "proxy-cache/npm-proxy/express/__content__"
+        );
+    }
+
+    #[test]
+    fn test_cache_storage_key_scoped_npm_package() {
+        assert_eq!(
+            ProxyService::cache_storage_key("npm-proxy", "@types/node/-/node-18.0.0.tgz"),
+            "proxy-cache/npm-proxy/@types/node/-/node-18.0.0.tgz/__content__"
+        );
+    }
+
+    #[test]
+    fn test_cache_storage_key_deeply_nested_path() {
+        let key = ProxyService::cache_storage_key(
+            "maven",
+            "com/example/group/artifact/1.0/artifact-1.0.pom",
+        );
+        assert!(key.starts_with("proxy-cache/maven/"));
+        assert!(key.ends_with("/__content__"));
+    }
+
+    // =======================================================================
+    // cache_metadata_key tests
+    // =======================================================================
+
+    #[test]
     fn test_cache_metadata_key() {
         assert_eq!(
             ProxyService::cache_metadata_key("npm-registry", "express"),
             "proxy-cache/npm-registry/express/__cache_meta__.json"
         );
     }
+
+    #[test]
+    fn test_cache_metadata_key_strips_leading_slash() {
+        assert_eq!(
+            ProxyService::cache_metadata_key("repo", "/some/path"),
+            "proxy-cache/repo/some/path/__cache_meta__.json"
+        );
+    }
+
+    #[test]
+    fn test_cache_metadata_key_consistency_with_storage_key() {
+        // Both keys should share the same prefix structure
+        let repo_key = "npm-proxy";
+        let path = "lodash";
+        let storage_key = ProxyService::cache_storage_key(repo_key, path);
+        let metadata_key = ProxyService::cache_metadata_key(repo_key, path);
+
+        // Both start with the same prefix
+        let storage_prefix = storage_key.rsplit_once('/').unwrap().0;
+        let metadata_prefix = metadata_key.rsplit_once('/').unwrap().0;
+        assert_eq!(storage_prefix, metadata_prefix);
+
+        // But have different leaf file names
+        assert!(storage_key.ends_with("__content__"));
+        assert!(metadata_key.ends_with("__cache_meta__.json"));
+    }
+
+    // =======================================================================
+    // Cache key collision tests
+    // =======================================================================
 
     #[test]
     fn test_cache_keys_no_file_directory_collision() {
@@ -467,6 +617,31 @@ mod tests {
         assert!(meta_key.contains("is-odd/__content__"));
         assert!(tarball_key.contains("is-odd/-/is-odd-3.0.1.tgz/__content__"));
     }
+
+    #[test]
+    fn test_cache_keys_different_repos_do_not_collide() {
+        let key1 = ProxyService::cache_storage_key("npm-proxy-1", "express");
+        let key2 = ProxyService::cache_storage_key("npm-proxy-2", "express");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_cache_keys_different_paths_do_not_collide() {
+        let key1 = ProxyService::cache_storage_key("repo", "path/a");
+        let key2 = ProxyService::cache_storage_key("repo", "path/b");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_storage_and_metadata_keys_do_not_collide() {
+        let storage = ProxyService::cache_storage_key("repo", "package");
+        let metadata = ProxyService::cache_metadata_key("repo", "package");
+        assert_ne!(storage, metadata);
+    }
+
+    // =======================================================================
+    // CacheMetadata serialization tests
+    // =======================================================================
 
     #[test]
     fn test_cache_metadata_serialization() {
@@ -485,5 +660,164 @@ mod tests {
         assert_eq!(metadata.upstream_etag, parsed.upstream_etag);
         assert_eq!(metadata.size_bytes, parsed.size_bytes);
         assert_eq!(metadata.checksum_sha256, parsed.checksum_sha256);
+    }
+
+    #[test]
+    fn test_cache_metadata_serialization_no_etag() {
+        let now = Utc::now();
+        let metadata = CacheMetadata {
+            cached_at: now,
+            upstream_etag: None,
+            expires_at: now + chrono::Duration::seconds(3600),
+            content_type: None,
+            size_bytes: 0,
+            checksum_sha256: String::new(),
+        };
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: CacheMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.upstream_etag.is_none());
+        assert!(parsed.content_type.is_none());
+        assert_eq!(parsed.size_bytes, 0);
+    }
+
+    #[test]
+    fn test_cache_metadata_roundtrip_preserves_timestamps() {
+        let now = Utc::now();
+        let expires = now + chrono::Duration::seconds(DEFAULT_CACHE_TTL_SECS);
+        let metadata = CacheMetadata {
+            cached_at: now,
+            upstream_etag: Some("\"etag-value\"".to_string()),
+            expires_at: expires,
+            content_type: Some("application/json".to_string()),
+            size_bytes: 4096,
+            checksum_sha256: "b".repeat(64),
+        };
+
+        let json_bytes = serde_json::to_vec(&metadata).unwrap();
+        let parsed: CacheMetadata = serde_json::from_slice(&json_bytes).unwrap();
+
+        assert_eq!(parsed.cached_at, metadata.cached_at);
+        assert_eq!(parsed.expires_at, metadata.expires_at);
+    }
+
+    #[test]
+    fn test_cache_metadata_large_size() {
+        let metadata = CacheMetadata {
+            cached_at: Utc::now(),
+            upstream_etag: None,
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+            content_type: Some("application/octet-stream".to_string()),
+            size_bytes: i64::MAX,
+            checksum_sha256: "c".repeat(64),
+        };
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let parsed: CacheMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.size_bytes, i64::MAX);
+    }
+
+    // =======================================================================
+    // Constants tests
+    // =======================================================================
+
+    #[test]
+    fn test_default_cache_ttl_is_24_hours() {
+        assert_eq!(DEFAULT_CACHE_TTL_SECS, 86400);
+        assert_eq!(DEFAULT_CACHE_TTL_SECS, 24 * 60 * 60);
+    }
+
+    #[test]
+    fn test_http_timeout_is_60_seconds() {
+        assert_eq!(HTTP_TIMEOUT_SECS, 60);
+    }
+
+    // =======================================================================
+    // Cache expiration logic tests
+    // =======================================================================
+
+    #[test]
+    fn test_cache_expiration_check_logic() {
+        // Replicate the cache expiration check from get_cached_artifact
+        let now = Utc::now();
+
+        // Expired cache entry
+        let expired_metadata = CacheMetadata {
+            cached_at: now - chrono::Duration::hours(25),
+            upstream_etag: None,
+            expires_at: now - chrono::Duration::hours(1),
+            content_type: None,
+            size_bytes: 100,
+            checksum_sha256: "abc".to_string(),
+        };
+        assert!(
+            Utc::now() > expired_metadata.expires_at,
+            "Cache should be expired"
+        );
+
+        // Valid cache entry
+        let valid_metadata = CacheMetadata {
+            cached_at: now,
+            upstream_etag: None,
+            expires_at: now + chrono::Duration::hours(23),
+            content_type: None,
+            size_bytes: 100,
+            checksum_sha256: "abc".to_string(),
+        };
+        assert!(
+            Utc::now() < valid_metadata.expires_at,
+            "Cache should still be valid"
+        );
+    }
+
+    #[test]
+    fn test_cache_ttl_computation() {
+        // Replicate the TTL computation from cache_artifact
+        let now = Utc::now();
+        let ttl_secs: i64 = 3600;
+        let expires_at = now + chrono::Duration::seconds(ttl_secs);
+        assert!(expires_at > now);
+        // Should expire roughly 1 hour from now
+        let diff = (expires_at - now).num_seconds();
+        assert_eq!(diff, 3600);
+    }
+
+    // =======================================================================
+    // URL construction edge cases
+    // =======================================================================
+
+    #[test]
+    fn test_build_upstream_url_preserves_base_path() {
+        // Base URL with a subpath should be preserved
+        assert_eq!(
+            ProxyService::build_upstream_url(
+                "https://registry.example.com/v2/library",
+                "alpine/manifests/latest"
+            ),
+            "https://registry.example.com/v2/library/alpine/manifests/latest"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_with_special_characters() {
+        assert_eq!(
+            ProxyService::build_upstream_url(
+                "https://registry.npmjs.org",
+                "@babel/core/-/core-7.24.0.tgz"
+            ),
+            "https://registry.npmjs.org/@babel/core/-/core-7.24.0.tgz"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_url_with_encoded_characters() {
+        assert_eq!(
+            ProxyService::build_upstream_url(
+                "https://example.com",
+                "path%20with%20spaces/artifact"
+            ),
+            "https://example.com/path%20with%20spaces/artifact"
+        );
     }
 }

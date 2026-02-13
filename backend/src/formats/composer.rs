@@ -250,11 +250,32 @@ pub struct PackagesJson {
 mod tests {
     use super::*;
 
+    // ---- ComposerHandler::new / Default ----
+
+    #[test]
+    fn test_new_and_default() {
+        let _h1 = ComposerHandler::new();
+        let _h2 = ComposerHandler;
+    }
+
+    // ---- parse_path: packages.json (index) ----
+
     #[test]
     fn test_parse_packages_json() {
         let info = ComposerHandler::parse_path("packages.json").unwrap();
         assert!(matches!(info.kind, ComposerPathKind::Index));
+        assert!(info.vendor.is_none());
+        assert!(info.package.is_none());
+        assert!(info.version.is_none());
     }
+
+    #[test]
+    fn test_parse_packages_json_leading_slash() {
+        let info = ComposerHandler::parse_path("/packages.json").unwrap();
+        assert!(matches!(info.kind, ComposerPathKind::Index));
+    }
+
+    // ---- parse_path: v2 metadata ----
 
     #[test]
     fn test_parse_v2_metadata() {
@@ -262,14 +283,51 @@ mod tests {
         assert!(matches!(info.kind, ComposerPathKind::MetadataV2));
         assert_eq!(info.vendor, Some("laravel".to_string()));
         assert_eq!(info.package, Some("framework".to_string()));
+        assert!(info.version.is_none());
     }
+
+    #[test]
+    fn test_parse_v2_metadata_leading_slash() {
+        let info = ComposerHandler::parse_path("/p2/symfony/console.json").unwrap();
+        assert!(matches!(info.kind, ComposerPathKind::MetadataV2));
+        assert_eq!(info.vendor, Some("symfony".to_string()));
+        assert_eq!(info.package, Some("console".to_string()));
+    }
+
+    #[test]
+    fn test_parse_v2_metadata_no_package() {
+        // p2/<vendor-only>.json - no slash, so split_once('/') fails
+        let result = ComposerHandler::parse_path("p2/onlyvendor.json");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: v1 metadata ----
 
     #[test]
     fn test_parse_v1_metadata() {
         let info = ComposerHandler::parse_path("p/laravel/framework$abc123def.json").unwrap();
         assert!(matches!(info.kind, ComposerPathKind::MetadataV1));
         assert_eq!(info.vendor, Some("laravel".to_string()));
+        assert_eq!(info.package, Some("framework".to_string()));
     }
+
+    #[test]
+    fn test_parse_v1_metadata_no_hash() {
+        // p/<vendor>/<package>.json without $ hash
+        let info = ComposerHandler::parse_path("p/vendor/package.json").unwrap();
+        assert!(matches!(info.kind, ComposerPathKind::MetadataV1));
+        assert_eq!(info.vendor, Some("vendor".to_string()));
+        // When there's no $, split_once('$') returns (rest, ""), so package = the full rest
+        assert_eq!(info.package, Some("package".to_string()));
+    }
+
+    #[test]
+    fn test_parse_v1_metadata_no_package() {
+        let result = ComposerHandler::parse_path("p/onlyvendor.json");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: dist archive ----
 
     #[test]
     fn test_parse_dist_archive() {
@@ -278,5 +336,213 @@ mod tests {
         assert_eq!(info.vendor, Some("laravel".to_string()));
         assert_eq!(info.package, Some("framework".to_string()));
         assert_eq!(info.version, Some("11.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dist_archive_leading_slash() {
+        let info = ComposerHandler::parse_path("/dist/symfony/console/7.0.0/deadbeef.zip").unwrap();
+        assert!(matches!(info.kind, ComposerPathKind::Archive));
+        assert_eq!(info.vendor, Some("symfony".to_string()));
+        assert_eq!(info.package, Some("console".to_string()));
+        assert_eq!(info.version, Some("7.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dist_archive_too_few_parts() {
+        // dist/<vendor>/<package> - only 2 segments after "dist/", need 4 for splitn(4, '/')
+        let result = ComposerHandler::parse_path("dist/vendor/package");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dist_archive_only_vendor() {
+        let result = ComposerHandler::parse_path("dist/vendor");
+        assert!(result.is_err());
+    }
+
+    // ---- parse_path: invalid ----
+
+    #[test]
+    fn test_parse_path_invalid() {
+        assert!(ComposerHandler::parse_path("random/path").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_empty() {
+        assert!(ComposerHandler::parse_path("").is_err());
+    }
+
+    #[test]
+    fn test_parse_path_just_slash() {
+        assert!(ComposerHandler::parse_path("/").is_err());
+    }
+
+    // ---- parse_composer_json: error cases ----
+
+    #[test]
+    fn test_parse_composer_json_not_zip() {
+        let result = ComposerHandler::parse_composer_json(b"not a zip file");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_composer_json_empty() {
+        let result = ComposerHandler::parse_composer_json(b"");
+        assert!(result.is_err());
+    }
+
+    // ---- ComposerJson serde ----
+
+    #[test]
+    fn test_composer_json_deserialize_full() {
+        let json = r#"{
+            "name": "laravel/framework",
+            "description": "The Laravel Framework.",
+            "version": "11.0.0",
+            "type": "library",
+            "license": "MIT",
+            "require": {
+                "php": "^8.2",
+                "ext-mbstring": "*"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^10.0"
+            },
+            "autoload": {
+                "psr-4": {"Illuminate\\": "src/Illuminate/"}
+            },
+            "authors": [
+                {"name": "Taylor Otwell", "email": "taylor@laravel.com"}
+            ],
+            "keywords": ["framework", "laravel"],
+            "homepage": "https://laravel.com"
+        }"#;
+        let cj: ComposerJson = serde_json::from_str(json).unwrap();
+        assert_eq!(cj.name, "laravel/framework");
+        assert_eq!(cj.description, Some("The Laravel Framework.".to_string()));
+        assert_eq!(cj.version, Some("11.0.0".to_string()));
+        assert_eq!(cj.package_type, Some("library".to_string()));
+        assert!(cj.license.is_some());
+        assert!(cj.require.is_some());
+        let req = cj.require.unwrap();
+        assert_eq!(req.get("php"), Some(&"^8.2".to_string()));
+        assert!(cj.require_dev.is_some());
+        assert!(cj.autoload.is_some());
+        let authors = cj.authors.unwrap();
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].name, Some("Taylor Otwell".to_string()));
+        assert_eq!(authors[0].email, Some("taylor@laravel.com".to_string()));
+        assert_eq!(
+            cj.keywords,
+            Some(vec!["framework".to_string(), "laravel".to_string()])
+        );
+        assert_eq!(cj.homepage, Some("https://laravel.com".to_string()));
+    }
+
+    #[test]
+    fn test_composer_json_minimal() {
+        let json = r#"{"name": "vendor/pkg"}"#;
+        let cj: ComposerJson = serde_json::from_str(json).unwrap();
+        assert_eq!(cj.name, "vendor/pkg");
+        assert!(cj.description.is_none());
+        assert!(cj.version.is_none());
+        assert!(cj.package_type.is_none());
+        assert!(cj.license.is_none());
+        assert!(cj.require.is_none());
+        assert!(cj.require_dev.is_none());
+        assert!(cj.authors.is_none());
+        assert!(cj.keywords.is_none());
+        assert!(cj.homepage.is_none());
+    }
+
+    #[test]
+    fn test_composer_json_license_as_string() {
+        let json = r#"{"name": "v/p", "license": "MIT"}"#;
+        let cj: ComposerJson = serde_json::from_str(json).unwrap();
+        assert!(cj.license.is_some());
+    }
+
+    #[test]
+    fn test_composer_json_license_as_array() {
+        let json = r#"{"name": "v/p", "license": ["MIT", "Apache-2.0"]}"#;
+        let cj: ComposerJson = serde_json::from_str(json).unwrap();
+        assert!(cj.license.is_some());
+    }
+
+    // ---- ComposerAuthor serde ----
+
+    #[test]
+    fn test_composer_author_all_fields() {
+        let json = r#"{"name": "Author", "email": "a@b.com", "homepage": "https://example.com"}"#;
+        let author: ComposerAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(author.name, Some("Author".to_string()));
+        assert_eq!(author.email, Some("a@b.com".to_string()));
+        assert_eq!(author.homepage, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn test_composer_author_minimal() {
+        let json = r#"{}"#;
+        let author: ComposerAuthor = serde_json::from_str(json).unwrap();
+        assert!(author.name.is_none());
+        assert!(author.email.is_none());
+        assert!(author.homepage.is_none());
+    }
+
+    // ---- PackagesJson serde ----
+
+    #[test]
+    fn test_packages_json_deserialize() {
+        let json = r#"{
+            "packages": {
+                "vendor/pkg": {
+                    "1.0.0": {"name": "vendor/pkg", "version": "1.0.0"}
+                }
+            },
+            "metadata-url": "/p2/%package%.json"
+        }"#;
+        let pj: PackagesJson = serde_json::from_str(json).unwrap();
+        assert!(pj.packages.contains_key("vendor/pkg"));
+        assert_eq!(pj.metadata_url, Some("/p2/%package%.json".to_string()));
+    }
+
+    #[test]
+    fn test_packages_json_empty_packages() {
+        let json = r#"{"packages": {}}"#;
+        let pj: PackagesJson = serde_json::from_str(json).unwrap();
+        assert!(pj.packages.is_empty());
+        assert!(pj.metadata_url.is_none());
+    }
+
+    // ---- ComposerJson serialization roundtrip ----
+
+    #[test]
+    fn test_composer_json_roundtrip() {
+        let cj = ComposerJson {
+            name: "vendor/pkg".to_string(),
+            description: Some("Desc".to_string()),
+            version: Some("1.0.0".to_string()),
+            package_type: Some("library".to_string()),
+            license: Some(serde_json::json!("MIT")),
+            require: Some({
+                let mut m = HashMap::new();
+                m.insert("php".to_string(), "^8.0".to_string());
+                m
+            }),
+            require_dev: None,
+            autoload: None,
+            authors: Some(vec![ComposerAuthor {
+                name: Some("Author".to_string()),
+                email: None,
+                homepage: None,
+            }]),
+            keywords: Some(vec!["test".to_string()]),
+            homepage: Some("https://example.com".to_string()),
+        };
+        let json = serde_json::to_string(&cj).unwrap();
+        let parsed: ComposerJson = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "vendor/pkg");
+        assert_eq!(parsed.version, Some("1.0.0".to_string()));
+        assert_eq!(parsed.package_type, Some("library".to_string()));
     }
 }

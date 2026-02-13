@@ -277,6 +277,230 @@ pub struct MigrationReport {
     pub recommendations: serde_json::Value,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // AuthType Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auth_type_display() {
+        assert_eq!(AuthType::ApiToken.to_string(), "api_token");
+        assert_eq!(AuthType::BasicAuth.to_string(), "basic_auth");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJobStatus Display + FromStr
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_job_status_display() {
+        assert_eq!(MigrationJobStatus::Pending.to_string(), "pending");
+        assert_eq!(MigrationJobStatus::Assessing.to_string(), "assessing");
+        assert_eq!(MigrationJobStatus::Ready.to_string(), "ready");
+        assert_eq!(MigrationJobStatus::Running.to_string(), "running");
+        assert_eq!(MigrationJobStatus::Paused.to_string(), "paused");
+        assert_eq!(MigrationJobStatus::Completed.to_string(), "completed");
+        assert_eq!(MigrationJobStatus::Failed.to_string(), "failed");
+        assert_eq!(MigrationJobStatus::Cancelled.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn test_migration_job_status_from_str_valid() {
+        assert_eq!(
+            "pending".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Pending
+        );
+        assert_eq!(
+            "running".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Running
+        );
+        assert_eq!(
+            "completed".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Completed
+        );
+        assert_eq!(
+            "failed".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Failed
+        );
+        assert_eq!(
+            "cancelled".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Cancelled
+        );
+        assert_eq!(
+            "assessing".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Assessing
+        );
+        assert_eq!(
+            "ready".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Ready
+        );
+        assert_eq!(
+            "paused".parse::<MigrationJobStatus>().unwrap(),
+            MigrationJobStatus::Paused
+        );
+    }
+
+    #[test]
+    fn test_migration_job_status_from_str_invalid() {
+        let result = "invalid".parse::<MigrationJobStatus>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown migration job status"));
+    }
+
+    #[test]
+    fn test_migration_job_status_roundtrip() {
+        let statuses = vec![
+            MigrationJobStatus::Pending,
+            MigrationJobStatus::Assessing,
+            MigrationJobStatus::Ready,
+            MigrationJobStatus::Running,
+            MigrationJobStatus::Paused,
+            MigrationJobStatus::Completed,
+            MigrationJobStatus::Failed,
+            MigrationJobStatus::Cancelled,
+        ];
+        for status in statuses {
+            let s = status.to_string();
+            let parsed: MigrationJobStatus = s.parse().unwrap();
+            assert_eq!(parsed, status);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJobType Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_job_type_display() {
+        assert_eq!(MigrationJobType::Full.to_string(), "full");
+        assert_eq!(MigrationJobType::Incremental.to_string(), "incremental");
+        assert_eq!(MigrationJobType::Assessment.to_string(), "assessment");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationItemType Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_item_type_display() {
+        assert_eq!(MigrationItemType::Repository.to_string(), "repository");
+        assert_eq!(MigrationItemType::Artifact.to_string(), "artifact");
+        assert_eq!(MigrationItemType::User.to_string(), "user");
+        assert_eq!(MigrationItemType::Group.to_string(), "group");
+        assert_eq!(MigrationItemType::Permission.to_string(), "permission");
+        assert_eq!(MigrationItemType::Property.to_string(), "property");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationItemStatus Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_item_status_display() {
+        assert_eq!(MigrationItemStatus::Pending.to_string(), "pending");
+        assert_eq!(MigrationItemStatus::InProgress.to_string(), "in_progress");
+        assert_eq!(MigrationItemStatus::Completed.to_string(), "completed");
+        assert_eq!(MigrationItemStatus::Failed.to_string(), "failed");
+        assert_eq!(MigrationItemStatus::Skipped.to_string(), "skipped");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJob::progress_percent
+    // -----------------------------------------------------------------------
+
+    fn make_test_job(total: i32, completed: i32, failed: i32, skipped: i32) -> MigrationJob {
+        MigrationJob {
+            id: Uuid::new_v4(),
+            source_connection_id: Uuid::new_v4(),
+            status: "running".to_string(),
+            job_type: "full".to_string(),
+            config: serde_json::json!({}),
+            total_items: total,
+            completed_items: completed,
+            failed_items: failed,
+            skipped_items: skipped,
+            total_bytes: 0,
+            transferred_bytes: 0,
+            started_at: Some(Utc::now()),
+            finished_at: None,
+            created_at: Utc::now(),
+            created_by: None,
+            error_summary: None,
+        }
+    }
+
+    #[test]
+    fn test_progress_percent_zero_total() {
+        let job = make_test_job(0, 0, 0, 0);
+        assert_eq!(job.progress_percent(), 0.0);
+    }
+
+    #[test]
+    fn test_progress_percent_all_completed() {
+        let job = make_test_job(100, 100, 0, 0);
+        assert!((job.progress_percent() - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_progress_percent_partial() {
+        let job = make_test_job(200, 50, 10, 20);
+        // (50 + 10 + 20) / 200 * 100 = 40.0
+        assert!((job.progress_percent() - 40.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_progress_percent_mixed_outcomes() {
+        let job = make_test_job(10, 5, 3, 2);
+        // (5 + 3 + 2) / 10 * 100 = 100.0
+        assert!((job.progress_percent() - 100.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJob::estimated_time_remaining
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_estimated_time_remaining_no_start() {
+        let mut job = make_test_job(100, 50, 0, 0);
+        job.started_at = None;
+        assert!(job.estimated_time_remaining().is_none());
+    }
+
+    #[test]
+    fn test_estimated_time_remaining_zero_processed() {
+        let job = make_test_job(100, 0, 0, 0);
+        assert!(job.estimated_time_remaining().is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationConfig defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_config_default() {
+        let config = MigrationConfig::default();
+        assert!(config.include_repos.is_empty());
+        assert!(config.exclude_repos.is_empty());
+        assert!(config.exclude_paths.is_empty());
+        assert!(!config.include_users); // Default trait default is false
+        assert!(!config.include_groups);
+        assert!(!config.include_permissions);
+        assert!(!config.include_cached_remote);
+        assert!(!config.dry_run);
+    }
+
+    #[test]
+    fn test_migration_config_deserialize_with_defaults() {
+        let json = r#"{"conflict_resolution": "overwrite"}"#;
+        let config: MigrationConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.conflict_resolution, "overwrite");
+        assert!(!config.dry_run);
+    }
+}
+
 /// Report summary structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportSummary {

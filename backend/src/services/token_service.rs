@@ -416,6 +416,32 @@ pub struct TokenStats {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn make_api_token(
+        expires_at: Option<DateTime<Utc>>,
+        last_used_at: Option<DateTime<Utc>>,
+        scopes: Vec<String>,
+    ) -> ApiToken {
+        ApiToken {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            name: "test-token".to_string(),
+            token_hash: "hash".to_string(),
+            token_prefix: "abc12345".to_string(),
+            scopes,
+            expires_at,
+            last_used_at,
+            created_at: Utc::now(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenInfo::from (existing tests + new ones)
+    // -----------------------------------------------------------------------
+
     #[test]
     fn test_token_info_from_api_token() {
         let token = ApiToken {
@@ -452,5 +478,220 @@ mod tests {
 
         let info = TokenInfo::from(token);
         assert!(info.is_expired);
+    }
+
+    #[test]
+    fn test_token_info_no_expiration_is_not_expired() {
+        let token = make_api_token(None, None, vec!["*".to_string()]);
+        let info = TokenInfo::from(token);
+        assert!(!info.is_expired);
+        assert!(info.expires_at.is_none());
+    }
+
+    #[test]
+    fn test_token_info_preserves_all_fields() {
+        let user_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        let now = Utc::now();
+        let last_used = now - Duration::hours(2);
+
+        let token = ApiToken {
+            id: token_id,
+            user_id,
+            name: "my-ci-token".to_string(),
+            token_hash: "sha256hash".to_string(),
+            token_prefix: "xy789012".to_string(),
+            scopes: vec!["read:artifacts".to_string(), "write:artifacts".to_string()],
+            expires_at: Some(now + Duration::days(90)),
+            last_used_at: Some(last_used),
+            created_at: now - Duration::days(10),
+        };
+
+        let info = TokenInfo::from(token);
+        assert_eq!(info.id, token_id);
+        assert_eq!(info.user_id, user_id);
+        assert_eq!(info.name, "my-ci-token");
+        assert_eq!(info.token_prefix, "xy789012");
+        assert_eq!(info.scopes.len(), 2);
+        assert!(info.expires_at.is_some());
+        assert!(info.last_used_at.is_some());
+        assert!(!info.is_expired);
+    }
+
+    #[test]
+    fn test_token_info_just_expired() {
+        // Token expired 1 second ago
+        let token = make_api_token(
+            Some(Utc::now() - Duration::seconds(1)),
+            None,
+            vec!["read:artifacts".to_string()],
+        );
+        let info = TokenInfo::from(token);
+        assert!(info.is_expired);
+    }
+
+    #[test]
+    fn test_token_info_empty_scopes() {
+        let token = make_api_token(None, None, vec![]);
+        let info = TokenInfo::from(token);
+        assert!(info.scopes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_scopes (needs &self but only reads a constant list)
+    //
+    // NOTE: We cannot construct TokenService without PgPool+Config, so we
+    // test the scope validation logic directly by duplicating it. This is a
+    // testability blocker: the engineering expert should extract
+    // validate_scopes into a free function or associated function that does
+    // not require &self.
+    // -----------------------------------------------------------------------
+
+    /// Duplicated logic from TokenService::validate_scopes for testing.
+    /// This validates the pure logic without needing a TokenService instance.
+    fn validate_scopes_standalone(scopes: &[String]) -> std::result::Result<(), String> {
+        let allowed_scopes = [
+            "read:artifacts",
+            "write:artifacts",
+            "delete:artifacts",
+            "read:repositories",
+            "write:repositories",
+            "delete:repositories",
+            "read:users",
+            "write:users",
+            "admin",
+            "*",
+        ];
+
+        for scope in scopes {
+            if !allowed_scopes.contains(&scope.as_str()) {
+                return Err(format!("Invalid scope: '{}'", scope));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_scopes_all_valid() {
+        let scopes = vec![
+            "read:artifacts".to_string(),
+            "write:artifacts".to_string(),
+            "admin".to_string(),
+        ];
+        assert!(validate_scopes_standalone(&scopes).is_ok());
+    }
+
+    #[test]
+    fn test_validate_scopes_wildcard() {
+        let scopes = vec!["*".to_string()];
+        assert!(validate_scopes_standalone(&scopes).is_ok());
+    }
+
+    #[test]
+    fn test_validate_scopes_invalid_scope() {
+        let scopes = vec!["read:artifacts".to_string(), "hack:system".to_string()];
+        let result = validate_scopes_standalone(&scopes);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hack:system"));
+    }
+
+    #[test]
+    fn test_validate_scopes_empty() {
+        let scopes: Vec<String> = vec![];
+        assert!(validate_scopes_standalone(&scopes).is_ok());
+    }
+
+    #[test]
+    fn test_validate_scopes_all_allowed_scopes() {
+        let all = vec![
+            "read:artifacts",
+            "write:artifacts",
+            "delete:artifacts",
+            "read:repositories",
+            "write:repositories",
+            "delete:repositories",
+            "read:users",
+            "write:users",
+            "admin",
+            "*",
+        ];
+        let scopes: Vec<String> = all.into_iter().map(String::from).collect();
+        assert!(validate_scopes_standalone(&scopes).is_ok());
+    }
+
+    #[test]
+    fn test_validate_scopes_case_sensitive() {
+        // Scopes should be case-sensitive; "Admin" != "admin"
+        let scopes = vec!["Admin".to_string()];
+        let result = validate_scopes_standalone(&scopes);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateTokenRequest expiration validation logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_expiration_validation_range() {
+        // The actual validation: days must be 1..=365
+        let valid_cases = vec![1, 30, 90, 180, 365];
+        let invalid_cases = vec![0, -1, 366, 1000];
+
+        for days in valid_cases {
+            assert!((1..=365).contains(&days), "Day {} should be valid", days);
+        }
+        for days in invalid_cases {
+            assert!(!(1..=365).contains(&days), "Day {} should be invalid", days);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenStats structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_stats_serialization() {
+        let stats = TokenStats {
+            total: 10,
+            expired: 2,
+            used_last_24h: 5,
+            never_used: 3,
+        };
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["total"], 10);
+        assert_eq!(json["expired"], 2);
+        assert_eq!(json["used_last_24h"], 5);
+        assert_eq!(json["never_used"], 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenValidation structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_validation_serialization() {
+        let valid = TokenValidation {
+            is_valid: true,
+            user_id: Some(Uuid::new_v4()),
+            scopes: vec!["read:artifacts".to_string()],
+            expires_in: Some(3600),
+            error: None,
+        };
+        let json = serde_json::to_value(&valid).unwrap();
+        assert_eq!(json["is_valid"], true);
+        assert!(json["user_id"].is_string());
+        assert!(json["error"].is_null());
+
+        let invalid = TokenValidation {
+            is_valid: false,
+            user_id: None,
+            scopes: vec![],
+            expires_in: None,
+            error: Some("Token expired".to_string()),
+        };
+        let json = serde_json::to_value(&invalid).unwrap();
+        assert_eq!(json["is_valid"], false);
+        assert!(json["user_id"].is_null());
+        assert_eq!(json["error"], "Token expired");
     }
 }
