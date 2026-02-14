@@ -282,7 +282,6 @@ artifact-keeper/
 ├── site/             # Documentation site (Astro + Starlight)
 ├── specs/            # Feature specifications
 ├── scripts/          # Test runners, native client tests, stress tests
-├── deploy/           # Docker, Kubernetes, demo configs
 └── .github/          # CI/CD workflows
 ```
 

@@ -27,6 +27,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout IAC repo
+        uses: actions/checkout@v4
+        with:
+          repository: artifact-keeper/artifact-keeper-iac
+          path: iac
+
       - name: Determine version
         id: version
         run: |
@@ -50,15 +56,15 @@ jobs:
           version: latest
 
       - name: Packer Init
-        working-directory: deploy/aws/packer
+        working-directory: iac/packer
         run: packer init .
 
       - name: Packer Validate
-        working-directory: deploy/aws/packer
+        working-directory: iac/packer
         run: packer validate -var "artifact_keeper_version=${{ steps.version.outputs.version }}" .
 
       - name: Packer Build
-        working-directory: deploy/aws/packer
+        working-directory: iac/packer
         run: |
           REGIONS_ARG=""
           if [ -n "${{ inputs.regions }}" ]; then
@@ -87,8 +93,8 @@ jobs:
       - name: Update AMI manifest
         if: github.event_name == 'release'
         run: |
-          mkdir -p deploy/aws
-          cat > deploy/aws/ami-manifest.json <<EOF
+          mkdir -p iac/packer
+          cat > iac/packer/ami-manifest.json <<EOF
           {
             "version": "${{ steps.version.outputs.version }}",
             "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
