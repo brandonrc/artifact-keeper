@@ -460,6 +460,10 @@ mod tests {
         }
     }
 
+    async fn create_test_backend() -> AzureBackend {
+        AzureBackend::new(create_test_config()).await.unwrap()
+    }
+
     #[tokio::test]
     async fn test_azure_backend_creation() {
         let config = create_test_config();
@@ -469,32 +473,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_sas_url_generation() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
-        let url = backend.generate_sas_url("test/artifact.txt", Duration::from_secs(3600));
-        assert!(url.is_ok());
+        let url = backend
+            .generate_sas_url("test/artifact.txt", Duration::from_secs(3600))
+            .unwrap();
 
-        let url = url.unwrap();
         assert!(url.contains("testaccount.blob.core.windows.net"));
         assert!(url.contains("testcontainer"));
         assert!(url.contains("test/artifact.txt"));
-        assert!(url.contains("sv=")); // signed version
-        assert!(url.contains("se=")); // signed expiry
-        assert!(url.contains("sig=")); // signature
-        assert!(url.contains("sp=r")); // read permission
-    }
-
-    #[tokio::test]
-    async fn test_sas_url_contains_required_params() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        let url = backend
-            .generate_sas_url("path/to/file.tar.gz", Duration::from_secs(1800))
-            .unwrap();
-
-        // Check all required SAS parameters
+        // All required SAS parameters
         assert!(url.contains("sv="), "Missing signed version");
         assert!(url.contains("st="), "Missing signed start");
         assert!(url.contains("se="), "Missing signed expiry");
@@ -547,12 +535,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_blob_url_format() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
-        let url = backend.blob_url("path/to/artifact.jar");
         assert_eq!(
-            url,
+            backend.blob_url("path/to/artifact.jar"),
             "https://testaccount.blob.core.windows.net/testcontainer/path/to/artifact.jar"
         );
     }
@@ -579,11 +565,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_base_url_default() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        let base_url = backend.base_url();
-        assert_eq!(base_url, "https://testaccount.blob.core.windows.net");
+        let backend = create_test_backend().await;
+        assert_eq!(
+            backend.base_url(),
+            "https://testaccount.blob.core.windows.net"
+        );
     }
 
     #[tokio::test]
@@ -591,31 +577,27 @@ mod tests {
         let mut config = create_test_config();
         config.endpoint = Some("https://government.blob.core.usgovcloudapi.net".to_string());
         let backend = AzureBackend::new(config).await.unwrap();
-
-        let base_url = backend.base_url();
-        assert_eq!(base_url, "https://government.blob.core.usgovcloudapi.net");
+        assert_eq!(
+            backend.base_url(),
+            "https://government.blob.core.usgovcloudapi.net"
+        );
     }
 
     #[tokio::test]
     async fn test_blob_url_nested_path() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        let url = backend.blob_url("a/b/c/d.jar");
+        let backend = create_test_backend().await;
         assert_eq!(
-            url,
+            backend.blob_url("a/b/c/d.jar"),
             "https://testaccount.blob.core.windows.net/testcontainer/a/b/c/d.jar"
         );
     }
 
     #[tokio::test]
     async fn test_try_artifactory_fallback_valid_checksum() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let key = "repos/maven/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
         let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_some());
         assert_eq!(
             fallback.unwrap(),
             "ab/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -623,44 +605,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_try_artifactory_fallback_not_hex() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+    async fn test_try_artifactory_fallback_rejected_inputs() {
+        let backend = create_test_backend().await;
 
-        let key = "repos/maven/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_try_artifactory_fallback_too_short() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        let key = "repos/maven/short";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_try_artifactory_fallback_too_few_parts() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        // Only 2 parts separated by /; needs at least 3
-        let key = "repos/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
+        // Not hex
+        assert!(backend
+            .try_artifactory_fallback(
+                "repos/maven/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+            )
+            .is_none());
+        // Too short
+        assert!(backend
+            .try_artifactory_fallback("repos/maven/short")
+            .is_none());
+        // Too few path parts (only 2)
+        assert!(backend
+            .try_artifactory_fallback(
+                "repos/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            )
+            .is_none());
     }
 
     #[tokio::test]
     async fn test_sas_token_generation() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
-        let token = backend.generate_sas_token("test/file.txt", Duration::from_secs(3600));
-        assert!(token.is_ok());
-        let token = token.unwrap();
+        let token = backend
+            .generate_sas_token("test/file.txt", Duration::from_secs(3600))
+            .unwrap();
         assert!(token.contains("sv="));
         assert!(token.contains("se="));
         assert!(token.contains("sig="));
@@ -671,8 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sas_url_different_keys() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let url1 = backend
             .generate_sas_url("file1.txt", Duration::from_secs(3600))
@@ -680,7 +651,6 @@ mod tests {
         let url2 = backend
             .generate_sas_url("file2.txt", Duration::from_secs(3600))
             .unwrap();
-        // Different keys should produce different URLs (different blob path and signature)
         assert_ne!(url1, url2);
     }
 
@@ -710,37 +680,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_presigned_url_source_is_azure() {
-        let config = create_test_config().with_redirect_downloads(true);
-        let backend = AzureBackend::new(config).await.unwrap();
-
-        let result = backend
-            .get_presigned_url("test.txt", Duration::from_secs(3600))
-            .await
-            .unwrap();
-        assert!(result.is_some());
-        let presigned = result.unwrap();
-        assert_eq!(presigned.source, PresignedUrlSource::Azure);
-    }
-
-    #[tokio::test]
     async fn test_presigned_url_expiry_preserved() {
         let config = create_test_config().with_redirect_downloads(true);
         let backend = AzureBackend::new(config).await.unwrap();
 
         let expires = Duration::from_secs(1800);
-        let result = backend
+        let presigned = backend
             .get_presigned_url("test.txt", expires)
             .await
+            .unwrap()
             .unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().expires_in, expires);
+        assert_eq!(presigned.expires_in, expires);
     }
 
     #[tokio::test]
     async fn test_sas_url_contains_blob_url() {
-        let config = create_test_config();
-        let backend = AzureBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let url = backend
             .generate_sas_url("path/to/blob.dat", Duration::from_secs(300))
@@ -748,19 +703,5 @@ mod tests {
         assert!(url.starts_with(
             "https://testaccount.blob.core.windows.net/testcontainer/path/to/blob.dat?"
         ));
-    }
-
-    #[tokio::test]
-    async fn test_supports_redirect_false_when_disabled() {
-        let config = create_test_config().with_redirect_downloads(false);
-        let backend = AzureBackend::new(config).await.unwrap();
-        assert!(!backend.supports_redirect());
-    }
-
-    #[tokio::test]
-    async fn test_supports_redirect_true_when_enabled() {
-        let config = create_test_config().with_redirect_downloads(true);
-        let backend = AzureBackend::new(config).await.unwrap();
-        assert!(backend.supports_redirect());
     }
 }

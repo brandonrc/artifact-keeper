@@ -1025,70 +1025,70 @@ async fn list_repo_scans(
 )]
 pub struct SecurityApiDoc;
 
-// ---------------------------------------------------------------------------
-// Pure helper functions (testable without DB)
-// ---------------------------------------------------------------------------
-
-/// Compute scan list pagination values.
-/// Returns `(page, per_page, offset)`.
-pub(crate) fn compute_scan_pagination(
-    raw_page: Option<i64>,
-    raw_per_page: Option<i64>,
-) -> (i64, i64, i64) {
-    let page = raw_page.unwrap_or(1);
-    let per_page = raw_per_page.unwrap_or(20).min(100);
-    let offset = (page - 1) * per_page;
-    (page, per_page, offset)
-}
-
-/// Compute findings pagination values.
-/// Returns `(page, per_page, offset)`.
-pub(crate) fn compute_findings_pagination(
-    raw_page: Option<i64>,
-    raw_per_page: Option<i64>,
-) -> (i64, i64, i64) {
-    let page = raw_page.unwrap_or(1);
-    let per_page = raw_per_page.unwrap_or(50).min(200);
-    let offset = (page - 1) * per_page;
-    (page, per_page, offset)
-}
-
-/// Build the trigger scan response message for a single artifact.
-pub(crate) fn build_artifact_scan_message(artifact_id: Uuid) -> TriggerScanResponse {
-    TriggerScanResponse {
-        message: format!("Scan queued for artifact {}", artifact_id),
-        artifacts_queued: 1,
-    }
-}
-
-/// Build the trigger scan response message for a repository scan.
-pub(crate) fn build_repo_scan_message(repository_id: Uuid, count: i64) -> TriggerScanResponse {
-    TriggerScanResponse {
-        message: format!(
-            "Repository scan queued for {} ({} artifacts)",
-            repository_id, count
-        ),
-        artifacts_queued: count as u32,
-    }
-}
-
-/// Build a JSON response for successful deletion.
-pub(crate) fn build_deleted_response() -> serde_json::Value {
-    serde_json::json!({ "deleted": true })
-}
-
-/// Convert a ScanResult model into a ScanResponse DTO with artifact info.
-pub(crate) fn scan_result_to_response(
-    s: ScanResult,
-    artifact_name: Option<String>,
-    artifact_version: Option<String>,
-) -> ScanResponse {
-    ScanResponse::from_scan(s, artifact_name, artifact_version)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (testable without DB)
+    // -----------------------------------------------------------------------
+
+    /// Compute scan list pagination values.
+    /// Returns `(page, per_page, offset)`.
+    fn compute_scan_pagination(
+        raw_page: Option<i64>,
+        raw_per_page: Option<i64>,
+    ) -> (i64, i64, i64) {
+        let page = raw_page.unwrap_or(1);
+        let per_page = raw_per_page.unwrap_or(20).min(100);
+        let offset = (page - 1) * per_page;
+        (page, per_page, offset)
+    }
+
+    /// Compute findings pagination values.
+    /// Returns `(page, per_page, offset)`.
+    fn compute_findings_pagination(
+        raw_page: Option<i64>,
+        raw_per_page: Option<i64>,
+    ) -> (i64, i64, i64) {
+        let page = raw_page.unwrap_or(1);
+        let per_page = raw_per_page.unwrap_or(50).min(200);
+        let offset = (page - 1) * per_page;
+        (page, per_page, offset)
+    }
+
+    /// Build the trigger scan response message for a single artifact.
+    fn build_artifact_scan_message(artifact_id: Uuid) -> TriggerScanResponse {
+        TriggerScanResponse {
+            message: format!("Scan queued for artifact {}", artifact_id),
+            artifacts_queued: 1,
+        }
+    }
+
+    /// Build the trigger scan response message for a repository scan.
+    fn build_repo_scan_message(repository_id: Uuid, count: i64) -> TriggerScanResponse {
+        TriggerScanResponse {
+            message: format!(
+                "Repository scan queued for {} ({} artifacts)",
+                repository_id, count
+            ),
+            artifacts_queued: count as u32,
+        }
+    }
+
+    /// Build a JSON response for successful deletion.
+    fn build_deleted_response() -> serde_json::Value {
+        serde_json::json!({ "deleted": true })
+    }
+
+    /// Convert a ScanResult model into a ScanResponse DTO with artifact info.
+    fn scan_result_to_response(
+        s: ScanResult,
+        artifact_name: Option<String>,
+        artifact_version: Option<String>,
+    ) -> ScanResponse {
+        ScanResponse::from_scan(s, artifact_name, artifact_version)
+    }
 
     // -----------------------------------------------------------------------
     // compute_scan_pagination

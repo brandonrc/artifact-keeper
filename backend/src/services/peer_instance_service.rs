@@ -87,108 +87,6 @@ pub struct RegisterPeerInstanceRequest {
     pub api_key: String,
 }
 
-/// Derive the sync status for a peer based on whether sync is completed.
-pub(crate) fn derive_sync_status(completed: bool) -> InstanceStatus {
-    if completed {
-        InstanceStatus::Online
-    } else {
-        InstanceStatus::Syncing
-    }
-}
-
-/// Resolve heartbeat status, defaulting to Online if none provided.
-pub(crate) fn resolve_heartbeat_status(status: Option<InstanceStatus>) -> InstanceStatus {
-    status.unwrap_or(InstanceStatus::Online)
-}
-
-/// Calculate cache utilization as a percentage (0.0 to 100.0).
-pub(crate) fn cache_utilization_pct(cache_size_bytes: i64, cache_used_bytes: i64) -> f64 {
-    if cache_size_bytes <= 0 {
-        0.0
-    } else {
-        (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
-    }
-}
-
-/// Determine if a peer is considered stale given its last heartbeat and a
-/// threshold in minutes. Returns true if stale.
-pub(crate) fn is_heartbeat_stale(
-    last_heartbeat_at: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
-    stale_threshold_minutes: i64,
-) -> bool {
-    match last_heartbeat_at {
-        Some(hb) => (now - hb).num_minutes() >= stale_threshold_minutes,
-        None => true, // no heartbeat ever => stale
-    }
-}
-
-/// Check whether a peer is in backoff (should not be synced).
-pub(crate) fn is_in_backoff(backoff_until: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
-    backoff_until.map_or(false, |bu| now < bu)
-}
-
-/// Check whether there is transfer capacity available.
-pub(crate) fn has_transfer_capacity(
-    active_transfers: i32,
-    concurrent_transfers_limit: Option<i32>,
-) -> bool {
-    match concurrent_transfers_limit {
-        Some(limit) => active_transfers < limit,
-        None => true, // no limit set
-    }
-}
-
-/// Compute the transfer success rate from totals.
-pub(crate) fn transfer_success_rate(
-    bytes_transferred_total: i64,
-    transfer_failures_total: i32,
-) -> f64 {
-    let total_attempts = bytes_transferred_total.max(1) as f64; // avoid div/0
-                                                                // Use failures as a fraction; note this is a simplified heuristic
-    if transfer_failures_total == 0 {
-        1.0
-    } else {
-        let failure_rate = transfer_failures_total as f64 / (transfer_failures_total as f64 + 1.0);
-        1.0 - failure_rate
-    }
-}
-
-/// Build the announce URL for a remote peer's announcement endpoint.
-pub(crate) fn build_announce_url(remote_endpoint: &str) -> String {
-    format!(
-        "{}/api/v1/peers/announce",
-        remote_endpoint.trim_end_matches('/')
-    )
-}
-
-/// Determine the started_at timestamp for a sync task status transition.
-pub(crate) fn sync_task_started_at(
-    status: SyncStatus,
-    now: DateTime<Utc>,
-) -> Option<DateTime<Utc>> {
-    if status == SyncStatus::InProgress {
-        Some(now)
-    } else {
-        None
-    }
-}
-
-/// Determine the completed_at timestamp for a sync task status transition.
-pub(crate) fn sync_task_completed_at(
-    status: SyncStatus,
-    now: DateTime<Utc>,
-) -> Option<DateTime<Utc>> {
-    if matches!(
-        status,
-        SyncStatus::Completed | SyncStatus::Failed | SyncStatus::Cancelled
-    ) {
-        Some(now)
-    } else {
-        None
-    }
-}
-
 /// Peer instance service
 pub struct PeerInstanceService {
     db: PgPool,
@@ -809,6 +707,92 @@ pub struct SyncTask {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn derive_sync_status(completed: bool) -> InstanceStatus {
+        if completed {
+            InstanceStatus::Online
+        } else {
+            InstanceStatus::Syncing
+        }
+    }
+
+    fn resolve_heartbeat_status(status: Option<InstanceStatus>) -> InstanceStatus {
+        status.unwrap_or(InstanceStatus::Online)
+    }
+
+    fn cache_utilization_pct(cache_size_bytes: i64, cache_used_bytes: i64) -> f64 {
+        if cache_size_bytes <= 0 {
+            0.0
+        } else {
+            (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
+        }
+    }
+
+    fn is_heartbeat_stale(
+        last_heartbeat_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+        stale_threshold_minutes: i64,
+    ) -> bool {
+        match last_heartbeat_at {
+            Some(hb) => (now - hb).num_minutes() >= stale_threshold_minutes,
+            None => true,
+        }
+    }
+
+    fn is_in_backoff(backoff_until: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        backoff_until.map_or(false, |bu| now < bu)
+    }
+
+    fn has_transfer_capacity(
+        active_transfers: i32,
+        concurrent_transfers_limit: Option<i32>,
+    ) -> bool {
+        match concurrent_transfers_limit {
+            Some(limit) => active_transfers < limit,
+            None => true,
+        }
+    }
+
+    fn transfer_success_rate(bytes_transferred_total: i64, transfer_failures_total: i32) -> f64 {
+        let _total_attempts = bytes_transferred_total.max(1) as f64;
+        if transfer_failures_total == 0 {
+            1.0
+        } else {
+            let failure_rate =
+                transfer_failures_total as f64 / (transfer_failures_total as f64 + 1.0);
+            1.0 - failure_rate
+        }
+    }
+
+    fn build_announce_url(remote_endpoint: &str) -> String {
+        format!(
+            "{}/api/v1/peers/announce",
+            remote_endpoint.trim_end_matches('/')
+        )
+    }
+
+    fn sync_task_started_at(status: SyncStatus, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if status == SyncStatus::InProgress {
+            Some(now)
+        } else {
+            None
+        }
+    }
+
+    fn sync_task_completed_at(status: SyncStatus, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if matches!(
+            status,
+            SyncStatus::Completed | SyncStatus::Failed | SyncStatus::Cancelled
+        ) {
+            Some(now)
+        } else {
+            None
+        }
+    }
 
     // ===================================================================
     // InstanceStatus Display

@@ -1007,22 +1007,18 @@ async fn download_provider(
 // PUT /v1/providers/{namespace}/{type}/{version}/{os}/{arch} — Upload provider
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build the service discovery JSON for a Terraform registry.
-pub(crate) fn build_service_discovery_json(repo_key: &str) -> serde_json::Value {
-    serde_json::json!({
-        "modules.v1": format!("/terraform/{}/v1/modules/", repo_key),
-        "providers.v1": format!("/terraform/{}/v1/providers/", repo_key),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    /// Build the service discovery JSON for a Terraform registry.
+    fn build_service_discovery_json(repo_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "modules.v1": format!("/terraform/{}/v1/modules/", repo_key),
+            "providers.v1": format!("/terraform/{}/v1/providers/", repo_key),
+        })
+    }
 
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)

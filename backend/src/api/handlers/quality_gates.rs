@@ -253,163 +253,6 @@ pub struct EvaluateGateQuery {
     pub repository_id: Option<Uuid>,
 }
 
-// ---------------------------------------------------------------------------
-// Pure (non-async, no-DB) helper functions for unit testing
-// ---------------------------------------------------------------------------
-
-/// Map a numeric health score to a letter grade.
-pub(crate) fn health_grade_from_score(score: i32) -> &'static str {
-    match score {
-        90..=i32::MAX => "A",
-        80..=89 => "B",
-        70..=79 => "C",
-        60..=69 => "D",
-        _ => "F",
-    }
-}
-
-/// Count how many grades fall into each bucket (A, B, C, D, F).
-pub(crate) fn count_grade_distribution(grades: &[&str]) -> (i64, i64, i64, i64, i64) {
-    let mut a = 0i64;
-    let mut b = 0i64;
-    let mut c = 0i64;
-    let mut d = 0i64;
-    let mut f = 0i64;
-    for &g in grades {
-        match g {
-            "A" => a += 1,
-            "B" => b += 1,
-            "C" => c += 1,
-            "D" => d += 1,
-            _ => f += 1,
-        }
-    }
-    (a, b, c, d, f)
-}
-
-/// Compute the average health score from a slice. Returns 0 for empty input.
-pub(crate) fn compute_avg_health_score(scores: &[i32]) -> i32 {
-    if scores.is_empty() {
-        return 0;
-    }
-    let sum: i64 = scores.iter().map(|&s| s as i64).sum();
-    (sum / scores.len() as i64) as i32
-}
-
-/// Check a minimum-threshold rule. Returns a violation if `actual < min`.
-pub(crate) fn check_min_threshold(
-    rule_name: &str,
-    actual: i32,
-    min: Option<i32>,
-) -> Option<GateViolationResponse> {
-    let min = min?;
-    if actual < min {
-        Some(GateViolationResponse {
-            rule: rule_name.to_string(),
-            expected: format!(">= {}", min),
-            actual: actual.to_string(),
-            message: format!("{} is {} (minimum {})", rule_name, actual, min),
-        })
-    } else {
-        None
-    }
-}
-
-/// Check a maximum-threshold rule. Returns a violation if `actual > max`.
-pub(crate) fn check_max_threshold(
-    rule_name: &str,
-    actual: i32,
-    max: Option<i32>,
-) -> Option<GateViolationResponse> {
-    let max = max?;
-    if actual > max {
-        Some(GateViolationResponse {
-            rule: rule_name.to_string(),
-            expected: format!("<= {}", max),
-            actual: actual.to_string(),
-            message: format!("{} is {} (maximum {})", rule_name, actual, max),
-        })
-    } else {
-        None
-    }
-}
-
-/// Evaluate all gate threshold rules and return a list of violations.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn evaluate_gate_thresholds(
-    health_score: i32,
-    security_score: Option<i32>,
-    quality_score: Option<i32>,
-    metadata_score: Option<i32>,
-    critical_issues: i32,
-    high_issues: i32,
-    medium_issues: i32,
-    min_health: Option<i32>,
-    min_security: Option<i32>,
-    min_quality: Option<i32>,
-    min_metadata: Option<i32>,
-    max_critical: Option<i32>,
-    max_high: Option<i32>,
-    max_medium: Option<i32>,
-) -> Vec<GateViolationResponse> {
-    let mut violations = Vec::new();
-    if let Some(v) = check_min_threshold("min_health_score", health_score, min_health) {
-        violations.push(v);
-    }
-    if let Some(v) = check_min_threshold(
-        "min_security_score",
-        security_score.unwrap_or(0),
-        min_security,
-    ) {
-        violations.push(v);
-    }
-    if let Some(v) =
-        check_min_threshold("min_quality_score", quality_score.unwrap_or(0), min_quality)
-    {
-        violations.push(v);
-    }
-    if let Some(v) = check_min_threshold(
-        "min_metadata_score",
-        metadata_score.unwrap_or(0),
-        min_metadata,
-    ) {
-        violations.push(v);
-    }
-    if let Some(v) = check_max_threshold("max_critical_issues", critical_issues, max_critical) {
-        violations.push(v);
-    }
-    if let Some(v) = check_max_threshold("max_high_issues", high_issues, max_high) {
-        violations.push(v);
-    }
-    if let Some(v) = check_max_threshold("max_medium_issues", medium_issues, max_medium) {
-        violations.push(v);
-    }
-    violations
-}
-
-/// Compute total pages for pagination.
-pub(crate) fn compute_total_pages(total: i64, per_page: u32) -> u32 {
-    ((total as f64) / (per_page as f64)).ceil() as u32
-}
-
-/// Normalize pagination parameters with defaults and clamping.
-pub(crate) fn normalize_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32) {
-    let page = page.unwrap_or(1).max(1);
-    let per_page = per_page.unwrap_or(20).min(100);
-    (page, per_page)
-}
-
-/// Validate that a status string is one of the recognized values.
-pub(crate) fn validate_status(status: &str) -> std::result::Result<(), String> {
-    if !["pending", "approved", "rejected"].contains(&status) {
-        return Err(format!(
-            "Invalid status '{}'. Must be one of: pending, approved, rejected",
-            status
-        ));
-    }
-    Ok(())
-}
-
 impl From<crate::models::quality::QualityCheckResult> for CheckResponse {
     fn from(c: crate::models::quality::QualityCheckResult) -> Self {
         Self {
@@ -1130,6 +973,163 @@ pub struct QualityGatesApiDoc;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure (non-async, no-DB) helper functions for unit testing
+    // -----------------------------------------------------------------------
+
+    /// Map a numeric health score to a letter grade.
+    fn health_grade_from_score(score: i32) -> &'static str {
+        match score {
+            90..=i32::MAX => "A",
+            80..=89 => "B",
+            70..=79 => "C",
+            60..=69 => "D",
+            _ => "F",
+        }
+    }
+
+    /// Count how many grades fall into each bucket (A, B, C, D, F).
+    fn count_grade_distribution(grades: &[&str]) -> (i64, i64, i64, i64, i64) {
+        let mut a = 0i64;
+        let mut b = 0i64;
+        let mut c = 0i64;
+        let mut d = 0i64;
+        let mut f = 0i64;
+        for &g in grades {
+            match g {
+                "A" => a += 1,
+                "B" => b += 1,
+                "C" => c += 1,
+                "D" => d += 1,
+                _ => f += 1,
+            }
+        }
+        (a, b, c, d, f)
+    }
+
+    /// Compute the average health score from a slice. Returns 0 for empty input.
+    fn compute_avg_health_score(scores: &[i32]) -> i32 {
+        if scores.is_empty() {
+            return 0;
+        }
+        let sum: i64 = scores.iter().map(|&s| s as i64).sum();
+        (sum / scores.len() as i64) as i32
+    }
+
+    /// Check a minimum-threshold rule. Returns a violation if `actual < min`.
+    fn check_min_threshold(
+        rule_name: &str,
+        actual: i32,
+        min: Option<i32>,
+    ) -> Option<GateViolationResponse> {
+        let min = min?;
+        if actual < min {
+            Some(GateViolationResponse {
+                rule: rule_name.to_string(),
+                expected: format!(">= {}", min),
+                actual: actual.to_string(),
+                message: format!("{} is {} (minimum {})", rule_name, actual, min),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Check a maximum-threshold rule. Returns a violation if `actual > max`.
+    fn check_max_threshold(
+        rule_name: &str,
+        actual: i32,
+        max: Option<i32>,
+    ) -> Option<GateViolationResponse> {
+        let max = max?;
+        if actual > max {
+            Some(GateViolationResponse {
+                rule: rule_name.to_string(),
+                expected: format!("<= {}", max),
+                actual: actual.to_string(),
+                message: format!("{} is {} (maximum {})", rule_name, actual, max),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Evaluate all gate threshold rules and return a list of violations.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_gate_thresholds(
+        health_score: i32,
+        security_score: Option<i32>,
+        quality_score: Option<i32>,
+        metadata_score: Option<i32>,
+        critical_issues: i32,
+        high_issues: i32,
+        medium_issues: i32,
+        min_health: Option<i32>,
+        min_security: Option<i32>,
+        min_quality: Option<i32>,
+        min_metadata: Option<i32>,
+        max_critical: Option<i32>,
+        max_high: Option<i32>,
+        max_medium: Option<i32>,
+    ) -> Vec<GateViolationResponse> {
+        let mut violations = Vec::new();
+        if let Some(v) = check_min_threshold("min_health_score", health_score, min_health) {
+            violations.push(v);
+        }
+        if let Some(v) = check_min_threshold(
+            "min_security_score",
+            security_score.unwrap_or(0),
+            min_security,
+        ) {
+            violations.push(v);
+        }
+        if let Some(v) =
+            check_min_threshold("min_quality_score", quality_score.unwrap_or(0), min_quality)
+        {
+            violations.push(v);
+        }
+        if let Some(v) = check_min_threshold(
+            "min_metadata_score",
+            metadata_score.unwrap_or(0),
+            min_metadata,
+        ) {
+            violations.push(v);
+        }
+        if let Some(v) = check_max_threshold("max_critical_issues", critical_issues, max_critical) {
+            violations.push(v);
+        }
+        if let Some(v) = check_max_threshold("max_high_issues", high_issues, max_high) {
+            violations.push(v);
+        }
+        if let Some(v) = check_max_threshold("max_medium_issues", medium_issues, max_medium) {
+            violations.push(v);
+        }
+        violations
+    }
+
+    /// Compute total pages for pagination.
+    fn compute_total_pages(total: i64, per_page: u32) -> u32 {
+        ((total as f64) / (per_page as f64)).ceil() as u32
+    }
+
+    /// Normalize pagination parameters with defaults and clamping.
+    fn normalize_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32) {
+        let page = page.unwrap_or(1).max(1);
+        let per_page = per_page.unwrap_or(20).min(100);
+        (page, per_page)
+    }
+
+    /// Validate that a status string is one of the recognized values.
+    fn validate_status(status: &str) -> std::result::Result<(), String> {
+        if !["pending", "approved", "rejected"].contains(&status) {
+            return Err(format!(
+                "Invalid status '{}'. Must be one of: pending, approved, rejected",
+                status
+            ));
+        }
+        Ok(())
+    }
 
     // -----------------------------------------------------------------------
     // default_true / default_warn

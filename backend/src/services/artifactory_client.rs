@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn test_config_default_auth_is_api_token() {
         let config = ArtifactoryClientConfig::default();
-        matches!(config.auth, ArtifactoryAuth::ApiToken(_));
+        assert!(matches!(config.auth, ArtifactoryAuth::ApiToken(_)));
     }
 
     #[test]

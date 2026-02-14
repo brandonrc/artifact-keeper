@@ -1009,163 +1009,146 @@ impl PluginService {
     }
 }
 
-// =========================================================================
-// Extracted pure functions (testable without DB or async)
-// =========================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Extract webhook URL from plugin config and hook handler name.
-/// Checks in order: handler-specific URL, global webhook_url, global url.
-pub(crate) fn resolve_webhook_url(
-    config: Option<&serde_json::Value>,
-    handler_name: &str,
-) -> Option<String> {
-    let config = config?;
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
 
-    // Try handler-specific URL: { "hooks": { "handler_name": { "url": "..." } } }
-    if let Some(url) = config
-        .get("hooks")
-        .and_then(|h| h.get(handler_name))
-        .and_then(|h| h.get("url"))
-        .and_then(|u| u.as_str())
-    {
-        return Some(url.to_string());
-    }
+    fn resolve_webhook_url(
+        config: Option<&serde_json::Value>,
+        handler_name: &str,
+    ) -> Option<String> {
+        let config = config?;
 
-    // Try global webhook URL: { "webhook_url": "..." }
-    if let Some(url) = config.get("webhook_url").and_then(|u| u.as_str()) {
-        return Some(url.to_string());
-    }
-
-    // Try just "url": { "url": "..." }
-    config
-        .get("url")
-        .and_then(|u| u.as_str())
-        .map(|s| s.to_string())
-}
-
-/// Extract validator URL from plugin config and hook handler name.
-/// Checks handler-specific validator_url first, then global validator_url.
-pub(crate) fn resolve_validator_url(
-    config: Option<&serde_json::Value>,
-    handler_name: &str,
-) -> Option<String> {
-    let config = config?;
-
-    // Try handler-specific validator URL
-    if let Some(url) = config
-        .get("hooks")
-        .and_then(|h| h.get(handler_name))
-        .and_then(|h| h.get("validator_url"))
-        .and_then(|u| u.as_str())
-    {
-        return Some(url.to_string());
-    }
-
-    // Try global validator URL
-    config
-        .get("validator_url")
-        .and_then(|u| u.as_str())
-        .map(|s| s.to_string())
-}
-
-/// Run config-based validation rules against artifact info.
-/// Returns `None` if all rules pass, or `Some(ValidatorResult)` with rejection details.
-pub(crate) fn evaluate_config_rules(
-    config: Option<&serde_json::Value>,
-    artifact_info: &ArtifactInfo,
-) -> Option<ValidatorResult> {
-    let config = config?;
-    let rules = config.get("rules")?;
-
-    // Check max file size rule
-    if let Some(max_size) = rules.get("max_size_bytes").and_then(|v| v.as_i64()) {
-        if artifact_info.size_bytes > max_size {
-            return Some(ValidatorResult {
-                accept: false,
-                reason: Some(format!(
-                    "File size {} exceeds maximum allowed {}",
-                    artifact_info.size_bytes, max_size
-                )),
-            });
-        }
-    }
-
-    // Check allowed content types
-    if let Some(allowed_types) = rules
-        .get("allowed_content_types")
-        .and_then(|v| v.as_array())
-    {
-        let types: Vec<&str> = allowed_types.iter().filter_map(|v| v.as_str()).collect();
-        if !types.is_empty()
-            && !types
-                .iter()
-                .any(|t| artifact_info.content_type.starts_with(t))
+        if let Some(url) = config
+            .get("hooks")
+            .and_then(|h| h.get(handler_name))
+            .and_then(|h| h.get("url"))
+            .and_then(|u| u.as_str())
         {
-            return Some(ValidatorResult {
-                accept: false,
-                reason: Some(format!(
-                    "Content type '{}' not allowed. Allowed: {:?}",
-                    artifact_info.content_type, types
-                )),
-            });
+            return Some(url.to_string());
         }
+
+        if let Some(url) = config.get("webhook_url").and_then(|u| u.as_str()) {
+            return Some(url.to_string());
+        }
+
+        config
+            .get("url")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())
     }
 
-    // Check blocked content types
-    if let Some(blocked_types) = rules
-        .get("blocked_content_types")
-        .and_then(|v| v.as_array())
-    {
-        let types: Vec<&str> = blocked_types.iter().filter_map(|v| v.as_str()).collect();
-        if types
-            .iter()
-            .any(|t| artifact_info.content_type.starts_with(t))
+    fn resolve_validator_url(
+        config: Option<&serde_json::Value>,
+        handler_name: &str,
+    ) -> Option<String> {
+        let config = config?;
+
+        if let Some(url) = config
+            .get("hooks")
+            .and_then(|h| h.get(handler_name))
+            .and_then(|h| h.get("validator_url"))
+            .and_then(|u| u.as_str())
         {
-            return Some(ValidatorResult {
-                accept: false,
-                reason: Some(format!(
-                    "Content type '{}' is blocked",
-                    artifact_info.content_type
-                )),
-            });
+            return Some(url.to_string());
         }
+
+        config
+            .get("validator_url")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())
     }
 
-    // Check path patterns (blocked paths)
-    if let Some(blocked_paths) = rules
-        .get("blocked_path_patterns")
-        .and_then(|v| v.as_array())
-    {
-        for pattern in blocked_paths.iter().filter_map(|v| v.as_str()) {
-            if artifact_info.path.contains(pattern) {
+    fn evaluate_config_rules(
+        config: Option<&serde_json::Value>,
+        artifact_info: &ArtifactInfo,
+    ) -> Option<ValidatorResult> {
+        let config = config?;
+        let rules = config.get("rules")?;
+
+        if let Some(max_size) = rules.get("max_size_bytes").and_then(|v| v.as_i64()) {
+            if artifact_info.size_bytes > max_size {
                 return Some(ValidatorResult {
                     accept: false,
                     reason: Some(format!(
-                        "Path '{}' matches blocked pattern '{}'",
-                        artifact_info.path, pattern
+                        "File size {} exceeds maximum allowed {}",
+                        artifact_info.size_bytes, max_size
                     )),
                 });
             }
         }
+
+        if let Some(allowed_types) = rules
+            .get("allowed_content_types")
+            .and_then(|v| v.as_array())
+        {
+            let types: Vec<&str> = allowed_types.iter().filter_map(|v| v.as_str()).collect();
+            if !types.is_empty()
+                && !types
+                    .iter()
+                    .any(|t| artifact_info.content_type.starts_with(t))
+            {
+                return Some(ValidatorResult {
+                    accept: false,
+                    reason: Some(format!(
+                        "Content type '{}' not allowed. Allowed: {:?}",
+                        artifact_info.content_type, types
+                    )),
+                });
+            }
+        }
+
+        if let Some(blocked_types) = rules
+            .get("blocked_content_types")
+            .and_then(|v| v.as_array())
+        {
+            let types: Vec<&str> = blocked_types.iter().filter_map(|v| v.as_str()).collect();
+            if types
+                .iter()
+                .any(|t| artifact_info.content_type.starts_with(t))
+            {
+                return Some(ValidatorResult {
+                    accept: false,
+                    reason: Some(format!(
+                        "Content type '{}' is blocked",
+                        artifact_info.content_type
+                    )),
+                });
+            }
+        }
+
+        if let Some(blocked_paths) = rules
+            .get("blocked_path_patterns")
+            .and_then(|v| v.as_array())
+        {
+            for pattern in blocked_paths.iter().filter_map(|v| v.as_str()) {
+                if artifact_info.path.contains(pattern) {
+                    return Some(ValidatorResult {
+                        accept: false,
+                        reason: Some(format!(
+                            "Path '{}' matches blocked pattern '{}'",
+                            artifact_info.path, pattern
+                        )),
+                    });
+                }
+            }
+        }
+
+        None
     }
 
-    // All rules passed
-    None
-}
-
-/// Check if a plugin event type is a "before" event (should block on failure).
-pub(crate) fn is_blocking_event(event: PluginEventType) -> bool {
-    matches!(
-        event,
-        PluginEventType::BeforeUpload
-            | PluginEventType::BeforeDownload
-            | PluginEventType::BeforeDelete
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
+    fn is_blocking_event(event: PluginEventType) -> bool {
+        matches!(
+            event,
+            PluginEventType::BeforeUpload
+                | PluginEventType::BeforeDownload
+                | PluginEventType::BeforeDelete
+        )
+    }
 
     #[test]
     fn test_plugin_event_type_conversion() {
@@ -1435,6 +1418,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_plugin_with_config(config: serde_json::Value) -> Plugin {
         Plugin {
             id: Uuid::new_v4(),
@@ -1463,6 +1447,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn make_hook(handler_name: &str) -> PluginHook {
         PluginHook {
             id: Uuid::new_v4(),

@@ -746,35 +746,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_total_pages_exact_division() {
-        let total: i64 = 100;
-        let per_page: u32 = 20;
-        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-        assert_eq!(total_pages, 5);
-    }
+    fn test_total_pages_calculation() {
+        let compute = |total: i64, per_page: u32| -> u32 {
+            ((total as f64) / (per_page as f64)).ceil() as u32
+        };
 
-    #[test]
-    fn test_total_pages_with_remainder() {
-        let total: i64 = 101;
-        let per_page: u32 = 20;
-        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-        assert_eq!(total_pages, 6);
-    }
-
-    #[test]
-    fn test_total_pages_zero_total() {
-        let total: i64 = 0;
-        let per_page: u32 = 20;
-        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-        assert_eq!(total_pages, 0);
-    }
-
-    #[test]
-    fn test_total_pages_single_item() {
-        let total: i64 = 1;
-        let per_page: u32 = 20;
-        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
-        assert_eq!(total_pages, 1);
+        assert_eq!(compute(100, 20), 5); // exact division
+        assert_eq!(compute(101, 20), 6); // with remainder
+        assert_eq!(compute(0, 20), 0); // zero total
+        assert_eq!(compute(1, 20), 1); // single item
     }
 
     // -----------------------------------------------------------------------
@@ -819,6 +799,10 @@ mod tests {
 
     #[test]
     fn test_checksum_algorithm_validation() {
+        for valid in ["sha256", "sha1", "md5"] {
+            assert!(matches!(valid, "sha256" | "sha1" | "md5"));
+        }
+
         let algorithm = "sha512";
         let result = match algorithm {
             "sha256" | "sha1" | "md5" => Ok(()),
@@ -828,25 +812,6 @@ mod tests {
         };
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("sha512"));
-    }
-
-    #[test]
-    fn test_checksum_algorithm_sha256_valid() {
-        let algorithm = "sha256";
-        let is_valid = matches!(algorithm, "sha256" | "sha1" | "md5");
-        assert!(is_valid);
-    }
-
-    #[test]
-    fn test_checksum_algorithm_sha1_valid() {
-        let is_valid = matches!("sha1", "sha256" | "sha1" | "md5");
-        assert!(is_valid);
-    }
-
-    #[test]
-    fn test_checksum_algorithm_md5_valid() {
-        let is_valid = matches!("md5", "sha256" | "sha1" | "md5");
-        assert!(is_valid);
     }
 
     // -----------------------------------------------------------------------
@@ -883,18 +848,14 @@ mod tests {
 
     #[test]
     fn test_trending_days_default_and_clamp() {
-        let days = None::<i32>.unwrap_or(7).clamp(1, 90);
-        assert_eq!(days, 7);
-        let days = Some(0_i32).unwrap_or(7).clamp(1, 90);
-        assert_eq!(days, 1);
-        let days = Some(365_i32).unwrap_or(7).clamp(1, 90);
-        assert_eq!(days, 90);
+        assert_eq!(None::<i32>.unwrap_or(7).clamp(1, 90), 7); // default
+        assert_eq!(Some(0_i32).unwrap_or(7).clamp(1, 90), 1); // clamped low
+        assert_eq!(Some(365_i32).unwrap_or(7).clamp(1, 90), 90); // clamped high
     }
 
     #[test]
     fn test_trending_limit_default_and_clamp() {
-        let limit = None::<i64>.unwrap_or(20).clamp(1, 100);
-        assert_eq!(limit, 20);
+        assert_eq!(None::<i64>.unwrap_or(20).clamp(1, 100), 20);
     }
 
     // -----------------------------------------------------------------------
@@ -910,12 +871,9 @@ mod tests {
 
     #[test]
     fn test_recent_limit_default_and_clamp() {
-        let limit = None::<i64>.unwrap_or(20).clamp(1, 100);
-        assert_eq!(limit, 20);
-        let limit = Some(0_i64).unwrap_or(20).clamp(1, 100);
-        assert_eq!(limit, 1);
-        let limit = Some(500_i64).unwrap_or(20).clamp(1, 100);
-        assert_eq!(limit, 100);
+        assert_eq!(None::<i64>.unwrap_or(20).clamp(1, 100), 20); // default
+        assert_eq!(Some(0_i64).unwrap_or(20).clamp(1, 100), 1); // clamped low
+        assert_eq!(Some(500_i64).unwrap_or(20).clamp(1, 100), 100); // clamped high
     }
 
     // -----------------------------------------------------------------------

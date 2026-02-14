@@ -12,156 +12,6 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// Get the format version string for a given SBOM format.
-pub(crate) fn format_version(format: SbomFormat) -> &'static str {
-    match format {
-        SbomFormat::CycloneDX => "1.5",
-        SbomFormat::SPDX => "2.3",
-    }
-}
-
-/// Get the full spec version string for a given SBOM format.
-pub(crate) fn spec_version(format: SbomFormat) -> &'static str {
-    match format {
-        SbomFormat::CycloneDX => "CycloneDX 1.5",
-        SbomFormat::SPDX => "SPDX-2.3",
-    }
-}
-
-/// Build a CycloneDX component JSON value from a DependencyInfo.
-pub(crate) fn build_cyclonedx_component(dep: &DependencyInfo) -> serde_json::Value {
-    let mut comp = serde_json::json!({
-        "type": "library",
-        "name": dep.name,
-    });
-    if let Some(v) = &dep.version {
-        comp["version"] = serde_json::json!(v);
-    }
-    if let Some(p) = &dep.purl {
-        comp["purl"] = serde_json::json!(p);
-    }
-    if let Some(l) = &dep.license {
-        comp["licenses"] = serde_json::json!([{"license": {"id": l}}]);
-    }
-    if let Some(h) = &dep.sha256 {
-        comp["hashes"] = serde_json::json!([{"alg": "SHA-256", "content": h}]);
-    }
-    comp
-}
-
-/// Build an SPDX package JSON value from a DependencyInfo and its index.
-pub(crate) fn build_spdx_package(dep: &DependencyInfo, idx: usize) -> serde_json::Value {
-    let spdx_id = format!("SPDXRef-Package-{}", idx);
-    let mut pkg = serde_json::json!({
-        "SPDXID": spdx_id,
-        "name": dep.name,
-        "downloadLocation": "NOASSERTION"
-    });
-    if let Some(v) = &dep.version {
-        pkg["versionInfo"] = serde_json::json!(v);
-    }
-    if let Some(l) = &dep.license {
-        pkg["licenseConcluded"] = serde_json::json!(l);
-        pkg["licenseDeclared"] = serde_json::json!(l);
-    } else {
-        pkg["licenseConcluded"] = serde_json::json!("NOASSERTION");
-        pkg["licenseDeclared"] = serde_json::json!("NOASSERTION");
-    }
-    if let Some(h) = &dep.sha256 {
-        pkg["checksums"] = serde_json::json!([{
-            "algorithm": "SHA256",
-            "checksumValue": h
-        }]);
-    }
-    if let Some(p) = &dep.purl {
-        pkg["externalRefs"] = serde_json::json!([{
-            "referenceCategory": "PACKAGE-MANAGER",
-            "referenceType": "purl",
-            "referenceLocator": p
-        }]);
-    }
-    pkg
-}
-
-/// Build a ComponentInfo from a DependencyInfo.
-pub(crate) fn build_component_info(dep: &DependencyInfo) -> ComponentInfo {
-    ComponentInfo {
-        name: dep.name.clone(),
-        version: dep.version.clone(),
-        purl: dep.purl.clone(),
-        component_type: Some("library".to_string()),
-        licenses: dep.license.clone().into_iter().collect(),
-        sha256: dep.sha256.clone(),
-        supplier: None,
-    }
-}
-
-/// Extract unique licenses from a slice of dependencies.
-pub(crate) fn extract_unique_licenses(dependencies: &[DependencyInfo]) -> Vec<String> {
-    dependencies
-        .iter()
-        .filter_map(|d| d.license.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-/// Check licenses against a policy (standalone, no &self needed).
-pub(crate) fn check_license_compliance_pure(
-    policy: &LicensePolicy,
-    licenses: &[String],
-) -> LicenseCheckResult {
-    let mut violations = Vec::new();
-    let mut warnings = Vec::new();
-
-    for license in licenses {
-        let normalized = license.to_uppercase();
-
-        // Check denylist first (takes precedence)
-        if policy
-            .denied_licenses
-            .iter()
-            .any(|d| d.to_uppercase() == normalized)
-        {
-            violations.push(format!("License '{}' is denied by policy", license));
-            continue;
-        }
-
-        // Check allowlist if not empty
-        if !policy.allowed_licenses.is_empty()
-            && !policy
-                .allowed_licenses
-                .iter()
-                .any(|a| a.to_uppercase() == normalized)
-        {
-            if policy.allow_unknown {
-                warnings.push(format!("License '{}' is not in approved list", license));
-            } else {
-                violations.push(format!("License '{}' is not in approved list", license));
-            }
-        }
-    }
-
-    LicenseCheckResult {
-        compliant: violations.is_empty(),
-        violations,
-        warnings,
-    }
-}
-
-/// Calculate the SHA-256 content hash of a string.
-pub(crate) fn content_hash(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
-}
-
-/// Compute the number of days a CVE has been exposed.
-pub(crate) fn days_exposed(
-    first_detected_at: chrono::DateTime<Utc>,
-    now: chrono::DateTime<Utc>,
-) -> i64 {
-    (now - first_detected_at).num_days()
-}
-
 /// SBOM service for generating and managing SBOMs.
 #[derive(Clone)]
 pub struct SbomService {
@@ -816,6 +666,146 @@ pub struct LicenseCheckResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn format_version(format: SbomFormat) -> &'static str {
+        match format {
+            SbomFormat::CycloneDX => "1.5",
+            SbomFormat::SPDX => "2.3",
+        }
+    }
+
+    fn spec_version(format: SbomFormat) -> &'static str {
+        match format {
+            SbomFormat::CycloneDX => "CycloneDX 1.5",
+            SbomFormat::SPDX => "SPDX-2.3",
+        }
+    }
+
+    fn build_cyclonedx_component(dep: &DependencyInfo) -> serde_json::Value {
+        let mut comp = serde_json::json!({
+            "type": "library",
+            "name": dep.name,
+        });
+        if let Some(v) = &dep.version {
+            comp["version"] = serde_json::json!(v);
+        }
+        if let Some(p) = &dep.purl {
+            comp["purl"] = serde_json::json!(p);
+        }
+        if let Some(l) = &dep.license {
+            comp["licenses"] = serde_json::json!([{"license": {"id": l}}]);
+        }
+        if let Some(h) = &dep.sha256 {
+            comp["hashes"] = serde_json::json!([{"alg": "SHA-256", "content": h}]);
+        }
+        comp
+    }
+
+    fn build_spdx_package(dep: &DependencyInfo, idx: usize) -> serde_json::Value {
+        let spdx_id = format!("SPDXRef-Package-{}", idx);
+        let mut pkg = serde_json::json!({
+            "SPDXID": spdx_id,
+            "name": dep.name,
+            "downloadLocation": "NOASSERTION"
+        });
+        if let Some(v) = &dep.version {
+            pkg["versionInfo"] = serde_json::json!(v);
+        }
+        if let Some(l) = &dep.license {
+            pkg["licenseConcluded"] = serde_json::json!(l);
+            pkg["licenseDeclared"] = serde_json::json!(l);
+        } else {
+            pkg["licenseConcluded"] = serde_json::json!("NOASSERTION");
+            pkg["licenseDeclared"] = serde_json::json!("NOASSERTION");
+        }
+        if let Some(h) = &dep.sha256 {
+            pkg["checksums"] = serde_json::json!([{
+                "algorithm": "SHA256",
+                "checksumValue": h
+            }]);
+        }
+        if let Some(p) = &dep.purl {
+            pkg["externalRefs"] = serde_json::json!([{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": p
+            }]);
+        }
+        pkg
+    }
+
+    fn build_component_info(dep: &DependencyInfo) -> ComponentInfo {
+        ComponentInfo {
+            name: dep.name.clone(),
+            version: dep.version.clone(),
+            purl: dep.purl.clone(),
+            component_type: Some("library".to_string()),
+            licenses: dep.license.clone().into_iter().collect(),
+            sha256: dep.sha256.clone(),
+            supplier: None,
+        }
+    }
+
+    fn extract_unique_licenses(dependencies: &[DependencyInfo]) -> Vec<String> {
+        dependencies
+            .iter()
+            .filter_map(|d| d.license.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn check_license_compliance_pure(
+        policy: &LicensePolicy,
+        licenses: &[String],
+    ) -> LicenseCheckResult {
+        let mut violations = Vec::new();
+        let mut warnings = Vec::new();
+
+        for license in licenses {
+            let normalized = license.to_uppercase();
+
+            if policy
+                .denied_licenses
+                .iter()
+                .any(|d| d.to_uppercase() == normalized)
+            {
+                violations.push(format!("License '{}' is denied by policy", license));
+                continue;
+            }
+
+            if !policy.allowed_licenses.is_empty()
+                && !policy
+                    .allowed_licenses
+                    .iter()
+                    .any(|a| a.to_uppercase() == normalized)
+            {
+                if policy.allow_unknown {
+                    warnings.push(format!("License '{}' is not in approved list", license));
+                } else {
+                    violations.push(format!("License '{}' is not in approved list", license));
+                }
+            }
+        }
+
+        LicenseCheckResult {
+            compliant: violations.is_empty(),
+            violations,
+            warnings,
+        }
+    }
+
+    fn content_hash(content: &str) -> String {
+        format!("{:x}", Sha256::digest(content.as_bytes()))
+    }
+
+    fn days_exposed(first_detected_at: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> i64 {
+        (now - first_detected_at).num_days()
+    }
 
     // ===================================================================
     // format_version

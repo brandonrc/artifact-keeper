@@ -1006,89 +1006,89 @@ async fn upload_mod(
 // Tests
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build a version info JSON string (used by .info and @latest endpoints).
-pub(crate) fn build_version_info_json(version: &str, time_str: &str) -> String {
-    serde_json::json!({
-        "Version": version,
-        "Time": time_str,
-    })
-    .to_string()
-}
-
-/// Format a chrono DateTime into Go-compatible timestamp string.
-pub(crate) fn format_go_timestamp(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-
-/// Build a newline-separated version list from a vec of optional version strings.
-pub(crate) fn build_version_list(versions: &[Option<String>]) -> String {
-    versions
-        .iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Build the artifact path for a Go module zip.
-pub(crate) fn build_go_zip_artifact_path(module: &str, version: &str) -> String {
-    let encoded_module = encode_module_path(module);
-    format!("{}/{}/{}.zip", encoded_module, version, version)
-}
-
-/// Build the storage key for a Go module zip.
-pub(crate) fn build_go_zip_storage_key(module: &str, version: &str) -> String {
-    let encoded_module = encode_module_path(module);
-    format!("go/{}/{}/{}.zip", encoded_module, version, version)
-}
-
-/// Build the artifact path for a Go go.mod file.
-pub(crate) fn build_go_mod_artifact_path(module: &str, version: &str) -> String {
-    let encoded_module = encode_module_path(module);
-    format!("{}/{}/go.mod", encoded_module, version)
-}
-
-/// Build the storage key for a Go go.mod file.
-pub(crate) fn build_go_mod_storage_key(module: &str, version: &str) -> String {
-    let encoded_module = encode_module_path(module);
-    format!("go/{}/{}/go.mod", encoded_module, version)
-}
-
-/// Build Go module metadata JSON for storage.
-pub(crate) fn build_go_artifact_metadata(
-    module: &str,
-    version: &str,
-    file_type: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "module": module,
-        "version": version,
-        "type": file_type,
-    })
-}
-
-/// Build Content-Disposition header for Go zip downloads.
-pub(crate) fn build_go_zip_content_disposition(module: &str, version: &str) -> String {
-    format!(
-        "attachment; filename=\"{}@{}.zip\"",
-        encode_module_path(module),
-        version
-    )
-}
-
-/// Build the upstream path for a Go module request (used by remote/virtual repos).
-pub(crate) fn build_go_upstream_path(module: &str, version: &str, ext: &str) -> String {
-    let encoded = encode_module_path(module);
-    format!("{}/@v/{}.{}", encoded, version, ext)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build a version info JSON string (used by .info and @latest endpoints).
+    fn build_version_info_json(version: &str, time_str: &str) -> String {
+        serde_json::json!({
+            "Version": version,
+            "Time": time_str,
+        })
+        .to_string()
+    }
+
+    /// Format a chrono DateTime into Go-compatible timestamp string.
+    fn format_go_timestamp(dt: &chrono::DateTime<chrono::Utc>) -> String {
+        dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    }
+
+    /// Build a newline-separated version list from a vec of optional version strings.
+    fn build_version_list(versions: &[Option<String>]) -> String {
+        versions
+            .iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Build the artifact path for a Go module zip.
+    fn build_go_zip_artifact_path(module: &str, version: &str) -> String {
+        let encoded_module = encode_module_path(module);
+        format!("{}/{}/{}.zip", encoded_module, version, version)
+    }
+
+    /// Build the storage key for a Go module zip.
+    fn build_go_zip_storage_key(module: &str, version: &str) -> String {
+        let encoded_module = encode_module_path(module);
+        format!("go/{}/{}/{}.zip", encoded_module, version, version)
+    }
+
+    /// Build the artifact path for a Go go.mod file.
+    fn build_go_mod_artifact_path(module: &str, version: &str) -> String {
+        let encoded_module = encode_module_path(module);
+        format!("{}/{}/go.mod", encoded_module, version)
+    }
+
+    /// Build the storage key for a Go go.mod file.
+    fn build_go_mod_storage_key(module: &str, version: &str) -> String {
+        let encoded_module = encode_module_path(module);
+        format!("go/{}/{}/go.mod", encoded_module, version)
+    }
+
+    /// Build Go module metadata JSON for storage.
+    fn build_go_artifact_metadata(
+        module: &str,
+        version: &str,
+        file_type: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "module": module,
+            "version": version,
+            "type": file_type,
+        })
+    }
+
+    /// Build Content-Disposition header for Go zip downloads.
+    fn build_go_zip_content_disposition(module: &str, version: &str) -> String {
+        format!(
+            "attachment; filename=\"{}@{}.zip\"",
+            encode_module_path(module),
+            version
+        )
+    }
+
+    /// Build the upstream path for a Go module request (used by remote/virtual repos).
+    fn build_go_upstream_path(module: &str, version: &str, ext: &str) -> String {
+        let encoded = encode_module_path(module);
+        format!("{}/@v/{}.{}", encoded, version, ext)
+    }
 
     #[test]
     fn test_decode_module_path() {

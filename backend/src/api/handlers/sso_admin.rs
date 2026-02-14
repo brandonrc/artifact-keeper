@@ -652,14 +652,11 @@ mod tests {
             is_api_token: false,
             scopes: None,
         };
-        let result = require_admin(&auth);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let err_msg = format!("{}", err);
+        let err = require_admin(&auth).unwrap_err();
         assert!(
-            err_msg.contains("Admin required"),
-            "Error message: {}",
-            err_msg
+            format!("{}", err).contains("Admin required"),
+            "Expected 'Admin required' in error: {}",
+            err
         );
     }
 

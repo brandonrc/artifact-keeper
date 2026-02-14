@@ -1025,73 +1025,6 @@ impl SyncPolicyService {
     }
 }
 
-// =========================================================================
-// Extracted pure functions (testable without DB or async)
-// =========================================================================
-
-/// Validate that a sync policy name is non-empty after trimming whitespace.
-pub(crate) fn validate_policy_name(name: &str) -> std::result::Result<(), &'static str> {
-    if name.trim().is_empty() {
-        Err("Policy name cannot be empty")
-    } else {
-        Ok(())
-    }
-}
-
-/// Classify a database error during policy creation.
-/// Returns an appropriate user-facing error message.
-pub(crate) fn classify_policy_db_error(error_msg: &str, policy_name: &str) -> String {
-    if error_msg.contains("duplicate key") {
-        format!("Sync policy '{}' already exists", policy_name)
-    } else {
-        error_msg.to_string()
-    }
-}
-
-/// Check whether a RepoSelector has any active filters.
-/// A selector with no filters matches nothing (not everything).
-pub(crate) fn repo_selector_has_filters(selector: &RepoSelector) -> bool {
-    !selector.match_labels.is_empty()
-        || !selector.match_formats.is_empty()
-        || selector.match_pattern.is_some()
-}
-
-/// Convert a glob-style pattern (using `*` as wildcard) to a SQL LIKE
-/// pattern (using `%` as wildcard).
-pub(crate) fn glob_to_sql_pattern(glob: &str) -> String {
-    glob.replace('*', "%")
-}
-
-/// Filter repository keys by format (case-insensitive).
-pub(crate) fn filter_by_formats(repo_format: &str, match_formats: &[String]) -> bool {
-    if match_formats.is_empty() {
-        return true;
-    }
-    match_formats
-        .iter()
-        .any(|f| f.to_lowercase() == repo_format.to_lowercase())
-}
-
-/// Check if a set of labels matches ALL required label selectors (AND semantics).
-pub(crate) fn labels_match_all(
-    repo_labels: &[(&str, &str)],
-    required_labels: &HashMap<String, String>,
-) -> bool {
-    required_labels
-        .iter()
-        .all(|(k, v)| repo_labels.iter().any(|(lk, lv)| *lk == k && *lv == v))
-}
-
-/// Compute the subscription count from matched repositories and peers.
-pub(crate) fn compute_subscription_count(repo_count: usize, peer_count: usize) -> usize {
-    repo_count * peer_count
-}
-
-/// Validate a replication mode string.
-pub(crate) fn validate_replication_mode(mode: &str) -> bool {
-    matches!(mode, "push" | "pull" | "mirror")
-}
-
 /// Simple SQL LIKE pattern matching for in-memory filtering.
 /// Supports `%` as wildcard (matches zero or more characters).
 pub(crate) fn sql_like_match(value: &str, pattern: &str) -> bool {
@@ -1138,6 +1071,62 @@ pub(crate) fn sql_like_match(value: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn validate_policy_name(name: &str) -> std::result::Result<(), &'static str> {
+        if name.trim().is_empty() {
+            Err("Policy name cannot be empty")
+        } else {
+            Ok(())
+        }
+    }
+
+    fn classify_policy_db_error(error_msg: &str, policy_name: &str) -> String {
+        if error_msg.contains("duplicate key") {
+            format!("Sync policy '{}' already exists", policy_name)
+        } else {
+            error_msg.to_string()
+        }
+    }
+
+    fn repo_selector_has_filters(selector: &RepoSelector) -> bool {
+        !selector.match_labels.is_empty()
+            || !selector.match_formats.is_empty()
+            || selector.match_pattern.is_some()
+    }
+
+    fn glob_to_sql_pattern(glob: &str) -> String {
+        glob.replace('*', "%")
+    }
+
+    fn filter_by_formats(repo_format: &str, match_formats: &[String]) -> bool {
+        if match_formats.is_empty() {
+            return true;
+        }
+        match_formats
+            .iter()
+            .any(|f| f.to_lowercase() == repo_format.to_lowercase())
+    }
+
+    fn labels_match_all(
+        repo_labels: &[(&str, &str)],
+        required_labels: &HashMap<String, String>,
+    ) -> bool {
+        required_labels
+            .iter()
+            .all(|(k, v)| repo_labels.iter().any(|(lk, lv)| *lk == k && *lv == v))
+    }
+
+    fn compute_subscription_count(repo_count: usize, peer_count: usize) -> usize {
+        repo_count * peer_count
+    }
+
+    fn validate_replication_mode(mode: &str) -> bool {
+        matches!(mode, "push" | "pull" | "mirror")
+    }
 
     // -----------------------------------------------------------------------
     // RepoSelector serialization/deserialization

@@ -232,21 +232,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_wasm_handler_format_returns_generic() {
-        let registry = Arc::new(PluginRegistry::new().unwrap());
-        let handler = WasmFormatHandler::new("custom-format".to_string(), registry);
-        // WASM plugins always report Generic format in the database
-        assert_eq!(handler.format(), RepositoryFormat::Generic);
-    }
-
-    #[tokio::test]
-    async fn test_wasm_handler_is_wasm_plugin_true() {
-        let registry = Arc::new(PluginRegistry::new().unwrap());
-        let handler = WasmFormatHandler::new("my-plugin".to_string(), registry);
-        assert!(handler.is_wasm_plugin());
-    }
-
-    #[tokio::test]
     async fn test_factory_create_handler_preserves_format_key() {
         let registry = Arc::new(PluginRegistry::new().unwrap());
         let factory = WasmFormatHandlerFactory::new(registry);

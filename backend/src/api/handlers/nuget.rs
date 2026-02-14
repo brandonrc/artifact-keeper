@@ -995,132 +995,132 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     Some(content[..end_pos].trim().to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build the base URL for NuGet service index resources.
-pub(crate) fn build_nuget_base_url(scheme: &str, host: &str, repo_key: &str) -> String {
-    format!("{}://{}/nuget/{}", scheme, host, repo_key)
-}
-
-/// Build the NuGet service index JSON (v3/index.json).
-pub(crate) fn build_nuget_service_index(base: &str) -> serde_json::Value {
-    serde_json::json!({
-        "version": "3.0.0",
-        "resources": [
-            {
-                "@id": format!("{}/v3/search", base),
-                "@type": "SearchQueryService",
-                "comment": "Search packages"
-            },
-            {
-                "@id": format!("{}/v3/search", base),
-                "@type": "SearchQueryService/3.0.0-beta",
-                "comment": "Search packages"
-            },
-            {
-                "@id": format!("{}/v3/search", base),
-                "@type": "SearchQueryService/3.0.0-rc",
-                "comment": "Search packages"
-            },
-            {
-                "@id": format!("{}/v3/registration/", base),
-                "@type": "RegistrationsBaseUrl",
-                "comment": "Package registrations"
-            },
-            {
-                "@id": format!("{}/v3/registration/", base),
-                "@type": "RegistrationsBaseUrl/3.0.0-beta",
-                "comment": "Package registrations"
-            },
-            {
-                "@id": format!("{}/v3/registration/", base),
-                "@type": "RegistrationsBaseUrl/3.0.0-rc",
-                "comment": "Package registrations"
-            },
-            {
-                "@id": format!("{}/v3/flatcontainer/", base),
-                "@type": "PackageBaseAddress/3.0.0",
-                "comment": "Package content"
-            },
-            {
-                "@id": format!("{}/api/v2/package", base),
-                "@type": "PackagePublish/2.0.0",
-                "comment": "Push packages"
-            }
-        ]
-    })
-}
-
-/// Build a single registration item JSON for a NuGet package version.
-pub(crate) fn build_registration_item(
-    base: &str,
-    package_id: &str,
-    version: &str,
-    description: &str,
-    authors: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "@id": format!("{}/v3/registration/{}/{}.json", base, package_id, version),
-        "catalogEntry": {
-            "@id": format!("{}/v3/registration/{}/{}.json", base, package_id, version),
-            "id": package_id,
-            "version": version,
-            "description": description,
-            "authors": authors,
-            "packageContent": format!(
-                "{}/v3/flatcontainer/{}/{}/{}.{}.nupkg",
-                base, package_id, version, package_id, version
-            ),
-            "listed": true,
-        },
-        "packageContent": format!(
-            "{}/v3/flatcontainer/{}/{}/{}.{}.nupkg",
-            base, package_id, version, package_id, version
-        ),
-    })
-}
-
-/// Build the flatcontainer versions JSON response.
-pub(crate) fn build_flatcontainer_versions_json(versions: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "versions": versions
-    })
-}
-
-/// Build the NuGet artifact path for a .nupkg.
-pub(crate) fn build_nuget_artifact_path(package_id: &str, version: &str) -> String {
-    let filename = format!("{}.{}.nupkg", package_id, version);
-    format!("{}/{}/{}", package_id, version, filename)
-}
-
-/// Build the NuGet storage key for a .nupkg.
-pub(crate) fn build_nuget_storage_key(package_id: &str, version: &str) -> String {
-    let filename = format!("{}.{}.nupkg", package_id, version);
-    format!("nuget/{}/{}/{}", package_id, version, filename)
-}
-
-/// Build the NuGet push metadata JSON.
-pub(crate) fn build_nuget_push_metadata(info: &NuspecInfo) -> serde_json::Value {
-    serde_json::json!({
-        "id": info.id,
-        "version": info.version,
-        "description": info.description,
-        "authors": info.authors,
-        "filename": format!("{}.{}.nupkg", info.id.to_lowercase(), info.version),
-    })
-}
-
-/// Build the search pattern for NuGet package queries.
-pub(crate) fn build_nuget_search_pattern(query_term: &str) -> String {
-    format!("%{}%", query_term.to_lowercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (test-only)
+    // -----------------------------------------------------------------------
+
+    /// Build the base URL for NuGet service index resources.
+    fn build_nuget_base_url(scheme: &str, host: &str, repo_key: &str) -> String {
+        format!("{}://{}/nuget/{}", scheme, host, repo_key)
+    }
+
+    /// Build the NuGet service index JSON (v3/index.json).
+    fn build_nuget_service_index(base: &str) -> serde_json::Value {
+        serde_json::json!({
+            "version": "3.0.0",
+            "resources": [
+                {
+                    "@id": format!("{}/v3/search", base),
+                    "@type": "SearchQueryService",
+                    "comment": "Search packages"
+                },
+                {
+                    "@id": format!("{}/v3/search", base),
+                    "@type": "SearchQueryService/3.0.0-beta",
+                    "comment": "Search packages"
+                },
+                {
+                    "@id": format!("{}/v3/search", base),
+                    "@type": "SearchQueryService/3.0.0-rc",
+                    "comment": "Search packages"
+                },
+                {
+                    "@id": format!("{}/v3/registration/", base),
+                    "@type": "RegistrationsBaseUrl",
+                    "comment": "Package registrations"
+                },
+                {
+                    "@id": format!("{}/v3/registration/", base),
+                    "@type": "RegistrationsBaseUrl/3.0.0-beta",
+                    "comment": "Package registrations"
+                },
+                {
+                    "@id": format!("{}/v3/registration/", base),
+                    "@type": "RegistrationsBaseUrl/3.0.0-rc",
+                    "comment": "Package registrations"
+                },
+                {
+                    "@id": format!("{}/v3/flatcontainer/", base),
+                    "@type": "PackageBaseAddress/3.0.0",
+                    "comment": "Package content"
+                },
+                {
+                    "@id": format!("{}/api/v2/package", base),
+                    "@type": "PackagePublish/2.0.0",
+                    "comment": "Push packages"
+                }
+            ]
+        })
+    }
+
+    /// Build a single registration item JSON for a NuGet package version.
+    fn build_registration_item(
+        base: &str,
+        package_id: &str,
+        version: &str,
+        description: &str,
+        authors: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "@id": format!("{}/v3/registration/{}/{}.json", base, package_id, version),
+            "catalogEntry": {
+                "@id": format!("{}/v3/registration/{}/{}.json", base, package_id, version),
+                "id": package_id,
+                "version": version,
+                "description": description,
+                "authors": authors,
+                "packageContent": format!(
+                    "{}/v3/flatcontainer/{}/{}/{}.{}.nupkg",
+                    base, package_id, version, package_id, version
+                ),
+                "listed": true,
+            },
+            "packageContent": format!(
+                "{}/v3/flatcontainer/{}/{}/{}.{}.nupkg",
+                base, package_id, version, package_id, version
+            ),
+        })
+    }
+
+    /// Build the flatcontainer versions JSON response.
+    fn build_flatcontainer_versions_json(versions: &[String]) -> serde_json::Value {
+        serde_json::json!({
+            "versions": versions
+        })
+    }
+
+    /// Build the NuGet artifact path for a .nupkg.
+    fn build_nuget_artifact_path(package_id: &str, version: &str) -> String {
+        let filename = format!("{}.{}.nupkg", package_id, version);
+        format!("{}/{}/{}", package_id, version, filename)
+    }
+
+    /// Build the NuGet storage key for a .nupkg.
+    fn build_nuget_storage_key(package_id: &str, version: &str) -> String {
+        let filename = format!("{}.{}.nupkg", package_id, version);
+        format!("nuget/{}/{}/{}", package_id, version, filename)
+    }
+
+    /// Build the NuGet push metadata JSON.
+    fn build_nuget_push_metadata(info: &NuspecInfo) -> serde_json::Value {
+        serde_json::json!({
+            "id": info.id,
+            "version": info.version,
+            "description": info.description,
+            "authors": info.authors,
+            "filename": format!("{}.{}.nupkg", info.id.to_lowercase(), info.version),
+        })
+    }
+
+    /// Build the search pattern for NuGet package queries.
+    fn build_nuget_search_pattern(query_term: &str) -> String {
+        format!("%{}%", query_term.to_lowercase())
+    }
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials

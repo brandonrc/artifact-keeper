@@ -609,36 +609,6 @@ async fn all_specs(
 
 use crate::formats::cocoapods::PodSpec;
 
-/// Build the filename for a CocoaPods archive.
-pub(crate) fn build_cocoapods_filename(name: &str, version: &str) -> String {
-    format!("{}-{}.tar.gz", name, version)
-}
-
-/// Build the artifact path for a CocoaPods package.
-pub(crate) fn build_cocoapods_artifact_path(name: &str, version: &str) -> String {
-    let filename = build_cocoapods_filename(name, version);
-    format!("{}/{}/{}", name, version, filename)
-}
-
-/// Build the storage key for a CocoaPods archive.
-pub(crate) fn build_cocoapods_storage_key(name: &str, version: &str) -> String {
-    let filename = build_cocoapods_filename(name, version);
-    format!("cocoapods/{}/{}/{}", name, version, filename)
-}
-
-/// Build the storage key for a CocoaPods podspec JSON file.
-pub(crate) fn build_cocoapods_podspec_key(name: &str, version: &str) -> String {
-    format!("cocoapods/{}/{}/{}.podspec.json", name, version, name)
-}
-
-/// Build the metadata JSON for a published pod.
-pub(crate) fn build_cocoapods_metadata(podspec: &PodSpec, filename: &str) -> serde_json::Value {
-    serde_json::json!({
-        "podspec": serde_json::to_value(podspec).unwrap_or_default(),
-        "filename": filename,
-    })
-}
-
 /// Extract a podspec.json from a tar.gz archive.
 ///
 /// Scans the archive entries for any file ending in `.podspec.json` and
@@ -683,7 +653,42 @@ fn extract_podspec_from_archive(data: &[u8]) -> Result<PodSpec, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::cocoapods::PodSpec;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the filename for a CocoaPods archive.
+    fn build_cocoapods_filename(name: &str, version: &str) -> String {
+        format!("{}-{}.tar.gz", name, version)
+    }
+
+    /// Build the artifact path for a CocoaPods package.
+    fn build_cocoapods_artifact_path(name: &str, version: &str) -> String {
+        let filename = build_cocoapods_filename(name, version);
+        format!("{}/{}/{}", name, version, filename)
+    }
+
+    /// Build the storage key for a CocoaPods archive.
+    fn build_cocoapods_storage_key(name: &str, version: &str) -> String {
+        let filename = build_cocoapods_filename(name, version);
+        format!("cocoapods/{}/{}/{}", name, version, filename)
+    }
+
+    /// Build the storage key for a CocoaPods podspec JSON file.
+    fn build_cocoapods_podspec_key(name: &str, version: &str) -> String {
+        format!("cocoapods/{}/{}/{}.podspec.json", name, version, name)
+    }
+
+    /// Build the metadata JSON for a published pod.
+    fn build_cocoapods_metadata(podspec: &PodSpec, filename: &str) -> serde_json::Value {
+        serde_json::json!({
+            "podspec": serde_json::to_value(podspec).unwrap_or_default(),
+            "filename": filename,
+        })
+    }
 
     // -----------------------------------------------------------------------
     // extract_credentials

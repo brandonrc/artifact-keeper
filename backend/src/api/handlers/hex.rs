@@ -708,75 +708,71 @@ fn extract_erlang_term_value(content: &str, key: &str) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Extracted pure helpers (testable without DB)
-// ---------------------------------------------------------------------------
-
-/// Build the standard hex tarball filename: `{name}-{version}.tar`
-pub(crate) fn build_hex_filename(name: &str, version: &str) -> String {
-    format!("{}-{}.tar", name, version)
-}
-
-/// Build the artifact storage path: `{name}/{version}/{name}-{version}.tar`
-pub(crate) fn build_hex_artifact_path(name: &str, version: &str) -> String {
-    let filename = build_hex_filename(name, version);
-    format!("{}/{}/{}", name, version, filename)
-}
-
-/// Build the storage key: `hex/{name}/{version}/{name}-{version}.tar`
-pub(crate) fn build_hex_storage_key(name: &str, version: &str) -> String {
-    let filename = build_hex_filename(name, version);
-    format!("hex/{}/{}/{}", name, version, filename)
-}
-
-/// Build a tarball download URL: `/hex/{repo_key}/tarballs/{name}-{version}.tar`
-pub(crate) fn build_hex_tarball_url(repo_key: &str, name: &str, version: &str) -> String {
-    let filename = build_hex_filename(name, version);
-    format!("/hex/{}/tarballs/{}", repo_key, filename)
-}
-
-/// Build hex metadata JSON for a package.
-pub(crate) fn build_hex_metadata(name: &str, version: &str) -> serde_json::Value {
-    let filename = build_hex_filename(name, version);
-    serde_json::json!({
-        "format": "hex",
-        "name": name,
-        "version": version,
-        "filename": filename,
-    })
-}
-
-/// Build the JSON publish response.
-pub(crate) fn build_hex_publish_response(
-    repo_key: &str,
-    name: &str,
-    version: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "url": build_hex_tarball_url(repo_key, name, version),
-    })
-}
-
-/// Build a release entry for the package info endpoint.
-pub(crate) fn build_hex_release_entry(
-    repo_key: &str,
-    name: &str,
-    version: &str,
-    checksum: Option<&str>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "version": version,
-        "url": build_hex_tarball_url(repo_key, name, version),
-        "checksum": checksum,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the standard hex tarball filename: `{name}-{version}.tar`
+    fn build_hex_filename(name: &str, version: &str) -> String {
+        format!("{}-{}.tar", name, version)
+    }
+
+    /// Build the artifact storage path: `{name}/{version}/{name}-{version}.tar`
+    fn build_hex_artifact_path(name: &str, version: &str) -> String {
+        let filename = build_hex_filename(name, version);
+        format!("{}/{}/{}", name, version, filename)
+    }
+
+    /// Build the storage key: `hex/{name}/{version}/{name}-{version}.tar`
+    fn build_hex_storage_key(name: &str, version: &str) -> String {
+        let filename = build_hex_filename(name, version);
+        format!("hex/{}/{}/{}", name, version, filename)
+    }
+
+    /// Build a tarball download URL: `/hex/{repo_key}/tarballs/{name}-{version}.tar`
+    fn build_hex_tarball_url(repo_key: &str, name: &str, version: &str) -> String {
+        let filename = build_hex_filename(name, version);
+        format!("/hex/{}/tarballs/{}", repo_key, filename)
+    }
+
+    /// Build hex metadata JSON for a package.
+    fn build_hex_metadata(name: &str, version: &str) -> serde_json::Value {
+        let filename = build_hex_filename(name, version);
+        serde_json::json!({
+            "format": "hex",
+            "name": name,
+            "version": version,
+            "filename": filename,
+        })
+    }
+
+    /// Build the JSON publish response.
+    fn build_hex_publish_response(repo_key: &str, name: &str, version: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "url": build_hex_tarball_url(repo_key, name, version),
+        })
+    }
+
+    /// Build a release entry for the package info endpoint.
+    fn build_hex_release_entry(
+        repo_key: &str,
+        name: &str,
+        version: &str,
+        checksum: Option<&str>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "version": version,
+            "url": build_hex_tarball_url(repo_key, name, version),
+            "checksum": checksum,
+        })
+    }
 
     // -----------------------------------------------------------------------
     // extract_credentials

@@ -142,11 +142,6 @@ async fn resolve_maven_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
 // Pure (non-async) helper functions for testability
 // ---------------------------------------------------------------------------
 
-/// Build the Maven storage key from a raw path.
-pub(crate) fn build_maven_storage_key(path: &str) -> String {
-    format!("maven/{}", path)
-}
-
 /// Determine if a Maven path is for metadata (groupId/artifactId level, no version).
 /// Returns (groupId, artifactId) if the path ends with maven-metadata.xml
 fn parse_metadata_path(path: &str) -> Option<(String, String)> {
@@ -981,6 +976,11 @@ mod tests {
     // -----------------------------------------------------------------------
     // build_maven_storage_key
     // -----------------------------------------------------------------------
+
+    /// Build the Maven storage key from a raw path.
+    fn build_maven_storage_key(path: &str) -> String {
+        format!("maven/{}", path)
+    }
 
     #[test]
     fn test_build_maven_storage_key_jar() {

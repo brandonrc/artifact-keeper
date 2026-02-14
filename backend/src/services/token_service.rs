@@ -106,22 +106,6 @@ pub(crate) fn validate_scopes_pure(scopes: &[String]) -> std::result::Result<(),
     Ok(())
 }
 
-/// Validate that an expiration day count is within the allowed range (1..=365).
-/// Returns Ok(()) if valid or None, Err(message) if out of range.
-pub(crate) fn validate_expiration_days(days: Option<i64>) -> std::result::Result<(), String> {
-    if let Some(d) = days {
-        if !(1..=365).contains(&d) {
-            return Err("Token expiration must be between 1 and 365 days".to_string());
-        }
-    }
-    Ok(())
-}
-
-/// Compute expiration timestamp from a day count.
-pub(crate) fn compute_expiry(days: Option<i64>) -> Option<DateTime<Utc>> {
-    days.map(|d| Utc::now() + Duration::days(d))
-}
-
 /// Determine if a token is expired given an optional expiration timestamp.
 pub(crate) fn is_token_expired(expires_at: Option<DateTime<Utc>>) -> bool {
     expires_at.map(|exp| exp < Utc::now()).unwrap_or(false)
@@ -448,6 +432,19 @@ pub struct TokenStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn validate_expiration_days(days: Option<i64>) -> std::result::Result<(), String> {
+        if let Some(d) = days {
+            if !(1..=365).contains(&d) {
+                return Err("Token expiration must be between 1 and 365 days".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_expiry(days: Option<i64>) -> Option<DateTime<Utc>> {
+        days.map(|d| Utc::now() + Duration::days(d))
+    }
 
     // -----------------------------------------------------------------------
     // Helpers

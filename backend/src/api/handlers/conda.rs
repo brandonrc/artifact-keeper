@@ -1048,30 +1048,26 @@ fn bzip2_compress(data: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build the artifact path for a conda package.
-pub(crate) fn build_conda_artifact_path(subdir: &str, filename: &str) -> String {
-    format!("{}/{}", subdir, filename)
-}
-
-/// Build the storage key for a conda package.
-pub(crate) fn build_conda_storage_key(
-    repo_id: &uuid::Uuid,
-    subdir: &str,
-    filename: &str,
-) -> String {
-    format!("conda/{}/{}/{}", repo_id, subdir, filename)
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the artifact path for a conda package.
+    fn build_conda_artifact_path(subdir: &str, filename: &str) -> String {
+        format!("{}/{}", subdir, filename)
+    }
+
+    /// Build the storage key for a conda package.
+    fn build_conda_storage_key(repo_id: &uuid::Uuid, subdir: &str, filename: &str) -> String {
+        format!("conda/{}/{}/{}", repo_id, subdir, filename)
+    }
 
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)
@@ -1338,25 +1334,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_conda_content_type_v2() {
+    fn test_conda_content_type() {
         assert_eq!(
             conda_content_type("numpy.conda"),
             "application/octet-stream"
         );
-    }
-
-    #[test]
-    fn test_conda_content_type_v1() {
         assert_eq!(conda_content_type("numpy.tar.bz2"), "application/x-tar");
-    }
-
-    #[test]
-    fn test_conda_content_type_other() {
         assert_eq!(conda_content_type("file.zip"), "application/octet-stream");
-    }
-
-    #[test]
-    fn test_conda_content_type_empty() {
         assert_eq!(conda_content_type(""), "application/octet-stream");
     }
 
@@ -1397,8 +1381,7 @@ mod tests {
     #[test]
     fn test_build_conda_metadata_has_depends() {
         let meta = build_conda_metadata("pkg", "1.0", "0", "noarch", "pkg.conda");
-        assert!(meta["depends"].is_array());
-        assert_eq!(meta["depends"].as_array().unwrap().len(), 0);
+        assert!(meta["depends"].as_array().unwrap().is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1517,7 +1500,7 @@ mod tests {
         let cd = build_channeldata_json(&packages);
         assert_eq!(cd["channeldata_version"], 1);
         assert!(cd["packages"].as_object().unwrap().is_empty());
-        assert!(cd["subdirs"].as_array().unwrap().len() > 0);
+        assert!(!cd["subdirs"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1649,29 +1632,36 @@ mod tests {
     // artifacts_for_subdir
     // -----------------------------------------------------------------------
 
+    fn make_conda_artifact(
+        name: &str,
+        path: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> CondaArtifact {
+        CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path: path.to_string(),
+            name: name.to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 100,
+            checksum_sha256: "hash".to_string(),
+            storage_key: "key".to_string(),
+            metadata,
+        }
+    }
+
     #[test]
     fn test_artifacts_for_subdir_by_metadata() {
         let artifacts = vec![
-            CondaArtifact {
-                id: uuid::Uuid::new_v4(),
-                path: "linux-64/numpy.conda".to_string(),
-                name: "numpy".to_string(),
-                version: Some("1.26.4".to_string()),
-                size_bytes: 1024,
-                checksum_sha256: "abc".to_string(),
-                storage_key: "key1".to_string(),
-                metadata: Some(serde_json::json!({"subdir": "linux-64"})),
-            },
-            CondaArtifact {
-                id: uuid::Uuid::new_v4(),
-                path: "noarch/requests.conda".to_string(),
-                name: "requests".to_string(),
-                version: Some("2.31.0".to_string()),
-                size_bytes: 512,
-                checksum_sha256: "def".to_string(),
-                storage_key: "key2".to_string(),
-                metadata: Some(serde_json::json!({"subdir": "noarch"})),
-            },
+            make_conda_artifact(
+                "numpy",
+                "linux-64/numpy.conda",
+                Some(serde_json::json!({"subdir": "linux-64"})),
+            ),
+            make_conda_artifact(
+                "requests",
+                "noarch/requests.conda",
+                Some(serde_json::json!({"subdir": "noarch"})),
+            ),
         ];
         let filtered = artifacts_for_subdir(&artifacts, "linux-64");
         assert_eq!(filtered.len(), 1);
@@ -1680,16 +1670,7 @@ mod tests {
 
     #[test]
     fn test_artifacts_for_subdir_by_path_prefix() {
-        let artifacts = vec![CondaArtifact {
-            id: uuid::Uuid::new_v4(),
-            path: "osx-arm64/scipy.conda".to_string(),
-            name: "scipy".to_string(),
-            version: Some("1.0".to_string()),
-            size_bytes: 256,
-            checksum_sha256: "ghi".to_string(),
-            storage_key: "key3".to_string(),
-            metadata: None,
-        }];
+        let artifacts = vec![make_conda_artifact("scipy", "osx-arm64/scipy.conda", None)];
         let filtered = artifacts_for_subdir(&artifacts, "osx-arm64");
         assert_eq!(filtered.len(), 1);
     }
@@ -1703,16 +1684,11 @@ mod tests {
 
     #[test]
     fn test_artifacts_for_subdir_no_match() {
-        let artifacts = vec![CondaArtifact {
-            id: uuid::Uuid::new_v4(),
-            path: "linux-64/pkg.conda".to_string(),
-            name: "pkg".to_string(),
-            version: Some("1.0".to_string()),
-            size_bytes: 100,
-            checksum_sha256: "x".to_string(),
-            storage_key: "k".to_string(),
-            metadata: Some(serde_json::json!({"subdir": "linux-64"})),
-        }];
+        let artifacts = vec![make_conda_artifact(
+            "pkg",
+            "linux-64/pkg.conda",
+            Some(serde_json::json!({"subdir": "linux-64"})),
+        )];
         let filtered = artifacts_for_subdir(&artifacts, "win-64");
         assert!(filtered.is_empty());
     }
@@ -1722,23 +1698,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_known_subdirs_contains_noarch() {
-        assert!(KNOWN_SUBDIRS.contains(&"noarch"));
-    }
-
-    #[test]
-    fn test_known_subdirs_contains_linux64() {
-        assert!(KNOWN_SUBDIRS.contains(&"linux-64"));
-    }
-
-    #[test]
-    fn test_known_subdirs_contains_osx_arm64() {
-        assert!(KNOWN_SUBDIRS.contains(&"osx-arm64"));
-    }
-
-    #[test]
-    fn test_known_subdirs_count() {
+    fn test_known_subdirs() {
         assert!(KNOWN_SUBDIRS.len() >= 9);
+        assert!(KNOWN_SUBDIRS.contains(&"noarch"));
+        assert!(KNOWN_SUBDIRS.contains(&"linux-64"));
+        assert!(KNOWN_SUBDIRS.contains(&"osx-arm64"));
     }
 
     // -----------------------------------------------------------------------

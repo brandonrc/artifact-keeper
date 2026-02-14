@@ -857,124 +857,123 @@ async fn publish_package(
 // Extracted pure functions for testability
 // ---------------------------------------------------------------------------
 
-/// Compute npm integrity field from a SHA256 hex digest.
-/// Converts hex -> raw bytes -> base64, prefixed with "sha256-".
-pub(crate) fn compute_npm_integrity(sha256_hex: &str) -> String {
-    let bytes: Vec<u8> = (0..sha256_hex.len())
-        .step_by(2)
-        .filter_map(|i| u8::from_str_radix(&sha256_hex[i..i + 2], 16).ok())
-        .collect();
-    format!(
-        "sha256-{}",
-        base64::engine::general_purpose::STANDARD.encode(&bytes)
-    )
-}
-
-/// Build the tarball filename for an npm package.
-/// Scoped packages use the short name (after the slash).
-pub(crate) fn build_npm_tarball_filename(package_name: &str, version: &str) -> String {
-    if package_name.starts_with('@') {
-        let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
-        format!("{}-{}.tgz", short_name, version)
-    } else {
-        format!("{}-{}.tgz", package_name, version)
-    }
-}
-
-/// Build the artifact path for an npm tarball.
-pub(crate) fn build_npm_artifact_path(
-    package_name: &str,
-    version: &str,
-    tarball_filename: &str,
-) -> String {
-    format!("{}/{}/{}", package_name, version, tarball_filename)
-}
-
-/// Build the storage key for an npm tarball.
-pub(crate) fn build_npm_storage_key(
-    package_name: &str,
-    version: &str,
-    tarball_filename: &str,
-) -> String {
-    format!("npm/{}/{}/{}", package_name, version, tarball_filename)
-}
-
-/// Build a scoped package name from scope and package.
-pub(crate) fn build_scoped_package_name(scope: &str, package: &str) -> String {
-    format!("@{}/{}", scope, package)
-}
-
-/// Validate an npm package name (basic checks).
-pub(crate) fn validate_npm_package_name(name: &str) -> std::result::Result<(), String> {
-    if name.is_empty() {
-        return Err("Package name cannot be empty".to_string());
-    }
-    if name.len() > 214 {
-        return Err("Package name cannot exceed 214 characters".to_string());
-    }
-    if name.starts_with('.') || name.starts_with('_') {
-        return Err("Package name cannot start with '.' or '_'".to_string());
-    }
-    if name != name.to_lowercase() && !name.starts_with('@') {
-        return Err("Package name must be lowercase (unless scoped)".to_string());
-    }
-    Ok(())
-}
-
-/// Build the npm tarball URL for metadata responses.
-pub(crate) fn build_npm_tarball_url(
-    base_url: &str,
-    repo_key: &str,
-    package_name: &str,
-    filename: &str,
-) -> String {
-    format!(
-        "{}/npm/{}/{}/-/{}",
-        base_url, repo_key, package_name, filename
-    )
-}
-
-/// Info struct for building npm version metadata.
-pub(crate) struct NpmArtifactInfo {
-    pub version: String,
-    pub filename: String,
-    pub checksum_sha256: String,
-    pub tarball_url: String,
-    pub version_metadata: Option<serde_json::Value>,
-    pub package_name: String,
-}
-
-/// Build a single npm version entry for the metadata response.
-pub(crate) fn build_npm_version_entry(info: &NpmArtifactInfo) -> serde_json::Value {
-    let integrity = compute_npm_integrity(&info.checksum_sha256);
-
-    let mut version_obj = info
-        .version_metadata
-        .as_ref()
-        .filter(|v| v.is_object())
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    let obj = version_obj.as_object_mut().unwrap();
-    obj.entry("name".to_string())
-        .or_insert_with(|| serde_json::Value::String(info.package_name.clone()));
-    obj.entry("version".to_string())
-        .or_insert_with(|| serde_json::Value::String(info.version.clone()));
-    obj.insert(
-        "dist".to_string(),
-        serde_json::json!({
-            "tarball": info.tarball_url,
-            "integrity": integrity,
-        }),
-    );
-
-    version_obj
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (test-only)
+    // -----------------------------------------------------------------------
+
+    /// Compute npm integrity field from a SHA256 hex digest.
+    fn compute_npm_integrity(sha256_hex: &str) -> String {
+        let bytes: Vec<u8> = (0..sha256_hex.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&sha256_hex[i..i + 2], 16).ok())
+            .collect();
+        format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        )
+    }
+
+    /// Build the tarball filename for an npm package.
+    fn build_npm_tarball_filename(package_name: &str, version: &str) -> String {
+        if package_name.starts_with('@') {
+            let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
+            format!("{}-{}.tgz", short_name, version)
+        } else {
+            format!("{}-{}.tgz", package_name, version)
+        }
+    }
+
+    /// Build the artifact path for an npm tarball.
+    fn build_npm_artifact_path(
+        package_name: &str,
+        version: &str,
+        tarball_filename: &str,
+    ) -> String {
+        format!("{}/{}/{}", package_name, version, tarball_filename)
+    }
+
+    /// Build the storage key for an npm tarball.
+    fn build_npm_storage_key(package_name: &str, version: &str, tarball_filename: &str) -> String {
+        format!("npm/{}/{}/{}", package_name, version, tarball_filename)
+    }
+
+    /// Build a scoped package name from scope and package.
+    fn build_scoped_package_name(scope: &str, package: &str) -> String {
+        format!("@{}/{}", scope, package)
+    }
+
+    /// Validate an npm package name (basic checks).
+    fn validate_npm_package_name(name: &str) -> std::result::Result<(), String> {
+        if name.is_empty() {
+            return Err("Package name cannot be empty".to_string());
+        }
+        if name.len() > 214 {
+            return Err("Package name cannot exceed 214 characters".to_string());
+        }
+        if name.starts_with('.') || name.starts_with('_') {
+            return Err("Package name cannot start with '.' or '_'".to_string());
+        }
+        if name != name.to_lowercase() && !name.starts_with('@') {
+            return Err("Package name must be lowercase (unless scoped)".to_string());
+        }
+        Ok(())
+    }
+
+    /// Build the npm tarball URL for metadata responses.
+    fn build_npm_tarball_url(
+        base_url: &str,
+        repo_key: &str,
+        package_name: &str,
+        filename: &str,
+    ) -> String {
+        format!(
+            "{}/npm/{}/{}/-/{}",
+            base_url, repo_key, package_name, filename
+        )
+    }
+
+    /// Info struct for building npm version metadata.
+    #[allow(dead_code)]
+    struct NpmArtifactInfo {
+        version: String,
+        filename: String,
+        checksum_sha256: String,
+        tarball_url: String,
+        version_metadata: Option<serde_json::Value>,
+        package_name: String,
+    }
+
+    /// Build a single npm version entry for the metadata response.
+    fn build_npm_version_entry(info: &NpmArtifactInfo) -> serde_json::Value {
+        let integrity = compute_npm_integrity(&info.checksum_sha256);
+
+        let mut version_obj = info
+            .version_metadata
+            .as_ref()
+            .filter(|v| v.is_object())
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        let obj = version_obj.as_object_mut().unwrap();
+        obj.entry("name".to_string())
+            .or_insert_with(|| serde_json::Value::String(info.package_name.clone()));
+        obj.entry("version".to_string())
+            .or_insert_with(|| serde_json::Value::String(info.version.clone()));
+        obj.insert(
+            "dist".to_string(),
+            serde_json::json!({
+                "tarball": info.tarball_url,
+                "integrity": integrity,
+            }),
+        );
+
+        version_obj
+    }
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials

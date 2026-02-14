@@ -414,70 +414,6 @@ impl AdvisoryClient {
     }
 }
 
-// =========================================================================
-// Extracted pure functions (testable without DB or async)
-// =========================================================================
-
-/// Map an artifact ecosystem string to the GitHub Advisory API ecosystem parameter.
-/// Returns None if the ecosystem is not supported by GitHub Advisory DB.
-pub(crate) fn ecosystem_to_github_param(ecosystem: &str) -> Option<&'static str> {
-    match ecosystem {
-        "npm" => Some("npm"),
-        "PyPI" | "pypi" => Some("pip"),
-        "crates.io" => Some("rust"),
-        "Maven" => Some("maven"),
-        "Go" => Some("go"),
-        "NuGet" => Some("nuget"),
-        "RubyGems" => Some("rubygems"),
-        _ => None,
-    }
-}
-
-/// Determine the quarantine status of an artifact based on scan findings count.
-pub(crate) fn quarantine_status_from_findings(findings_count: i32) -> &'static str {
-    if findings_count > 0 {
-        "flagged"
-    } else {
-        "clean"
-    }
-}
-
-/// Check whether a filename (lowercased) represents a known dependency manifest.
-pub(crate) fn is_manifest_file(name_lower: &str) -> bool {
-    name_lower == "package.json"
-        || name_lower.ends_with("/package.json")
-        || name_lower == "cargo.toml"
-        || name_lower.ends_with("/cargo.toml")
-        || name_lower == "requirements.txt"
-        || name_lower.ends_with("/requirements.txt")
-        || name_lower == "go.sum"
-        || name_lower.ends_with("/go.sum")
-        || name_lower == "pom.xml"
-        || name_lower.ends_with("/pom.xml")
-        || name_lower.ends_with(".gemspec")
-        || name_lower == "gemfile.lock"
-        || name_lower.ends_with("/gemfile.lock")
-        || name_lower.ends_with(".nuspec")
-        || name_lower == "packages.config"
-}
-
-/// Check if a filename represents an extractable archive for scanning.
-pub(crate) fn is_extractable_archive(name_lower: &str) -> bool {
-    name_lower.ends_with(".tar.gz")
-        || name_lower.ends_with(".tgz")
-        || name_lower.ends_with(".crate")
-        || name_lower.ends_with(".gem")
-        || name_lower.ends_with(".zip")
-        || name_lower.ends_with(".whl")
-        || name_lower.ends_with(".jar")
-        || name_lower.ends_with(".nupkg")
-}
-
-/// Build the OSV.dev vulnerability URL for a given vulnerability ID.
-pub(crate) fn osv_vulnerability_url(vuln_id: &str) -> String {
-    format!("https://osv.dev/vulnerability/{}", vuln_id)
-}
-
 // ---------------------------------------------------------------------------
 // Dependency scanner (parses manifests, queries advisories)
 // ---------------------------------------------------------------------------
@@ -1310,6 +1246,64 @@ mod tests {
     use bytes::Bytes;
     use chrono::Utc;
     use uuid::Uuid;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn ecosystem_to_github_param(ecosystem: &str) -> Option<&'static str> {
+        match ecosystem {
+            "npm" => Some("npm"),
+            "PyPI" | "pypi" => Some("pip"),
+            "crates.io" => Some("rust"),
+            "Maven" => Some("maven"),
+            "Go" => Some("go"),
+            "NuGet" => Some("nuget"),
+            "RubyGems" => Some("rubygems"),
+            _ => None,
+        }
+    }
+
+    fn quarantine_status_from_findings(findings_count: i32) -> &'static str {
+        if findings_count > 0 {
+            "flagged"
+        } else {
+            "clean"
+        }
+    }
+
+    fn is_manifest_file(name_lower: &str) -> bool {
+        name_lower == "package.json"
+            || name_lower.ends_with("/package.json")
+            || name_lower == "cargo.toml"
+            || name_lower.ends_with("/cargo.toml")
+            || name_lower == "requirements.txt"
+            || name_lower.ends_with("/requirements.txt")
+            || name_lower == "go.sum"
+            || name_lower.ends_with("/go.sum")
+            || name_lower == "pom.xml"
+            || name_lower.ends_with("/pom.xml")
+            || name_lower.ends_with(".gemspec")
+            || name_lower == "gemfile.lock"
+            || name_lower.ends_with("/gemfile.lock")
+            || name_lower.ends_with(".nuspec")
+            || name_lower == "packages.config"
+    }
+
+    fn is_extractable_archive(name_lower: &str) -> bool {
+        name_lower.ends_with(".tar.gz")
+            || name_lower.ends_with(".tgz")
+            || name_lower.ends_with(".crate")
+            || name_lower.ends_with(".gem")
+            || name_lower.ends_with(".zip")
+            || name_lower.ends_with(".whl")
+            || name_lower.ends_with(".jar")
+            || name_lower.ends_with(".nupkg")
+    }
+
+    fn osv_vulnerability_url(vuln_id: &str) -> String {
+        format!("https://osv.dev/vulnerability/{}", vuln_id)
+    }
 
     // -----------------------------------------------------------------------
     // Helpers

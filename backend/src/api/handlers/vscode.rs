@@ -157,80 +157,6 @@ async fn resolve_vscode_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Re
 }
 
 // ---------------------------------------------------------------------------
-// Pure (non-async) helper functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build a VS Code extension ID from publisher and name.
-pub(crate) fn build_extension_id(publisher: &str, name: &str) -> String {
-    format!("{}.{}", publisher, name)
-}
-
-/// Build a VSIX filename from publisher, name, and version.
-pub(crate) fn build_vsix_filename(publisher: &str, name: &str, version: &str) -> String {
-    let extension_id = build_extension_id(publisher, name);
-    format!("{}-{}.vsix", extension_id, version)
-}
-
-/// Build the artifact path for a VS Code extension.
-pub(crate) fn build_vscode_artifact_path(publisher: &str, name: &str, version: &str) -> String {
-    let filename = build_vsix_filename(publisher, name, version);
-    format!("{}/{}/{}", publisher, name, filename)
-}
-
-/// Build the storage key for a VS Code extension.
-pub(crate) fn build_vscode_storage_key(publisher: &str, name: &str, version: &str) -> String {
-    let filename = build_vsix_filename(publisher, name, version);
-    format!("vscode/{}/{}/{}", publisher, name, filename)
-}
-
-/// Build the download URL for a VS Code extension.
-pub(crate) fn build_vscode_download_url(
-    repo_key: &str,
-    publisher: &str,
-    name: &str,
-    version: &str,
-) -> String {
-    format!(
-        "/vscode/{}/extensions/{}/{}/{}/download",
-        repo_key, publisher, name, version
-    )
-}
-
-/// Build the Content-Disposition filename for a VSIX download.
-pub(crate) fn build_vsix_download_filename(publisher: &str, name: &str, version: &str) -> String {
-    format!("{}.{}-{}.vsix", publisher, name, version)
-}
-
-/// Build the metadata JSON for a published VS Code extension.
-pub(crate) fn build_vscode_metadata(
-    publisher: &str,
-    name: &str,
-    version: &str,
-) -> serde_json::Value {
-    let filename = build_vsix_filename(publisher, name, version);
-    serde_json::json!({
-        "publisher": publisher,
-        "extension_name": name,
-        "version": version,
-        "filename": filename,
-    })
-}
-
-/// Build the publish success response JSON.
-pub(crate) fn build_vscode_publish_response(
-    publisher: &str,
-    name: &str,
-    version: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "publisher": publisher,
-        "name": name,
-        "version": version,
-        "message": "Successfully published extension",
-    })
-}
-
-// ---------------------------------------------------------------------------
 // GET /vscode/{repo_key}/api/extensionquery — Query extensions
 // ---------------------------------------------------------------------------
 
@@ -674,6 +600,76 @@ async fn latest_version(
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (test-only)
+    // -----------------------------------------------------------------------
+
+    /// Build a VS Code extension ID from publisher and name.
+    fn build_extension_id(publisher: &str, name: &str) -> String {
+        format!("{}.{}", publisher, name)
+    }
+
+    /// Build a VSIX filename from publisher, name, and version.
+    fn build_vsix_filename(publisher: &str, name: &str, version: &str) -> String {
+        let extension_id = build_extension_id(publisher, name);
+        format!("{}-{}.vsix", extension_id, version)
+    }
+
+    /// Build the artifact path for a VS Code extension.
+    fn build_vscode_artifact_path(publisher: &str, name: &str, version: &str) -> String {
+        let filename = build_vsix_filename(publisher, name, version);
+        format!("{}/{}/{}", publisher, name, filename)
+    }
+
+    /// Build the storage key for a VS Code extension.
+    fn build_vscode_storage_key(publisher: &str, name: &str, version: &str) -> String {
+        let filename = build_vsix_filename(publisher, name, version);
+        format!("vscode/{}/{}/{}", publisher, name, filename)
+    }
+
+    /// Build the download URL for a VS Code extension.
+    fn build_vscode_download_url(
+        repo_key: &str,
+        publisher: &str,
+        name: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "/vscode/{}/extensions/{}/{}/{}/download",
+            repo_key, publisher, name, version
+        )
+    }
+
+    /// Build the Content-Disposition filename for a VSIX download.
+    fn build_vsix_download_filename(publisher: &str, name: &str, version: &str) -> String {
+        format!("{}.{}-{}.vsix", publisher, name, version)
+    }
+
+    /// Build the metadata JSON for a published VS Code extension.
+    fn build_vscode_metadata(publisher: &str, name: &str, version: &str) -> serde_json::Value {
+        let filename = build_vsix_filename(publisher, name, version);
+        serde_json::json!({
+            "publisher": publisher,
+            "extension_name": name,
+            "version": version,
+            "filename": filename,
+        })
+    }
+
+    /// Build the publish success response JSON.
+    fn build_vscode_publish_response(
+        publisher: &str,
+        name: &str,
+        version: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "publisher": publisher,
+            "name": name,
+            "version": version,
+            "message": "Successfully published extension",
+        })
+    }
 
     // -----------------------------------------------------------------------
     // extract_credentials — Bearer token

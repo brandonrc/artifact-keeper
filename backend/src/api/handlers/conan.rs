@@ -1347,85 +1347,6 @@ async fn package_file_upload(
         .unwrap())
 }
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Convert a Conan glob pattern to a SQL LIKE pattern.
-pub(crate) fn conan_glob_to_like(pattern: &str) -> String {
-    pattern.replace('*', "%")
-}
-
-/// Build a Conan reference string: "name/version@user/channel".
-pub(crate) fn build_conan_reference(name: &str, version: &str) -> String {
-    format!("{}/{}@_/_", name, version)
-}
-
-/// Build recipe metadata JSON.
-pub(crate) fn build_recipe_metadata(
-    name: &str,
-    version: &str,
-    user: &str,
-    channel: &str,
-    revision: &str,
-    file_path: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "user": normalize_user(user),
-        "channel": normalize_channel(channel),
-        "revision": revision,
-        "type": "recipe",
-        "file": file_path.trim_start_matches('/'),
-    })
-}
-
-/// Build package metadata JSON.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_package_metadata(
-    name: &str,
-    version: &str,
-    user: &str,
-    channel: &str,
-    revision: &str,
-    package_id: &str,
-    pkg_revision: &str,
-    file_path: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "user": normalize_user(user),
-        "channel": normalize_channel(channel),
-        "revision": revision,
-        "packageId": package_id,
-        "packageRevision": pkg_revision,
-        "type": "package",
-        "file": file_path.trim_start_matches('/'),
-    })
-}
-
-/// Build the upstream path for proxying a recipe file.
-pub(crate) fn build_recipe_upstream_path(
-    name: &str,
-    version: &str,
-    user: &str,
-    channel: &str,
-    revision: &str,
-    file_path: &str,
-) -> String {
-    format!(
-        "v2/conans/{}/{}/{}/{}/revisions/{}/files/{}",
-        name,
-        version,
-        user,
-        channel,
-        revision,
-        file_path.trim_start_matches('/')
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1434,6 +1355,81 @@ mod tests {
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)
     // -----------------------------------------------------------------------
+
+    /// Convert a Conan glob pattern to a SQL LIKE pattern.
+    fn conan_glob_to_like(pattern: &str) -> String {
+        pattern.replace('*', "%")
+    }
+
+    /// Build a Conan reference string: "name/version@user/channel".
+    fn build_conan_reference(name: &str, version: &str) -> String {
+        format!("{}/{}@_/_", name, version)
+    }
+
+    /// Build recipe metadata JSON.
+    fn build_recipe_metadata(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        file_path: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "user": normalize_user(user),
+            "channel": normalize_channel(channel),
+            "revision": revision,
+            "type": "recipe",
+            "file": file_path.trim_start_matches('/'),
+        })
+    }
+
+    /// Build package metadata JSON.
+    #[allow(clippy::too_many_arguments)]
+    fn build_package_metadata(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        package_id: &str,
+        pkg_revision: &str,
+        file_path: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "user": normalize_user(user),
+            "channel": normalize_channel(channel),
+            "revision": revision,
+            "packageId": package_id,
+            "packageRevision": pkg_revision,
+            "type": "package",
+            "file": file_path.trim_start_matches('/'),
+        })
+    }
+
+    /// Build the upstream path for proxying a recipe file.
+    fn build_recipe_upstream_path(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        file_path: &str,
+    ) -> String {
+        format!(
+            "v2/conans/{}/{}/{}/{}/revisions/{}/files/{}",
+            name,
+            version,
+            user,
+            channel,
+            revision,
+            file_path.trim_start_matches('/')
+        )
+    }
 
     /// Build the upstream path for proxying a package file.
     #[allow(clippy::too_many_arguments)]

@@ -595,14 +595,11 @@ mod tests {
 
     #[test]
     fn test_require_auth_fails_with_none() {
-        let result = require_auth(None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let err_msg = format!("{}", err);
+        let err = require_auth(None).unwrap_err();
         assert!(
-            err_msg.contains("Authentication required"),
-            "Error: {}",
-            err_msg
+            format!("{}", err).contains("Authentication required"),
+            "Expected 'Authentication required' in error: {}",
+            err
         );
     }
 
@@ -696,43 +693,25 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_sort_desc() {
-        let sort_order = Some("desc".to_string());
-        let sort_desc = sort_order.as_deref() == Some("desc");
-        assert!(sort_desc);
-    }
-
-    #[test]
-    fn test_sort_asc() {
-        let sort_order = Some("asc".to_string());
-        let sort_desc = sort_order.as_deref() == Some("desc");
-        assert!(!sort_desc);
-    }
-
-    #[test]
-    fn test_sort_default() {
-        let sort_order: Option<String> = None;
-        let sort_desc = sort_order.as_deref() == Some("desc");
-        assert!(!sort_desc);
+    fn test_sort_order_parsing() {
+        assert!(Some("desc".to_string()).as_deref() == Some("desc"));
+        assert!(Some("asc".to_string()).as_deref() != Some("desc"));
+        assert!(None::<String>.as_deref() != Some("desc"));
     }
 
     #[test]
     fn test_sort_order_clause() {
-        let sort_desc = true;
-        let order_clause = if sort_desc {
-            "ORDER BY build_number DESC"
-        } else {
-            "ORDER BY build_number ASC"
-        };
-        assert_eq!(order_clause, "ORDER BY build_number DESC");
-
-        let sort_desc = false;
-        let order_clause = if sort_desc {
-            "ORDER BY build_number DESC"
-        } else {
-            "ORDER BY build_number ASC"
-        };
-        assert_eq!(order_clause, "ORDER BY build_number ASC");
+        for (sort_desc, expected) in [
+            (true, "ORDER BY build_number DESC"),
+            (false, "ORDER BY build_number ASC"),
+        ] {
+            let order_clause = if sort_desc {
+                "ORDER BY build_number DESC"
+            } else {
+                "ORDER BY build_number ASC"
+            };
+            assert_eq!(order_clause, expected);
+        }
     }
 
     // -----------------------------------------------------------------------

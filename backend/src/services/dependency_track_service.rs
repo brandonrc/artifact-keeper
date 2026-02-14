@@ -344,107 +344,6 @@ pub struct DtAnalysisResponse {
     pub is_suppressed: bool,
 }
 
-/// Aggregate vulnerability counts by severity from findings.
-pub(crate) fn aggregate_vulnerabilities(findings: &[DtFinding]) -> VulnerabilityAggregate {
-    let mut agg = VulnerabilityAggregate {
-        critical: 0,
-        high: 0,
-        medium: 0,
-        low: 0,
-        unassigned: 0,
-        total: 0,
-    };
-    for f in findings {
-        agg.total += 1;
-        match f.vulnerability.severity.to_uppercase().as_str() {
-            "CRITICAL" => agg.critical += 1,
-            "HIGH" => agg.high += 1,
-            "MEDIUM" => agg.medium += 1,
-            "LOW" => agg.low += 1,
-            _ => agg.unassigned += 1,
-        }
-    }
-    agg
-}
-
-/// Result of aggregating vulnerabilities by severity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VulnerabilityAggregate {
-    pub critical: usize,
-    pub high: usize,
-    pub medium: usize,
-    pub low: usize,
-    pub unassigned: usize,
-    pub total: usize,
-}
-
-/// Compute a weighted risk score from project metrics.
-///
-/// Weights: critical=10, high=5, medium=3, low=1.
-pub(crate) fn compute_risk_score(metrics: &DtProjectMetrics) -> f64 {
-    (metrics.critical as f64 * 10.0)
-        + (metrics.high as f64 * 5.0)
-        + (metrics.medium as f64 * 3.0)
-        + (metrics.low as f64 * 1.0)
-}
-
-/// Map a numeric risk score to a human-readable level.
-pub(crate) fn risk_level_from_score(score: f64) -> &'static str {
-    if score <= 0.0 {
-        "none"
-    } else if score < 10.0 {
-        "low"
-    } else if score < 30.0 {
-        "medium"
-    } else if score < 80.0 {
-        "high"
-    } else {
-        "critical"
-    }
-}
-
-/// Filter findings to only those that are NOT suppressed.
-pub(crate) fn filter_unsuppressed_findings(findings: &[DtFinding]) -> Vec<&DtFinding> {
-    findings
-        .iter()
-        .filter(|f| f.analysis.as_ref().map_or(true, |a| !a.is_suppressed))
-        .collect()
-}
-
-/// Check if a component's PURL starts with the given prefix.
-pub(crate) fn component_matches_purl_prefix(component: &DtComponent, prefix: &str) -> bool {
-    component
-        .purl
-        .as_ref()
-        .map_or(false, |p| p.starts_with(prefix))
-}
-
-/// Compute the audit ratio (0.0..1.0) from audited and total counts.
-pub(crate) fn compute_audit_ratio(audited: i64, total: i64) -> f64 {
-    if total == 0 {
-        1.0
-    } else {
-        audited as f64 / total as f64
-    }
-}
-
-/// Sum all policy violation categories from metrics.
-pub(crate) fn total_policy_violations(metrics: &DtProjectMetrics) -> i64 {
-    metrics.policy_violations_fail + metrics.policy_violations_warn + metrics.policy_violations_info
-}
-
-/// Return a numeric rank for a severity string (lower = more severe).
-pub(crate) fn severity_rank(severity: &str) -> u8 {
-    match severity.to_uppercase().as_str() {
-        "CRITICAL" => 0,
-        "HIGH" => 1,
-        "MEDIUM" => 2,
-        "LOW" => 3,
-        "INFO" => 4,
-        _ => 5,
-    }
-}
-
 impl DependencyTrackService {
     /// Create a new Dependency-Track service
     pub fn new(config: DependencyTrackConfig) -> Result<Self> {
@@ -1076,6 +975,102 @@ impl DependencyTrackService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn aggregate_vulnerabilities(findings: &[DtFinding]) -> VulnerabilityAggregate {
+        let mut agg = VulnerabilityAggregate {
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            unassigned: 0,
+            total: 0,
+        };
+        for f in findings {
+            agg.total += 1;
+            match f.vulnerability.severity.to_uppercase().as_str() {
+                "CRITICAL" => agg.critical += 1,
+                "HIGH" => agg.high += 1,
+                "MEDIUM" => agg.medium += 1,
+                "LOW" => agg.low += 1,
+                _ => agg.unassigned += 1,
+            }
+        }
+        agg
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct VulnerabilityAggregate {
+        pub critical: usize,
+        pub high: usize,
+        pub medium: usize,
+        pub low: usize,
+        pub unassigned: usize,
+        pub total: usize,
+    }
+
+    fn compute_risk_score(metrics: &DtProjectMetrics) -> f64 {
+        (metrics.critical as f64 * 10.0)
+            + (metrics.high as f64 * 5.0)
+            + (metrics.medium as f64 * 3.0)
+            + (metrics.low as f64 * 1.0)
+    }
+
+    fn risk_level_from_score(score: f64) -> &'static str {
+        if score <= 0.0 {
+            "none"
+        } else if score < 10.0 {
+            "low"
+        } else if score < 30.0 {
+            "medium"
+        } else if score < 80.0 {
+            "high"
+        } else {
+            "critical"
+        }
+    }
+
+    fn filter_unsuppressed_findings(findings: &[DtFinding]) -> Vec<&DtFinding> {
+        findings
+            .iter()
+            .filter(|f| f.analysis.as_ref().map_or(true, |a| !a.is_suppressed))
+            .collect()
+    }
+
+    fn component_matches_purl_prefix(component: &DtComponent, prefix: &str) -> bool {
+        component
+            .purl
+            .as_ref()
+            .map_or(false, |p| p.starts_with(prefix))
+    }
+
+    fn compute_audit_ratio(audited: i64, total: i64) -> f64 {
+        if total == 0 {
+            1.0
+        } else {
+            audited as f64 / total as f64
+        }
+    }
+
+    fn total_policy_violations(metrics: &DtProjectMetrics) -> i64 {
+        metrics.policy_violations_fail
+            + metrics.policy_violations_warn
+            + metrics.policy_violations_info
+    }
+
+    fn severity_rank(severity: &str) -> u8 {
+        match severity.to_uppercase().as_str() {
+            "CRITICAL" => 0,
+            "HIGH" => 1,
+            "MEDIUM" => 2,
+            "LOW" => 3,
+            "INFO" => 4,
+            _ => 5,
+        }
+    }
 
     // === Helper to create findings ===
     fn make_finding(severity: &str, suppressed: bool) -> DtFinding {

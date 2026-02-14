@@ -41,27 +41,6 @@ pub struct CacheMetadata {
     pub checksum_sha256: String,
 }
 
-// ---------------------------------------------------------------------------
-// Pure helper functions (no DB, testable in isolation)
-// ---------------------------------------------------------------------------
-
-/// Check if a cache entry has expired based on the expiration timestamp.
-pub(crate) fn is_cache_expired(expires_at: &DateTime<Utc>) -> bool {
-    Utc::now() > *expires_at
-}
-
-/// Compute cache expiration from a start time and TTL in seconds.
-pub(crate) fn compute_cache_expiry(cached_at: DateTime<Utc>, ttl_secs: i64) -> DateTime<Utc> {
-    cached_at + chrono::Duration::seconds(ttl_secs)
-}
-
-/// Parse a TTL value from an optional config string, falling back to default.
-pub(crate) fn parse_cache_ttl(value: Option<&str>) -> i64 {
-    value
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_CACHE_TTL_SECS)
-}
-
 /// Proxy service for fetching and caching artifacts from upstream repositories
 pub struct ProxyService {
     db: PgPool,
@@ -439,6 +418,24 @@ impl ProxyService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn is_cache_expired(expires_at: &DateTime<Utc>) -> bool {
+        Utc::now() > *expires_at
+    }
+
+    fn compute_cache_expiry(cached_at: DateTime<Utc>, ttl_secs: i64) -> DateTime<Utc> {
+        cached_at + chrono::Duration::seconds(ttl_secs)
+    }
+
+    fn parse_cache_ttl(value: Option<&str>) -> i64 {
+        value
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CACHE_TTL_SECS)
+    }
 
     // =======================================================================
     // build_upstream_url tests

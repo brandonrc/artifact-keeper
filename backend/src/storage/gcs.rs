@@ -460,10 +460,13 @@ mod tests {
         }
     }
 
+    async fn create_test_backend() -> GcsBackend {
+        GcsBackend::new(create_test_config()).await.unwrap()
+    }
+
     #[tokio::test]
     async fn test_gcs_backend_creation() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await;
+        let backend = GcsBackend::new(create_test_config()).await;
         assert!(backend.is_ok());
     }
 
@@ -479,40 +482,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_signed_url_generation() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
-        let url = backend.generate_signed_url("test/artifact.txt", Duration::from_secs(3600));
-        assert!(url.is_ok());
+        let url = backend
+            .generate_signed_url("test/artifact.txt", Duration::from_secs(3600))
+            .unwrap();
 
-        let url = url.unwrap();
         assert!(url.contains("storage.googleapis.com"));
         assert!(url.contains("test-bucket"));
         assert!(url.contains("test/artifact.txt"));
-        assert!(url.contains("X-Goog-Algorithm=GOOG4-RSA-SHA256"));
-        assert!(url.contains("X-Goog-Credential="));
-        assert!(url.contains("X-Goog-Date="));
-        assert!(url.contains("X-Goog-Expires="));
-        assert!(url.contains("X-Goog-SignedHeaders=host"));
-        assert!(url.contains("X-Goog-Signature="));
-    }
-
-    #[tokio::test]
-    async fn test_signed_url_contains_required_params() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
-
-        let url = backend
-            .generate_signed_url("path/to/file.tar.gz", Duration::from_secs(1800))
-            .unwrap();
-
-        // Check all required V4 signed URL parameters
-        assert!(url.contains("X-Goog-Algorithm="), "Missing algorithm");
+        // All required V4 signed URL parameters
+        assert!(
+            url.contains("X-Goog-Algorithm=GOOG4-RSA-SHA256"),
+            "Missing algorithm"
+        );
         assert!(url.contains("X-Goog-Credential="), "Missing credential");
         assert!(url.contains("X-Goog-Date="), "Missing date");
         assert!(url.contains("X-Goog-Expires="), "Missing expires");
         assert!(
-            url.contains("X-Goog-SignedHeaders="),
+            url.contains("X-Goog-SignedHeaders=host"),
             "Missing signed headers"
         );
         assert!(url.contains("X-Goog-Signature="), "Missing signature");
@@ -555,42 +543,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_presigned_url_returns_url_when_enabled() {
-        let config = create_test_config().with_redirect_downloads(true);
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
-        let result = backend
+        let presigned = backend
             .get_presigned_url("test.txt", Duration::from_secs(3600))
             .await
+            .unwrap()
             .unwrap();
-        assert!(result.is_some());
-
-        let presigned = result.unwrap();
         assert_eq!(presigned.source, PresignedUrlSource::Gcs);
         assert!(presigned.url.contains("X-Goog-Signature="));
     }
 
     #[tokio::test]
     async fn test_object_url_format() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
-
-        let url = backend.object_url("path/to/artifact.jar");
+        let backend = create_test_backend().await;
         assert_eq!(
-            url,
+            backend.object_url("path/to/artifact.jar"),
             "https://storage.googleapis.com/test-bucket/path/to/artifact.jar"
         );
     }
 
     #[tokio::test]
     async fn test_expiry_capped_at_7_days() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         // Request 30 days, should be capped to 7 days (604800 seconds)
         let url = backend
             .generate_signed_url("test.txt", Duration::from_secs(30 * 24 * 3600))
             .unwrap();
-
         assert!(url.contains("X-Goog-Expires=604800"));
     }
 
@@ -616,45 +596,22 @@ mod tests {
 
     #[test]
     fn test_gcs_config_builder_redirect_downloads() {
-        let config = GcsConfig {
-            bucket: "b".to_string(),
-            project_id: "p".to_string(),
-            service_account_email: "s@s.com".to_string(),
-            private_key: None,
-            redirect_downloads: false,
-            signed_url_expiry: Duration::from_secs(3600),
-            path_format: StoragePathFormat::Native,
-        };
+        let config = create_test_config().with_redirect_downloads(false);
+        assert!(!config.redirect_downloads);
         let config = config.with_redirect_downloads(true);
         assert!(config.redirect_downloads);
     }
 
     #[test]
     fn test_gcs_config_builder_signed_url_expiry() {
-        let config = GcsConfig {
-            bucket: "b".to_string(),
-            project_id: "p".to_string(),
-            service_account_email: "s@s.com".to_string(),
-            private_key: None,
-            redirect_downloads: false,
-            signed_url_expiry: Duration::from_secs(3600),
-            path_format: StoragePathFormat::Native,
-        };
-        let config = config.with_signed_url_expiry(Duration::from_secs(7200));
+        let config = create_test_config().with_signed_url_expiry(Duration::from_secs(7200));
         assert_eq!(config.signed_url_expiry, Duration::from_secs(7200));
     }
 
     #[test]
     fn test_gcs_config_builder_private_key() {
-        let config = GcsConfig {
-            bucket: "b".to_string(),
-            project_id: "p".to_string(),
-            service_account_email: "s@s.com".to_string(),
-            private_key: None,
-            redirect_downloads: false,
-            signed_url_expiry: Duration::from_secs(3600),
-            path_format: StoragePathFormat::Native,
-        };
+        let mut config = create_test_config();
+        config.private_key = None;
         assert!(config.private_key.is_none());
         let config = config.with_private_key("test-key".to_string());
         assert_eq!(config.private_key, Some("test-key".to_string()));
@@ -662,71 +619,49 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_artifactory_fallback_valid_checksum() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let key = "repos/maven/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_some());
         assert_eq!(
-            fallback.unwrap(),
+            backend.try_artifactory_fallback(key).unwrap(),
             "ab/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
         );
     }
 
     #[tokio::test]
-    async fn test_try_artifactory_fallback_invalid_checksum_length() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+    async fn test_try_artifactory_fallback_rejected_inputs() {
+        let backend = create_test_backend().await;
 
-        // Too short to be a sha256 hash
-        let key = "repos/maven/abc123";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
+        // Too short
+        assert!(backend
+            .try_artifactory_fallback("repos/maven/abc123")
+            .is_none());
+        // Non-hex chars (64 chars but 'g' is not hex)
+        assert!(backend
+            .try_artifactory_fallback(
+                "repos/maven/gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+            )
+            .is_none());
+        // Too few path components (only 1)
+        assert!(backend
+            .try_artifactory_fallback(
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            )
+            .is_none());
     }
 
     #[tokio::test]
-    async fn test_try_artifactory_fallback_non_hex_chars() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+    async fn test_object_url_variants() {
+        let backend = create_test_backend().await;
 
-        // 64 chars but not hex
-        let key = "repos/maven/gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_try_artifactory_fallback_too_few_parts() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
-
-        // Less than 3 path components
-        let key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        let fallback = backend.try_artifactory_fallback(key);
-        assert!(fallback.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_object_url_with_special_chars() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
-
-        let url = backend.object_url("path/with spaces/file.tar.gz");
         assert_eq!(
-            url,
+            backend.object_url("path/with spaces/file.tar.gz"),
             "https://storage.googleapis.com/test-bucket/path/with spaces/file.tar.gz"
         );
-    }
 
-    #[tokio::test]
-    async fn test_object_url_nested_path() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
-
-        let url = backend.object_url("a/b/c/d/e/f.bin");
-        assert!(url.starts_with("https://storage.googleapis.com/test-bucket/"));
-        assert!(url.ends_with("a/b/c/d/e/f.bin"));
+        let nested = backend.object_url("a/b/c/d/e/f.bin");
+        assert!(nested.starts_with("https://storage.googleapis.com/test-bucket/"));
+        assert!(nested.ends_with("a/b/c/d/e/f.bin"));
     }
 
     #[tokio::test]
@@ -734,15 +669,14 @@ mod tests {
         let mut config = create_test_config();
         config.private_key = None;
         let backend = GcsBackend::new(config).await.unwrap();
-
-        let result = backend.generate_signed_url("test.txt", Duration::from_secs(3600));
-        assert!(result.is_err());
+        assert!(backend
+            .generate_signed_url("test.txt", Duration::from_secs(3600))
+            .is_err());
     }
 
     #[tokio::test]
     async fn test_signed_url_different_keys_different_urls() {
-        let config = create_test_config();
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let url1 = backend
             .generate_signed_url("file1.txt", Duration::from_secs(3600))
@@ -753,8 +687,8 @@ mod tests {
         assert_ne!(url1, url2);
     }
 
-    #[tokio::test]
-    async fn test_gcs_config_clone() {
+    #[test]
+    fn test_gcs_config_clone() {
         let config = create_test_config();
         let cloned = config.clone();
         assert_eq!(cloned.bucket, "test-bucket");
@@ -764,15 +698,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_presigned_url_expiry_preserved() {
-        let config = create_test_config().with_redirect_downloads(true);
-        let backend = GcsBackend::new(config).await.unwrap();
+        let backend = create_test_backend().await;
 
         let expires = Duration::from_secs(1800);
-        let result = backend
+        let presigned = backend
             .get_presigned_url("test.txt", expires)
             .await
+            .unwrap()
             .unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().expires_in, expires);
+        assert_eq!(presigned.expires_in, expires);
     }
 }

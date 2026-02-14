@@ -103,105 +103,6 @@ pub struct PendingQuery {
 }
 
 // ---------------------------------------------------------------------------
-// Pure business logic functions (no DB, no async)
-// ---------------------------------------------------------------------------
-
-/// Normalize pagination parameters with defaults and bounds.
-pub(crate) fn normalize_approval_pagination(
-    page: Option<u32>,
-    per_page: Option<u32>,
-) -> (u32, u32, i64) {
-    let page = page.unwrap_or(1).max(1);
-    let per_page = per_page.unwrap_or(20).min(100);
-    let offset = ((page - 1) * per_page) as i64;
-    (page, per_page, offset)
-}
-
-/// Compute total pages from total items and per_page.
-pub(crate) fn compute_approval_total_pages(total: i64, per_page: u32) -> u32 {
-    ((total as f64) / (per_page as f64)).ceil() as u32
-}
-
-/// Validate that a status filter is valid for approval queries.
-pub(crate) fn validate_approval_status(status: &str) -> std::result::Result<(), String> {
-    if !["pending", "approved", "rejected"].contains(&status) {
-        return Err(format!(
-            "Invalid status '{}'. Must be one of: pending, approved, rejected",
-            status
-        ));
-    }
-    Ok(())
-}
-
-/// Check if an approval is in a reviewable state (must be "pending").
-pub(crate) fn check_reviewable(current_status: &str) -> std::result::Result<(), String> {
-    if current_status != "pending" {
-        return Err(format!(
-            "Approval request has already been {}",
-            current_status
-        ));
-    }
-    Ok(())
-}
-
-/// Build the policy result JSON from an evaluation result.
-pub(crate) fn build_policy_result_json(
-    passed: bool,
-    action: &str,
-    violations: &[String],
-    cve_summary: &serde_json::Value,
-    license_summary: &serde_json::Value,
-) -> serde_json::Value {
-    serde_json::json!({
-        "passed": passed,
-        "action": action,
-        "violations": violations,
-        "cve_summary": cve_summary,
-        "license_summary": license_summary,
-    })
-}
-
-/// Build the promotion history metadata JSON for an approved promotion.
-pub(crate) fn build_promotion_history_metadata(approval_id: &str) -> serde_json::Value {
-    serde_json::json!({
-        "approved_via": "approval_workflow",
-        "approval_id": approval_id,
-    })
-}
-
-/// Build dynamic WHERE clauses for the approval history query.
-/// Returns (conditions, bind_index_after).
-pub(crate) fn build_history_where_clauses(
-    status: &Option<String>,
-    has_source_repo: bool,
-    start_bind_idx: u32,
-) -> (Vec<String>, u32) {
-    let mut conditions = Vec::new();
-    let mut bind_idx = start_bind_idx;
-
-    if status.is_some() {
-        conditions.push(format!("pa.status = ${}", bind_idx));
-        bind_idx += 1;
-    }
-
-    if has_source_repo {
-        conditions.push(format!("pa.source_repo_id = ${}", bind_idx));
-        bind_idx += 1;
-    }
-
-    (conditions, bind_idx)
-}
-
-/// Combine conditions into a SQL WHERE clause string.
-pub(crate) fn build_where_clause(conditions: &[String]) -> String {
-    if conditions.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", conditions.join(" AND "))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Internal row type for SQL mapping
 // ---------------------------------------------------------------------------
 
@@ -972,6 +873,102 @@ pub struct ApprovalApiDoc;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Normalize pagination parameters with defaults and bounds.
+    fn normalize_approval_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
+        let page = page.unwrap_or(1).max(1);
+        let per_page = per_page.unwrap_or(20).min(100);
+        let offset = ((page - 1) * per_page) as i64;
+        (page, per_page, offset)
+    }
+
+    /// Compute total pages from total items and per_page.
+    fn compute_approval_total_pages(total: i64, per_page: u32) -> u32 {
+        ((total as f64) / (per_page as f64)).ceil() as u32
+    }
+
+    /// Validate that a status filter is valid for approval queries.
+    fn validate_approval_status(status: &str) -> std::result::Result<(), String> {
+        if !["pending", "approved", "rejected"].contains(&status) {
+            return Err(format!(
+                "Invalid status '{}'. Must be one of: pending, approved, rejected",
+                status
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check if an approval is in a reviewable state (must be "pending").
+    fn check_reviewable(current_status: &str) -> std::result::Result<(), String> {
+        if current_status != "pending" {
+            return Err(format!(
+                "Approval request has already been {}",
+                current_status
+            ));
+        }
+        Ok(())
+    }
+
+    /// Build the policy result JSON from an evaluation result.
+    fn build_policy_result_json(
+        passed: bool,
+        action: &str,
+        violations: &[String],
+        cve_summary: &serde_json::Value,
+        license_summary: &serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "passed": passed,
+            "action": action,
+            "violations": violations,
+            "cve_summary": cve_summary,
+            "license_summary": license_summary,
+        })
+    }
+
+    /// Build the promotion history metadata JSON for an approved promotion.
+    fn build_promotion_history_metadata(approval_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "approved_via": "approval_workflow",
+            "approval_id": approval_id,
+        })
+    }
+
+    /// Build dynamic WHERE clauses for the approval history query.
+    /// Returns (conditions, bind_index_after).
+    fn build_history_where_clauses(
+        status: &Option<String>,
+        has_source_repo: bool,
+        start_bind_idx: u32,
+    ) -> (Vec<String>, u32) {
+        let mut conditions = Vec::new();
+        let mut bind_idx = start_bind_idx;
+
+        if status.is_some() {
+            conditions.push(format!("pa.status = ${}", bind_idx));
+            bind_idx += 1;
+        }
+
+        if has_source_repo {
+            conditions.push(format!("pa.source_repo_id = ${}", bind_idx));
+            bind_idx += 1;
+        }
+
+        (conditions, bind_idx)
+    }
+
+    /// Combine conditions into a SQL WHERE clause string.
+    fn build_where_clause(conditions: &[String]) -> String {
+        if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        }
+    }
 
     #[test]
     fn test_approval_request_deserialize() {

@@ -1120,197 +1120,6 @@ fn check_max_issues(
     }
 }
 
-/// Count severity occurrences from a list of quality check issues.
-/// Returns (critical, high, medium, low, info) counts.
-///
-/// The matching is case-insensitive (using `to_lowercase()`). Any severity
-/// string that doesn't match critical/high/medium/low is counted as info.
-pub(crate) fn count_issue_severities(
-    issues: &[crate::models::quality::RawQualityIssue],
-) -> (i32, i32, i32, i32, i32) {
-    let mut critical: i32 = 0;
-    let mut high: i32 = 0;
-    let mut medium: i32 = 0;
-    let mut low: i32 = 0;
-    let mut info: i32 = 0;
-    for issue in issues {
-        match issue.severity.to_lowercase().as_str() {
-            "critical" => critical += 1,
-            "high" => high += 1,
-            "medium" => medium += 1,
-            "low" => low += 1,
-            _ => info += 1,
-        }
-    }
-    (critical, high, medium, low, info)
-}
-
-/// Compute the average quality score from a set of check score rows,
-/// excluding the "metadata_completeness" check (which has its own component).
-/// Returns `None` if there are no non-metadata checks with scores.
-pub(crate) fn compute_quality_score(rows: &[CheckScoreRow]) -> Option<i32> {
-    let scores: Vec<i32> = rows
-        .iter()
-        .filter(|r| r.check_type != "metadata_completeness")
-        .filter_map(|r| r.score)
-        .collect();
-    if scores.is_empty() {
-        None
-    } else {
-        Some(scores.iter().sum::<i32>() / scores.len() as i32)
-    }
-}
-
-/// Extract the metadata score from a set of check score rows.
-pub(crate) fn extract_metadata_score(rows: &[CheckScoreRow]) -> Option<i32> {
-    rows.iter()
-        .find(|r| r.check_type == "metadata_completeness")
-        .and_then(|r| r.score)
-}
-
-/// Aggregate total issues, critical issues, and checks passed from check score rows.
-/// Returns (total_issues, critical_issues, checks_passed, checks_total).
-pub(crate) fn aggregate_check_stats(rows: &[CheckScoreRow]) -> (i32, i32, i32, i32) {
-    let mut total_issues: i32 = 0;
-    let mut critical_issues: i32 = 0;
-    let mut checks_passed: i32 = 0;
-    let checks_total = rows.len() as i32;
-    for row in rows {
-        total_issues += row.critical_count + row.high_count + row.medium_count + row.low_count;
-        critical_issues += row.critical_count;
-        if row.passed.unwrap_or(false) {
-            checks_passed += 1;
-        }
-    }
-    (total_issues, critical_issues, checks_passed, checks_total)
-}
-
-/// Push a violation if `actual` exceeds `threshold`.
-pub(crate) fn evaluate_gate_thresholds(
-    violations: &mut Vec<QualityGateViolation>,
-    health: &ArtifactHealthScore,
-    gate: &QualityGate,
-) {
-    check_min_score(
-        violations,
-        "min_health_score",
-        "Health",
-        gate.min_health_score,
-        health.health_score,
-    );
-    check_min_score(
-        violations,
-        "min_security_score",
-        "Security",
-        gate.min_security_score,
-        health.security_score.unwrap_or(0),
-    );
-    check_min_score(
-        violations,
-        "min_quality_score",
-        "Quality",
-        gate.min_quality_score,
-        health.quality_score.unwrap_or(0),
-    );
-    check_min_score(
-        violations,
-        "min_metadata_score",
-        "Metadata",
-        gate.min_metadata_score,
-        health.metadata_score.unwrap_or(0),
-    );
-    check_max_issues(
-        violations,
-        "max_critical_issues",
-        "Critical",
-        gate.max_critical_issues,
-        health.critical_issues,
-    );
-    check_max_issues(
-        violations,
-        "max_high_issues",
-        "High",
-        gate.max_high_issues,
-        health.total_issues - health.critical_issues,
-    );
-    check_max_issues(
-        violations,
-        "max_medium_issues",
-        "Total",
-        gate.max_medium_issues,
-        health.total_issues,
-    );
-}
-
-/// Map a health score integer to a letter grade string.
-pub(crate) fn health_grade_from_score(score: i32) -> String {
-    Grade::from_score(score).as_char().to_string()
-}
-
-/// Validate a quality gate action string.
-pub(crate) fn validate_status(action: &str) -> bool {
-    matches!(action, "block" | "warn" | "allow")
-}
-
-/// Compute total pages for pagination given total items and page size.
-pub(crate) fn compute_total_pages(total: i64, page_size: i64) -> i64 {
-    if page_size <= 0 {
-        return 0;
-    }
-    (total + page_size - 1) / page_size
-}
-
-/// Normalize pagination parameters, returning (offset, limit).
-pub(crate) fn normalize_pagination(page: Option<i64>, per_page: Option<i64>) -> (i64, i64) {
-    let limit = per_page.unwrap_or(20).max(1).min(100);
-    let page = page.unwrap_or(1).max(1);
-    let offset = (page - 1) * limit;
-    (offset, limit)
-}
-
-/// Compute average health score from a list of scores.
-pub(crate) fn compute_avg_health_score(scores: &[i32]) -> i32 {
-    if scores.is_empty() {
-        return 100;
-    }
-    scores.iter().sum::<i32>() / scores.len() as i32
-}
-
-/// Count grade distribution from a list of health scores.
-pub(crate) fn count_grade_distribution(scores: &[i32]) -> (i32, i32, i32, i32, i32) {
-    let mut a = 0;
-    let mut b = 0;
-    let mut c = 0;
-    let mut d = 0;
-    let mut f = 0;
-    for &s in scores {
-        match Grade::from_score(s) {
-            Grade::A => a += 1,
-            Grade::B => b += 1,
-            Grade::C => c += 1,
-            Grade::D => d += 1,
-            Grade::F => f += 1,
-        }
-    }
-    (a, b, c, d, f)
-}
-
-/// Check a minimum score threshold (existing, kept for API compatibility).
-pub(crate) fn check_min_threshold(threshold: Option<i32>, actual: i32) -> bool {
-    match threshold {
-        Some(min) => actual >= min,
-        None => true,
-    }
-}
-
-/// Check a maximum issues threshold (existing, kept for API compatibility).
-pub(crate) fn check_max_threshold(threshold: Option<i32>, actual: i32) -> bool {
-    match threshold {
-        Some(max) => actual <= max,
-        None => true,
-    }
-}
-
 /// Compute a weighted composite health score from component scores.
 ///
 /// Weights: security=40, license=20, quality=25, metadata=15.
@@ -1343,6 +1152,182 @@ pub(crate) fn compute_weighted_health_score(scores: &ComponentScores) -> i32 {
 mod tests {
     use super::*;
     use crate::models::quality::RawQualityIssue;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn count_issue_severities(
+        issues: &[crate::models::quality::RawQualityIssue],
+    ) -> (i32, i32, i32, i32, i32) {
+        let mut critical: i32 = 0;
+        let mut high: i32 = 0;
+        let mut medium: i32 = 0;
+        let mut low: i32 = 0;
+        let mut info: i32 = 0;
+        for issue in issues {
+            match issue.severity.to_lowercase().as_str() {
+                "critical" => critical += 1,
+                "high" => high += 1,
+                "medium" => medium += 1,
+                "low" => low += 1,
+                _ => info += 1,
+            }
+        }
+        (critical, high, medium, low, info)
+    }
+
+    fn compute_quality_score(rows: &[CheckScoreRow]) -> Option<i32> {
+        let scores: Vec<i32> = rows
+            .iter()
+            .filter(|r| r.check_type != "metadata_completeness")
+            .filter_map(|r| r.score)
+            .collect();
+        if scores.is_empty() {
+            None
+        } else {
+            Some(scores.iter().sum::<i32>() / scores.len() as i32)
+        }
+    }
+
+    fn extract_metadata_score(rows: &[CheckScoreRow]) -> Option<i32> {
+        rows.iter()
+            .find(|r| r.check_type == "metadata_completeness")
+            .and_then(|r| r.score)
+    }
+
+    fn aggregate_check_stats(rows: &[CheckScoreRow]) -> (i32, i32, i32, i32) {
+        let mut total_issues: i32 = 0;
+        let mut critical_issues: i32 = 0;
+        let mut checks_passed: i32 = 0;
+        let checks_total = rows.len() as i32;
+        for row in rows {
+            total_issues += row.critical_count + row.high_count + row.medium_count + row.low_count;
+            critical_issues += row.critical_count;
+            if row.passed.unwrap_or(false) {
+                checks_passed += 1;
+            }
+        }
+        (total_issues, critical_issues, checks_passed, checks_total)
+    }
+
+    #[allow(dead_code)]
+    fn evaluate_gate_thresholds(
+        violations: &mut Vec<QualityGateViolation>,
+        health: &ArtifactHealthScore,
+        gate: &QualityGate,
+    ) {
+        check_min_score(
+            violations,
+            "min_health_score",
+            "Health",
+            gate.min_health_score,
+            health.health_score,
+        );
+        check_min_score(
+            violations,
+            "min_security_score",
+            "Security",
+            gate.min_security_score,
+            health.security_score.unwrap_or(0),
+        );
+        check_min_score(
+            violations,
+            "min_quality_score",
+            "Quality",
+            gate.min_quality_score,
+            health.quality_score.unwrap_or(0),
+        );
+        check_min_score(
+            violations,
+            "min_metadata_score",
+            "Metadata",
+            gate.min_metadata_score,
+            health.metadata_score.unwrap_or(0),
+        );
+        check_max_issues(
+            violations,
+            "max_critical_issues",
+            "Critical",
+            gate.max_critical_issues,
+            health.critical_issues,
+        );
+        check_max_issues(
+            violations,
+            "max_high_issues",
+            "High",
+            gate.max_high_issues,
+            health.total_issues - health.critical_issues,
+        );
+        check_max_issues(
+            violations,
+            "max_medium_issues",
+            "Total",
+            gate.max_medium_issues,
+            health.total_issues,
+        );
+    }
+
+    fn health_grade_from_score(score: i32) -> String {
+        Grade::from_score(score).as_char().to_string()
+    }
+
+    fn validate_status(action: &str) -> bool {
+        matches!(action, "block" | "warn" | "allow")
+    }
+
+    fn compute_total_pages(total: i64, page_size: i64) -> i64 {
+        if page_size <= 0 {
+            return 0;
+        }
+        (total + page_size - 1) / page_size
+    }
+
+    fn normalize_pagination(page: Option<i64>, per_page: Option<i64>) -> (i64, i64) {
+        let limit = per_page.unwrap_or(20).max(1).min(100);
+        let page = page.unwrap_or(1).max(1);
+        let offset = (page - 1) * limit;
+        (offset, limit)
+    }
+
+    fn compute_avg_health_score(scores: &[i32]) -> i32 {
+        if scores.is_empty() {
+            return 100;
+        }
+        scores.iter().sum::<i32>() / scores.len() as i32
+    }
+
+    fn count_grade_distribution(scores: &[i32]) -> (i32, i32, i32, i32, i32) {
+        let mut a = 0;
+        let mut b = 0;
+        let mut c = 0;
+        let mut d = 0;
+        let mut f = 0;
+        for &s in scores {
+            match Grade::from_score(s) {
+                Grade::A => a += 1,
+                Grade::B => b += 1,
+                Grade::C => c += 1,
+                Grade::D => d += 1,
+                Grade::F => f += 1,
+            }
+        }
+        (a, b, c, d, f)
+    }
+
+    fn check_min_threshold(threshold: Option<i32>, actual: i32) -> bool {
+        match threshold {
+            Some(min) => actual >= min,
+            None => true,
+        }
+    }
+
+    fn check_max_threshold(threshold: Option<i32>, actual: i32) -> bool {
+        match threshold {
+            Some(max) => actual <= max,
+            None => true,
+        }
+    }
 
     #[test]
     fn test_all_components_present() {

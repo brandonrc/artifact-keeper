@@ -1089,93 +1089,6 @@ fn xml_escape(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build the artifact path for an RPM package.
-pub(crate) fn build_rpm_artifact_path(filename: &str) -> String {
-    format!("packages/{}", filename)
-}
-
-/// Build the storage key for an RPM package.
-pub(crate) fn build_rpm_storage_key(repo_id: &uuid::Uuid, filename: &str) -> String {
-    format!("rpm/{}/{}", repo_id, filename)
-}
-
-/// Build the full version string from version and release.
-pub(crate) fn build_rpm_full_version(version: &str, release: &str) -> String {
-    format!("{}-{}", version, release)
-}
-
-/// Build RPM-specific metadata JSON.
-pub(crate) fn build_rpm_metadata(
-    name: &str,
-    version: &str,
-    release: &str,
-    arch: &str,
-    filename: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "release": release,
-        "arch": arch,
-        "filename": filename,
-    })
-}
-
-/// Build the upload response JSON.
-pub(crate) fn build_rpm_upload_response(
-    name: &str,
-    version: &str,
-    release: &str,
-    arch: &str,
-    sha256: &str,
-    size: i64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "release": release,
-        "arch": arch,
-        "sha256": sha256,
-        "size": size,
-    })
-}
-
-/// Extract RPM filename from headers, falling back to a hash-based name.
-pub(crate) fn extract_rpm_filename(headers: &HeaderMap, body_hash: &str) -> String {
-    headers
-        .get("Content-Disposition")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.split("filename=")
-                .nth(1)
-                .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
-        })
-        .or_else(|| {
-            headers
-                .get("X-Package-Filename")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| format!("{}.rpm", &body_hash[..16]))
-}
-
-/// Wrap a base64-encoded signature in PGP armor format.
-pub(crate) fn pgp_armor_signature(b64: &str) -> String {
-    let wrapped: Vec<&str> = b64
-        .as_bytes()
-        .chunks(76)
-        .map(|c| std::str::from_utf8(c).unwrap_or(""))
-        .collect();
-    format!(
-        "-----BEGIN PGP SIGNATURE-----\n\n{}\n-----END PGP SIGNATURE-----\n",
-        wrapped.join("\n"),
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1183,6 +1096,93 @@ pub(crate) fn pgp_armor_signature(b64: &str) -> String {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    /// Wrap a base64-encoded signature in PGP armor format.
+    fn pgp_armor_signature(b64: &str) -> String {
+        let wrapped: Vec<&str> = b64
+            .as_bytes()
+            .chunks(76)
+            .map(|c| std::str::from_utf8(c).unwrap_or(""))
+            .collect();
+        format!(
+            "-----BEGIN PGP SIGNATURE-----\n\n{}\n-----END PGP SIGNATURE-----\n",
+            wrapped.join("\n"),
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (test-only)
+    // -----------------------------------------------------------------------
+
+    /// Build the artifact path for an RPM package.
+    fn build_rpm_artifact_path(filename: &str) -> String {
+        format!("packages/{}", filename)
+    }
+
+    /// Build the storage key for an RPM package.
+    fn build_rpm_storage_key(repo_id: &uuid::Uuid, filename: &str) -> String {
+        format!("rpm/{}/{}", repo_id, filename)
+    }
+
+    /// Build the full version string from version and release.
+    fn build_rpm_full_version(version: &str, release: &str) -> String {
+        format!("{}-{}", version, release)
+    }
+
+    /// Build RPM-specific metadata JSON.
+    fn build_rpm_metadata(
+        name: &str,
+        version: &str,
+        release: &str,
+        arch: &str,
+        filename: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "release": release,
+            "arch": arch,
+            "filename": filename,
+        })
+    }
+
+    /// Build the upload response JSON.
+    fn build_rpm_upload_response(
+        name: &str,
+        version: &str,
+        release: &str,
+        arch: &str,
+        sha256: &str,
+        size: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "release": release,
+            "arch": arch,
+            "sha256": sha256,
+            "size": size,
+        })
+    }
+
+    /// Extract RPM filename from headers, falling back to a hash-based name.
+    fn extract_rpm_filename(headers: &HeaderMap, body_hash: &str) -> String {
+        headers
+            .get("Content-Disposition")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.split("filename=")
+                    .nth(1)
+                    .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
+            })
+            .or_else(|| {
+                headers
+                    .get("X-Package-Filename")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| format!("{}.rpm", &body_hash[..16]))
+    }
 
     // -----------------------------------------------------------------------
     // parse_rpm_filename

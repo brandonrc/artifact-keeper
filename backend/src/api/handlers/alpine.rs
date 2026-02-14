@@ -917,81 +917,81 @@ fn sha256_hex(data: &[u8]) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Build the artifact path for an Alpine package.
-pub(crate) fn build_alpine_artifact_path(
-    branch: &str,
-    repository: &str,
-    arch: &str,
-    filename: &str,
-) -> String {
-    format!("{}/{}/{}/{}", branch, repository, arch, filename)
-}
-
-/// Build the storage key for an Alpine package.
-pub(crate) fn build_alpine_storage_key(repo_id: uuid::Uuid, artifact_path: &str) -> String {
-    format!("alpine/{}/{}", repo_id, artifact_path)
-}
-
-/// Build Alpine-specific metadata JSON.
-pub(crate) fn build_alpine_metadata(
-    pkg_name: &str,
-    pkg_version: &str,
-    arch: &str,
-    branch: &str,
-    repository: &str,
-    filename: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": pkg_name,
-        "version": pkg_version,
-        "arch": arch,
-        "branch": branch,
-        "repository": repository,
-        "filename": filename,
-    })
-}
-
-/// Build the JSON upload response for an Alpine package.
-pub(crate) fn build_alpine_upload_response(
-    pkg_name: &str,
-    pkg_version: &str,
-    arch: &str,
-    branch: &str,
-    repository: &str,
-    sha256: &str,
-    size: i64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": pkg_name,
-        "version": pkg_version,
-        "arch": arch,
-        "branch": branch,
-        "repository": repository,
-        "sha256": sha256,
-        "size": size,
-    })
-}
-
-/// Build the path prefix used for listing Alpine artifacts.
-pub(crate) fn build_alpine_path_prefix(branch: &str, repository: &str, arch: &str) -> String {
-    format!("{}/{}/{}/", branch, repository, arch)
-}
-
-/// Extract filename from a Content-Disposition header value.
-pub(crate) fn extract_filename_from_content_disposition(value: &str) -> Option<String> {
-    value
-        .split("filename=")
-        .nth(1)
-        .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the artifact path for an Alpine package.
+    fn build_alpine_artifact_path(
+        branch: &str,
+        repository: &str,
+        arch: &str,
+        filename: &str,
+    ) -> String {
+        format!("{}/{}/{}/{}", branch, repository, arch, filename)
+    }
+
+    /// Build the storage key for an Alpine package.
+    fn build_alpine_storage_key(repo_id: uuid::Uuid, artifact_path: &str) -> String {
+        format!("alpine/{}/{}", repo_id, artifact_path)
+    }
+
+    /// Build Alpine-specific metadata JSON.
+    fn build_alpine_metadata(
+        pkg_name: &str,
+        pkg_version: &str,
+        arch: &str,
+        branch: &str,
+        repository: &str,
+        filename: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": pkg_name,
+            "version": pkg_version,
+            "arch": arch,
+            "branch": branch,
+            "repository": repository,
+            "filename": filename,
+        })
+    }
+
+    /// Build the JSON upload response for an Alpine package.
+    fn build_alpine_upload_response(
+        pkg_name: &str,
+        pkg_version: &str,
+        arch: &str,
+        branch: &str,
+        repository: &str,
+        sha256: &str,
+        size: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": pkg_name,
+            "version": pkg_version,
+            "arch": arch,
+            "branch": branch,
+            "repository": repository,
+            "sha256": sha256,
+            "size": size,
+        })
+    }
+
+    /// Build the path prefix used for listing Alpine artifacts.
+    fn build_alpine_path_prefix(branch: &str, repository: &str, arch: &str) -> String {
+        format!("{}/{}/{}/", branch, repository, arch)
+    }
+
+    /// Extract filename from a Content-Disposition header value.
+    fn extract_filename_from_content_disposition(value: &str) -> Option<String> {
+        value
+            .split("filename=")
+            .nth(1)
+            .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
+    }
 
     #[test]
     fn test_parse_apk_filename_simple() {

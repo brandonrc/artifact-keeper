@@ -334,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_get() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("test content");
         storage.put("test/file.txt", content.clone()).await.unwrap();
@@ -345,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cas_deduplication() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("duplicate content");
         let hash1 = storage.put_cas(content.clone()).await.unwrap();
@@ -361,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exists() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         assert!(!storage.exists("nonexistent").await.unwrap());
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         storage
             .put("to_delete.txt", Bytes::from("data"))
@@ -388,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         storage
             .put("dir/file1.txt", Bytes::from("1"))
@@ -500,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_copy() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("copy me");
         storage.put("source.txt", content.clone()).await.unwrap();
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_size() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("12345");
         storage.put("sized.txt", content).await.unwrap();
@@ -523,7 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_returns_error() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let result = storage.get("does_not_exist.txt").await;
         assert!(result.is_err());
@@ -531,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_succeeds() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         // Deleting a non-existent key should succeed silently
         let result = storage.delete("nonexistent.txt").await;
@@ -540,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cas_roundtrip() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("cas roundtrip test");
         let hash = storage.put_cas(content.clone()).await.unwrap();
@@ -559,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cas_nonexistent_hash() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
         assert!(!storage.exists_cas(fake_hash).await.unwrap());
@@ -567,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_overwrite_key() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         storage
             .put("overwrite.txt", Bytes::from("first"))
@@ -584,7 +584,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_empty_dir() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let keys = storage.list(None).await.unwrap();
         assert!(keys.is_empty());
@@ -592,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_nonexistent_prefix() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let keys = storage.list(Some("nonexistent_prefix")).await.unwrap();
         assert!(keys.is_empty());

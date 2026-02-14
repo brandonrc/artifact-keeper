@@ -476,14 +476,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scrub_email() {
+    fn test_scrub_pii_email_and_ip() {
         let input = "Error for user john@example.com at 192.168.1.1";
         let result = scrub_pii(input, ScrubLevel::Minimal);
         assert_eq!(result, "Error for user [EMAIL] at [IP]");
     }
 
     #[test]
-    fn test_scrub_standard() {
+    fn test_scrub_standard_home_path() {
         let input = "Failed at /home/john/projects/app";
         let result = scrub_pii(input, ScrubLevel::Standard);
         assert!(result.contains("[USER_DIR]"));
@@ -535,14 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn test_scrub_pii_email() {
-        let input = "Error for user john.doe@example.com";
-        let result = scrub_pii(input, ScrubLevel::Minimal);
-        assert!(result.contains("[EMAIL]"));
-        assert!(!result.contains("john.doe@example.com"));
-    }
-
-    #[test]
     fn test_scrub_pii_ipv4() {
         let input = "Connection from 10.0.0.1 failed";
         let result = scrub_pii(input, ScrubLevel::Minimal);
@@ -560,19 +552,13 @@ mod tests {
     }
 
     #[test]
-    fn test_scrub_pii_standard_home_path() {
-        let input = "Error at /home/johndoe/project/file.rs";
-        let result = scrub_pii(input, ScrubLevel::Standard);
-        assert!(result.contains("[USER_DIR]"));
-        assert!(!result.contains("johndoe"));
-    }
-
-    #[test]
-    fn test_scrub_pii_standard_users_path() {
-        let input = "Error at /Users/johndoe/project/file.rs";
-        let result = scrub_pii(input, ScrubLevel::Standard);
-        assert!(result.contains("[USER_DIR]"));
-        assert!(!result.contains("johndoe"));
+    fn test_scrub_pii_standard_user_paths() {
+        for path_prefix in ["/home/johndoe", "/Users/johndoe"] {
+            let input = format!("Error at {}/project/file.rs", path_prefix);
+            let result = scrub_pii(&input, ScrubLevel::Standard);
+            assert!(result.contains("[USER_DIR]"));
+            assert!(!result.contains("johndoe"));
+        }
     }
 
     #[test]
@@ -585,24 +571,15 @@ mod tests {
 
     #[test]
     fn test_scrub_level_from_str() {
-        assert_eq!(
-            "minimal".parse::<ScrubLevel>().unwrap(),
-            ScrubLevel::Minimal
-        );
-        assert_eq!(
-            "aggressive".parse::<ScrubLevel>().unwrap(),
-            ScrubLevel::Aggressive
-        );
-        assert_eq!(
-            "standard".parse::<ScrubLevel>().unwrap(),
-            ScrubLevel::Standard
-        );
-        // Unknown defaults to Standard
-        assert_eq!(
-            "unknown".parse::<ScrubLevel>().unwrap(),
-            ScrubLevel::Standard
-        );
-        assert_eq!("".parse::<ScrubLevel>().unwrap(), ScrubLevel::Standard);
+        for (input, expected) in [
+            ("minimal", ScrubLevel::Minimal),
+            ("aggressive", ScrubLevel::Aggressive),
+            ("standard", ScrubLevel::Standard),
+            ("unknown", ScrubLevel::Standard),
+            ("", ScrubLevel::Standard),
+        ] {
+            assert_eq!(input.parse::<ScrubLevel>().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -661,24 +638,16 @@ mod tests {
     }
 
     #[test]
-    fn test_scrub_json_pii_number_unchanged() {
-        let value = serde_json::json!(42);
-        let result = scrub_json_pii(&value, ScrubLevel::Standard);
-        assert_eq!(result, serde_json::json!(42));
-    }
-
-    #[test]
-    fn test_scrub_json_pii_bool_unchanged() {
-        let value = serde_json::json!(true);
-        let result = scrub_json_pii(&value, ScrubLevel::Standard);
-        assert_eq!(result, serde_json::json!(true));
-    }
-
-    #[test]
-    fn test_scrub_json_pii_null_unchanged() {
-        let value = serde_json::json!(null);
-        let result = scrub_json_pii(&value, ScrubLevel::Standard);
-        assert!(result.is_null());
+    fn test_scrub_json_pii_primitives_unchanged() {
+        assert_eq!(
+            scrub_json_pii(&serde_json::json!(42), ScrubLevel::Standard),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            scrub_json_pii(&serde_json::json!(true), ScrubLevel::Standard),
+            serde_json::json!(true)
+        );
+        assert!(scrub_json_pii(&serde_json::json!(null), ScrubLevel::Standard).is_null());
     }
 
     #[test]

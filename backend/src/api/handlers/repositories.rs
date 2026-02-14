@@ -1365,57 +1365,57 @@ pub async fn update_virtual_members(
 )]
 pub struct RepositoriesApiDoc;
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Compute pagination offset from page number and per_page size.
-pub(crate) fn compute_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
-    let page = page.unwrap_or(1).max(1);
-    let per_page = per_page.unwrap_or(20).min(100);
-    let offset = ((page - 1) * per_page) as i64;
-    (page, per_page, offset)
-}
-
-/// Compute total number of pages given total items and per_page size.
-pub(crate) fn compute_total_pages(total: i64, per_page: u32) -> u32 {
-    ((total as f64) / (per_page as f64)).ceil() as u32
-}
-
-/// Extract the filename from a slash-delimited path.
-pub(crate) fn extract_name_from_path(path: &str) -> String {
-    path.split('/').next_back().unwrap_or(path).to_string()
-}
-
-/// Build a storage path from a base dir and repository key.
-pub(crate) fn build_storage_path(storage_base: &str, repo_key: &str) -> String {
-    format!("{}/{}", storage_base, repo_key)
-}
-
-/// Build a Content-Disposition attachment header value.
-pub(crate) fn content_disposition_attachment(filename: &str) -> String {
-    format!("attachment; filename=\"{}\"", filename)
-}
-
-/// Extract the download filename from an artifact path.
-pub(crate) fn extract_download_filename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-/// Parse a client IP address from an X-Forwarded-For header value.
-pub(crate) fn parse_client_ip(xff_value: Option<&str>) -> std::net::IpAddr {
-    xff_value
-        .and_then(|s| s.split(',').next())
-        .unwrap_or("127.0.0.1")
-        .trim()
-        .parse()
-        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::AppError;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions for testability
+    // -----------------------------------------------------------------------
+
+    /// Compute pagination offset from page number and per_page size.
+    fn compute_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
+        let page = page.unwrap_or(1).max(1);
+        let per_page = per_page.unwrap_or(20).min(100);
+        let offset = ((page - 1) * per_page) as i64;
+        (page, per_page, offset)
+    }
+
+    /// Compute total number of pages given total items and per_page size.
+    fn compute_total_pages(total: i64, per_page: u32) -> u32 {
+        ((total as f64) / (per_page as f64)).ceil() as u32
+    }
+
+    /// Extract the filename from a slash-delimited path.
+    fn extract_name_from_path(path: &str) -> String {
+        path.split('/').next_back().unwrap_or(path).to_string()
+    }
+
+    /// Build a storage path from a base dir and repository key.
+    fn build_storage_path(storage_base: &str, repo_key: &str) -> String {
+        format!("{}/{}", storage_base, repo_key)
+    }
+
+    /// Build a Content-Disposition attachment header value.
+    fn content_disposition_attachment(filename: &str) -> String {
+        format!("attachment; filename=\"{}\"", filename)
+    }
+
+    /// Extract the download filename from an artifact path.
+    fn extract_download_filename(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
+    /// Parse a client IP address from an X-Forwarded-For header value.
+    fn parse_client_ip(xff_value: Option<&str>) -> std::net::IpAddr {
+        xff_value
+            .and_then(|s| s.split(',').next())
+            .unwrap_or("127.0.0.1")
+            .trim()
+            .parse()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+    }
 
     // -----------------------------------------------------------------------
     // validate_repository_key
