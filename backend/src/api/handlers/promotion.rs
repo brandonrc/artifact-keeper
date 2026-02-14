@@ -170,6 +170,30 @@ pub async fn promote_artifact(
     let target_repo = repo_service.get_by_key(&req.target_repository).await?;
     validate_promotion_repos(&source_repo, &target_repo)?;
 
+    // Check if this repository requires approval before direct promotion
+    let requires_approval: Option<(bool,)> = sqlx::query_as(
+        "SELECT COALESCE(require_approval, false) FROM repositories WHERE id = $1",
+    )
+    .bind(source_repo.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    if requires_approval.map(|(v,)| v).unwrap_or(false) {
+        return Ok(Json(PromotionResponse {
+            promoted: false,
+            source: format!("{}/{}", repo_key, artifact_id),
+            target: req.target_repository.clone(),
+            promotion_id: None,
+            policy_violations: vec![],
+            message: Some(
+                "This repository requires approval for promotions. \
+                 Use POST /api/v1/approval/request to submit an approval request."
+                    .to_string(),
+            ),
+        }));
+    }
+
     let artifact = sqlx::query_as!(
         crate::models::artifact::Artifact,
         r#"
