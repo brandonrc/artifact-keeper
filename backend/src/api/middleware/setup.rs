@@ -33,7 +33,13 @@ pub async fn setup_guard(
 
     let is_allowed = matches!(
         path,
-        "/health" | "/ready" | "/metrics" | "/api/v1/setup/status"
+        "/health"
+            | "/healthz"
+            | "/ready"
+            | "/readyz"
+            | "/livez"
+            | "/metrics"
+            | "/api/v1/setup/status"
     ) || path.starts_with("/api/v1/auth")
         || (path.starts_with("/api/v1/users/") && path.ends_with("/password"));
 

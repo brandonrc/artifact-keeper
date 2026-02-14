@@ -8,7 +8,6 @@ use axum::http::{header, Method};
 use axum::Router;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use rand::Rng;
 
@@ -47,14 +46,16 @@ async fn main() -> Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "artifact_keeper_backend=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // Initialize tracing (with optional OpenTelemetry OTLP export).
+    // Read OTel config directly from env since Config::from_env() might fail
+    // and we want tracing available to log those errors.
+    let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+    let otel_service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "artifact-keeper".into());
+    let _otel_guard = artifact_keeper_backend::telemetry::init_tracing(
+        otel_endpoint.as_deref(),
+        &otel_service_name,
+    );
 
     // Load configuration
     let config = Config::from_env()?;

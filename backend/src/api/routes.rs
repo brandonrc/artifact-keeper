@@ -20,7 +20,10 @@ pub fn create_router(state: SharedState) -> Router {
     let mut router = Router::new()
         // Health endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
+        .route("/healthz", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
+        .route("/readyz", get(handlers::health::readiness_check))
+        .route("/livez", get(handlers::health::liveness_check))
         // OpenAPI spec (served by SwaggerUi at /api/v1/openapi.json) and Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api/v1/openapi.json", openapi))
         // API v1 routes

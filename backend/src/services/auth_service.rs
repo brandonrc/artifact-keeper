@@ -970,6 +970,8 @@ mod tests {
             peer_public_endpoint: "http://localhost:8080".to_string(),
             peer_api_key: "test-key".to_string(),
             dependency_track_url: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_service_name: "test".to_string(),
         })
     }
 

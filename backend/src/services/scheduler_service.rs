@@ -328,6 +328,7 @@ async fn update_gauge_metrics(db: &PgPool) -> crate::error::Result<()> {
 
     metrics_service::set_storage_gauge(stats.storage, stats.artifacts, stats.repos);
     metrics_service::set_user_gauge(stats.users);
+    metrics_service::set_db_pool_gauges(db);
 
     Ok(())
 }
