@@ -3,7 +3,6 @@ FROM lukemathwalker/cargo-chef:latest-rust-1.93-bookworm AS planner
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY backend ./backend
-COPY edge ./edge
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ---------- Stage 2: Build dependencies (cached) ----------
@@ -39,7 +38,6 @@ COPY --from=deps /usr/local/cargo /usr/local/cargo
 COPY Cargo.toml Cargo.lock ./
 COPY .sqlx ./.sqlx
 COPY backend ./backend
-COPY edge ./edge
 ENV SQLX_OFFLINE=true
 # Ensure proto files are available for tonic-build
 RUN cargo build --release --bin artifact-keeper
