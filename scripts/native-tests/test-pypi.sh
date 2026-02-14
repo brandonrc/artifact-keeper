@@ -18,6 +18,11 @@ echo "Version: $TEST_VERSION"
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 0; }
 command -v pip3 >/dev/null || { echo "SKIP: pip3 not found"; exit 0; }
 
+# Install system deps if missing (python:slim images lack curl)
+if ! command -v curl >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 || true
+fi
+
 # Install twine + build if needed
 echo "==> Installing test dependencies..."
 pip3 install --quiet twine build 2>/dev/null || true
