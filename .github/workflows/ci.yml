@@ -183,9 +183,9 @@ jobs:
             echo "  ${test} — Exit Code: $exit_code"
             echo "═══════════════════════════════════════════"
             docker logs "$container" 2>&1 || true
-            [ "$exit_code" != "0" ] && failed=true
+            if [ "$exit_code" != "0" ]; then failed=true; fi
           done
-          [ "$failed" = "true" ] && exit 1
+          if [ "$failed" = "true" ]; then exit 1; fi
 
       - name: Cleanup
         if: always()
