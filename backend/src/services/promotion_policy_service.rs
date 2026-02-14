@@ -315,7 +315,9 @@ impl PromotionPolicyService {
 
             // Evaluate signature requirement
             if policy.require_signature {
-                let has_signature = self.check_artifact_signature(artifact_id, repository_id).await?;
+                let has_signature = self
+                    .check_artifact_signature(artifact_id, repository_id)
+                    .await?;
                 let sig_violations = evaluate_signature_requirement(has_signature);
                 for v in sig_violations {
                     action = PolicyAction::Block;
@@ -409,10 +411,12 @@ impl PromotionPolicyService {
         &self,
         artifact_id: Uuid,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-        Ok(sqlx::query_scalar(r#"SELECT created_at FROM artifacts WHERE id = $1"#)
-            .bind(artifact_id)
-            .fetch_optional(&self.db)
-            .await?)
+        Ok(
+            sqlx::query_scalar(r#"SELECT created_at FROM artifacts WHERE id = $1"#)
+                .bind(artifact_id)
+                .fetch_optional(&self.db)
+                .await?,
+        )
     }
 
     async fn check_artifact_signature(
@@ -761,7 +765,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "test-policy".to_string(),
             allowed_licenses: vec!["MIT".to_string(), "Apache-2.0".to_string()],
             denied_licenses: vec!["GPL-3.0".to_string()],
@@ -783,7 +786,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "permissive".to_string(),
             allowed_licenses: vec!["MIT".to_string(), "Apache-2.0".to_string()],
             denied_licenses: vec![],
@@ -805,7 +807,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "contradictory".to_string(),
             allowed_licenses: vec!["MIT".to_string()],
             denied_licenses: vec!["MIT".to_string()],
@@ -828,7 +829,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "strict".to_string(),
             allowed_licenses: vec!["MIT".to_string(), "Apache-2.0".to_string()],
             denied_licenses: vec![],
@@ -852,7 +852,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "lenient".to_string(),
             allowed_licenses: vec!["MIT".to_string()],
             denied_licenses: vec![],
@@ -876,7 +875,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "no-allowed-list".to_string(),
             allowed_licenses: vec![],
             denied_licenses: vec![],
@@ -897,7 +895,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "case-test".to_string(),
             allowed_licenses: vec!["MIT".to_string()],
             denied_licenses: vec!["GPL-3.0".to_string()],
@@ -921,7 +918,6 @@ mod tests {
 
         // Block action => "critical" severity
         let policy_block = LicensePolicyConfig {
-
             name: "block-policy".to_string(),
             allowed_licenses: vec![],
             denied_licenses: vec!["AGPL-3.0".to_string()],
@@ -933,7 +929,6 @@ mod tests {
 
         // Warn action => "medium" severity
         let policy_warn = LicensePolicyConfig {
-
             name: "warn-policy".to_string(),
             allowed_licenses: vec![],
             denied_licenses: vec!["AGPL-3.0".to_string()],
@@ -945,7 +940,6 @@ mod tests {
 
         // Allow action => "low" severity
         let policy_allow = LicensePolicyConfig {
-
             name: "allow-policy".to_string(),
             allowed_licenses: vec![],
             denied_licenses: vec!["AGPL-3.0".to_string()],
@@ -965,7 +959,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "corporate-policy".to_string(),
             allowed_licenses: vec![],
             denied_licenses: vec!["GPL-3.0".to_string()],
@@ -996,7 +989,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "multi".to_string(),
             allowed_licenses: vec!["MIT".to_string()],
             denied_licenses: vec!["GPL-3.0".to_string(), "AGPL-3.0".to_string()],
@@ -1025,7 +1017,6 @@ mod tests {
         };
 
         let policy = LicensePolicyConfig {
-
             name: "empty".to_string(),
             allowed_licenses: vec!["MIT".to_string()],
             denied_licenses: vec!["GPL-3.0".to_string()],
@@ -1269,6 +1260,8 @@ mod tests {
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].rule, "require-signature");
         assert_eq!(violations[0].severity, "high");
-        assert!(violations[0].message.contains("does not have a valid signature"));
+        assert!(violations[0]
+            .message
+            .contains("does not have a valid signature"));
     }
 }

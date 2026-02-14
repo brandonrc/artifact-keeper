@@ -797,7 +797,12 @@ pub async fn promotion_history(
 
 #[derive(OpenApi)]
 #[openapi(
-    paths(promote_artifact, promote_artifacts_bulk, reject_artifact, promotion_history,),
+    paths(
+        promote_artifact,
+        promote_artifacts_bulk,
+        reject_artifact,
+        promotion_history,
+    ),
     components(schemas(
         PromoteArtifactRequest,
         BulkPromoteRequest,

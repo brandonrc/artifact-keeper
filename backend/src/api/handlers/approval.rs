@@ -150,17 +150,13 @@ impl ApprovalRow {
 // ---------------------------------------------------------------------------
 
 /// Check whether a repository requires approval for promotions.
-pub async fn check_approval_required(
-    db: &sqlx::PgPool,
-    repo_id: Uuid,
-) -> Result<bool> {
-    let row: Option<(bool,)> = sqlx::query_as(
-        "SELECT COALESCE(require_approval, false) FROM repositories WHERE id = $1",
-    )
-    .bind(repo_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+pub async fn check_approval_required(db: &sqlx::PgPool, repo_id: Uuid) -> Result<bool> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT COALESCE(require_approval, false) FROM repositories WHERE id = $1")
+            .bind(repo_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(row.map(|(v,)| v).unwrap_or(false))
 }
@@ -356,12 +352,13 @@ pub async fn list_pending_approvals(
     let per_page = query.per_page.unwrap_or(20).min(100);
     let offset = ((page - 1) * per_page) as i64;
 
-    let (rows, total): (Vec<ApprovalRow>, i64) =
-        if let Some(ref source_key) = query.source_repository {
-            let repo_service = RepositoryService::new(state.db.clone());
-            let source = repo_service.get_by_key(source_key).await?;
+    let (rows, total): (Vec<ApprovalRow>, i64) = if let Some(ref source_key) =
+        query.source_repository
+    {
+        let repo_service = RepositoryService::new(state.db.clone());
+        let source = repo_service.get_by_key(source_key).await?;
 
-            let rows: Vec<ApprovalRow> = sqlx::query_as(&format!(
+        let rows: Vec<ApprovalRow> = sqlx::query_as(&format!(
                 "{} WHERE pa.status = 'pending' AND pa.source_repo_id = $1 ORDER BY pa.requested_at DESC LIMIT $2 OFFSET $3",
                 SELECT_APPROVAL
             ))
@@ -372,7 +369,7 @@ pub async fn list_pending_approvals(
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-            let total: (i64,) = sqlx::query_as(
+        let total: (i64,) = sqlx::query_as(
                 "SELECT COUNT(*)::BIGINT FROM promotion_approvals WHERE status = 'pending' AND source_repo_id = $1",
             )
             .bind(source.id)
@@ -380,27 +377,27 @@ pub async fn list_pending_approvals(
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-            (rows, total.0)
-        } else {
-            let rows: Vec<ApprovalRow> = sqlx::query_as(&format!(
-                "{} WHERE pa.status = 'pending' ORDER BY pa.requested_at DESC LIMIT $1 OFFSET $2",
-                SELECT_APPROVAL
-            ))
-            .bind(per_page as i64)
-            .bind(offset)
-            .fetch_all(&state.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        (rows, total.0)
+    } else {
+        let rows: Vec<ApprovalRow> = sqlx::query_as(&format!(
+            "{} WHERE pa.status = 'pending' ORDER BY pa.requested_at DESC LIMIT $1 OFFSET $2",
+            SELECT_APPROVAL
+        ))
+        .bind(per_page as i64)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
-            let total: (i64,) = sqlx::query_as(
-                "SELECT COUNT(*)::BIGINT FROM promotion_approvals WHERE status = 'pending'",
-            )
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+        let total: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*)::BIGINT FROM promotion_approvals WHERE status = 'pending'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
-            (rows, total.0)
-        };
+        (rows, total.0)
+    };
 
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
 
@@ -434,15 +431,12 @@ pub async fn get_approval(
     State(state): State<SharedState>,
     Path(approval_id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
-    let row: ApprovalRow = sqlx::query_as(&format!(
-        "{} WHERE pa.id = $1",
-        SELECT_APPROVAL
-    ))
-    .bind(approval_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?
-    .ok_or_else(|| AppError::NotFound("Approval request not found".to_string()))?;
+    let row: ApprovalRow = sqlx::query_as(&format!("{} WHERE pa.id = $1", SELECT_APPROVAL))
+        .bind(approval_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        .ok_or_else(|| AppError::NotFound("Approval request not found".to_string()))?;
 
     Ok(Json(row.into_response()))
 }
@@ -552,9 +546,7 @@ pub async fn approve_promotion(
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?
-    .ok_or_else(|| {
-        AppError::NotFound("Artifact not found in source repository".to_string())
-    })?;
+    .ok_or_else(|| AppError::NotFound("Artifact not found in source repository".to_string()))?;
 
     // Copy storage content
     let source_storage = FilesystemStorage::new(&source_repo.storage_path);
@@ -655,14 +647,11 @@ pub async fn approve_promotion(
     );
 
     // Return the updated approval
-    let row: ApprovalRow = sqlx::query_as(&format!(
-        "{} WHERE pa.id = $1",
-        SELECT_APPROVAL
-    ))
-    .bind(approval_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let row: ApprovalRow = sqlx::query_as(&format!("{} WHERE pa.id = $1", SELECT_APPROVAL))
+        .bind(approval_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(Json(row.into_response()))
 }
@@ -697,20 +686,15 @@ pub async fn reject_promotion(
         ));
     }
 
-    let current_status: Option<(String,)> = sqlx::query_as(
-        "SELECT status FROM promotion_approvals WHERE id = $1",
-    )
-    .bind(approval_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let current_status: Option<(String,)> =
+        sqlx::query_as("SELECT status FROM promotion_approvals WHERE id = $1")
+            .bind(approval_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
 
     match current_status {
-        None => {
-            return Err(AppError::NotFound(
-                "Approval request not found".to_string(),
-            ))
-        }
+        None => return Err(AppError::NotFound("Approval request not found".to_string())),
         Some((status,)) if status != "pending" => {
             return Err(AppError::Conflict(format!(
                 "Approval request has already been {}",
@@ -742,14 +726,11 @@ pub async fn reject_promotion(
         "Promotion request rejected"
     );
 
-    let row: ApprovalRow = sqlx::query_as(&format!(
-        "{} WHERE pa.id = $1",
-        SELECT_APPROVAL
-    ))
-    .bind(approval_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| AppError::Database(e.to_string()))?;
+    let row: ApprovalRow = sqlx::query_as(&format!("{} WHERE pa.id = $1", SELECT_APPROVAL))
+        .bind(approval_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
 
     Ok(Json(row.into_response()))
 }
