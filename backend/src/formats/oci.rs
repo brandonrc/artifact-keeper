@@ -349,4 +349,154 @@ mod tests {
         // Invalid algorithm
         assert!(OciHandler::validate_digest("md5:abc123").is_err());
     }
+
+    #[test]
+    fn test_parse_path_invalid_no_v2() {
+        let result = OciHandler::parse_path("library/nginx/manifests/latest");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_invalid_too_short() {
+        let result = OciHandler::parse_path("v2/");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_missing_operation() {
+        let result = OciHandler::parse_path("v2/library/nginx");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_tag_list() {
+        let info = OciHandler::parse_path("v2/library/nginx/tags/list").unwrap();
+        assert_eq!(info.name, "library/nginx");
+        assert!(matches!(info.operation, OciOperation::TagList));
+    }
+
+    #[test]
+    fn test_parse_path_leading_slash() {
+        let info = OciHandler::parse_path("/v2/library/nginx/manifests/latest").unwrap();
+        assert_eq!(info.name, "library/nginx");
+        assert!(matches!(info.operation, OciOperation::Manifest));
+        assert_eq!(info.reference, Some("latest".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_blob_upload_without_id() {
+        // Trailing slash creates an empty string part which becomes the upload_id
+        let info = OciHandler::parse_path("v2/myimage/blobs/uploads/").unwrap();
+        assert_eq!(info.name, "myimage");
+        assert!(matches!(info.operation, OciOperation::BlobUpload));
+        assert_eq!(info.reference, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_nested_name() {
+        let info = OciHandler::parse_path("v2/org/team/project/image/manifests/v1.0").unwrap();
+        assert_eq!(info.name, "org/team/project/image");
+        assert!(matches!(info.operation, OciOperation::Manifest));
+        assert_eq!(info.reference, Some("v1.0".to_string()));
+    }
+
+    #[test]
+    fn test_validate_digest_sha512_valid() {
+        let hex = "a".repeat(128);
+        let digest = format!("sha512:{}", hex);
+        assert!(OciHandler::validate_digest(&digest).is_ok());
+    }
+
+    #[test]
+    fn test_validate_digest_sha512_invalid_length() {
+        let hex = "a".repeat(100);
+        let digest = format!("sha512:{}", hex);
+        assert!(OciHandler::validate_digest(&digest).is_err());
+    }
+
+    #[test]
+    fn test_validate_digest_non_hex_characters() {
+        let hex = "g".repeat(64);
+        let digest = format!("sha256:{}", hex);
+        assert!(OciHandler::validate_digest(&digest).is_err());
+    }
+
+    #[test]
+    fn test_validate_digest_no_colon() {
+        assert!(OciHandler::validate_digest("sha256abc123").is_err());
+    }
+
+    #[test]
+    fn test_validate_digest_multiple_colons() {
+        assert!(OciHandler::validate_digest("sha256:abc:123").is_err());
+    }
+
+    #[test]
+    fn test_parse_manifest_valid() {
+        let manifest_json = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": "sha256:abc123",
+                "size": 1234
+            },
+            "layers": [
+                {
+                    "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip",
+                    "digest": "sha256:def456",
+                    "size": 5678
+                }
+            ]
+        });
+        let content = serde_json::to_vec(&manifest_json).unwrap();
+        let manifest = OciHandler::parse_manifest(&content).unwrap();
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.layers.len(), 1);
+        assert!(manifest.config.is_some());
+    }
+
+    #[test]
+    fn test_parse_manifest_invalid_json() {
+        let result = OciHandler::parse_manifest(b"not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_manifest_minimal() {
+        let manifest_json = serde_json::json!({
+            "schemaVersion": 1,
+        });
+        let content = serde_json::to_vec(&manifest_json).unwrap();
+        let manifest = OciHandler::parse_manifest(&content).unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert!(manifest.config.is_none());
+        assert!(manifest.layers.is_empty());
+    }
+
+    #[test]
+    fn test_oci_handler_default() {
+        let handler = OciHandler::default();
+        assert_eq!(handler.format(), RepositoryFormat::Docker);
+    }
+
+    #[test]
+    fn test_media_type_constants() {
+        assert_eq!(media_types::MANIFEST_V2, "application/vnd.docker.distribution.manifest.v2+json");
+        assert_eq!(media_types::OCI_MANIFEST, "application/vnd.oci.image.manifest.v1+json");
+        assert_eq!(media_types::OCI_INDEX, "application/vnd.oci.image.index.v1+json");
+        assert_eq!(media_types::CONFIG, "application/vnd.docker.container.image.v1+json");
+    }
+
+    #[test]
+    fn test_oci_handler_format_key() {
+        let handler = OciHandler::new();
+        assert_eq!(handler.format_key(), "docker");
+    }
+
+    #[test]
+    fn test_oci_handler_is_not_wasm_plugin() {
+        let handler = OciHandler::new();
+        assert!(!handler.is_wasm_plugin());
+    }
 }

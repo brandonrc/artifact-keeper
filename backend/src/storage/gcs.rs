@@ -640,4 +640,163 @@ mpzFW04qb46Uh1fAvnM0cg==
         let backend = GcsBackend::new(config).await;
         assert!(backend.is_ok());
     }
+
+    #[test]
+    fn test_gcs_config_builder_redirect_downloads() {
+        let config = GcsConfig {
+            bucket: "b".to_string(),
+            project_id: "p".to_string(),
+            service_account_email: "s@s.com".to_string(),
+            private_key: None,
+            redirect_downloads: false,
+            signed_url_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
+        };
+        let config = config.with_redirect_downloads(true);
+        assert!(config.redirect_downloads);
+    }
+
+    #[test]
+    fn test_gcs_config_builder_signed_url_expiry() {
+        let config = GcsConfig {
+            bucket: "b".to_string(),
+            project_id: "p".to_string(),
+            service_account_email: "s@s.com".to_string(),
+            private_key: None,
+            redirect_downloads: false,
+            signed_url_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
+        };
+        let config = config.with_signed_url_expiry(Duration::from_secs(7200));
+        assert_eq!(config.signed_url_expiry, Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn test_gcs_config_builder_private_key() {
+        let config = GcsConfig {
+            bucket: "b".to_string(),
+            project_id: "p".to_string(),
+            service_account_email: "s@s.com".to_string(),
+            private_key: None,
+            redirect_downloads: false,
+            signed_url_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
+        };
+        assert!(config.private_key.is_none());
+        let config = config.with_private_key("test-key".to_string());
+        assert_eq!(config.private_key, Some("test-key".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_try_artifactory_fallback_valid_checksum() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let key = "repos/maven/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let fallback = backend.try_artifactory_fallback(key);
+        assert!(fallback.is_some());
+        assert_eq!(
+            fallback.unwrap(),
+            "ab/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_artifactory_fallback_invalid_checksum_length() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        // Too short to be a sha256 hash
+        let key = "repos/maven/abc123";
+        let fallback = backend.try_artifactory_fallback(key);
+        assert!(fallback.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_try_artifactory_fallback_non_hex_chars() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        // 64 chars but not hex
+        let key = "repos/maven/gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg";
+        let fallback = backend.try_artifactory_fallback(key);
+        assert!(fallback.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_try_artifactory_fallback_too_few_parts() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        // Less than 3 path components
+        let key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let fallback = backend.try_artifactory_fallback(key);
+        assert!(fallback.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_object_url_with_special_chars() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let url = backend.object_url("path/with spaces/file.tar.gz");
+        assert_eq!(
+            url,
+            "https://storage.googleapis.com/test-bucket/path/with spaces/file.tar.gz"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_object_url_nested_path() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let url = backend.object_url("a/b/c/d/e/f.bin");
+        assert!(url.starts_with("https://storage.googleapis.com/test-bucket/"));
+        assert!(url.ends_with("a/b/c/d/e/f.bin"));
+    }
+
+    #[tokio::test]
+    async fn test_signed_url_without_key_returns_error() {
+        let mut config = create_test_config();
+        config.private_key = None;
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let result = backend.generate_signed_url("test.txt", Duration::from_secs(3600));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_signed_url_different_keys_different_urls() {
+        let config = create_test_config();
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let url1 = backend
+            .generate_signed_url("file1.txt", Duration::from_secs(3600))
+            .unwrap();
+        let url2 = backend
+            .generate_signed_url("file2.txt", Duration::from_secs(3600))
+            .unwrap();
+        assert_ne!(url1, url2);
+    }
+
+    #[tokio::test]
+    async fn test_gcs_config_clone() {
+        let config = create_test_config();
+        let cloned = config.clone();
+        assert_eq!(cloned.bucket, "test-bucket");
+        assert_eq!(cloned.project_id, "test-project");
+        assert_eq!(cloned.service_account_email, config.service_account_email);
+    }
+
+    #[tokio::test]
+    async fn test_presigned_url_expiry_preserved() {
+        let config = create_test_config().with_redirect_downloads(true);
+        let backend = GcsBackend::new(config).await.unwrap();
+
+        let expires = Duration::from_secs(1800);
+        let result = backend.get_presigned_url("test.txt", expires).await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().expires_in, expires);
+    }
 }

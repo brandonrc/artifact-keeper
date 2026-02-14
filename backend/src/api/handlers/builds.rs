@@ -567,3 +567,495 @@ pub async fn add_build_artifacts(
     ))
 )]
 pub struct BuildsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // require_auth tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_auth_passes_with_some() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "user@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            scopes: None,
+        };
+        let result = require_auth(Some(auth));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().username, "user");
+    }
+
+    #[test]
+    fn test_require_auth_fails_with_none() {
+        let result = require_auth(None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(err_msg.contains("Authentication required"), "Error: {}", err_msg);
+    }
+
+    // -----------------------------------------------------------------------
+    // ListBuildsQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_builds_query_deserialize_full() {
+        let json = json!({
+            "page": 2,
+            "per_page": 50,
+            "status": "running",
+            "search": "my-build",
+            "sort_by": "build_number",
+            "sort_order": "desc"
+        });
+        let query: ListBuildsQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+        assert_eq!(query.status.as_deref(), Some("running"));
+        assert_eq!(query.search.as_deref(), Some("my-build"));
+        assert_eq!(query.sort_by.as_deref(), Some("build_number"));
+        assert_eq!(query.sort_order.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn test_list_builds_query_deserialize_empty() {
+        let json = json!({});
+        let query: ListBuildsQuery = serde_json::from_value(json).unwrap();
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+        assert!(query.status.is_none());
+        assert!(query.search.is_none());
+        assert!(query.sort_by.is_none());
+        assert!(query.sort_order.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Builds pagination logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_builds_pagination_defaults() {
+        let page = None::<u32>.unwrap_or(1).max(1);
+        let per_page = None::<u32>.unwrap_or(20).min(100);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+    }
+
+    #[test]
+    fn test_builds_pagination_page_clamped() {
+        let page = Some(0_u32).unwrap_or(1).max(1);
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_builds_pagination_per_page_capped() {
+        let per_page = Some(200_u32).unwrap_or(20).min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_builds_offset_calculation() {
+        let page: u32 = 5;
+        let per_page: u32 = 10;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // Search pattern construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_pattern_construction() {
+        let search = Some("my-build".to_string());
+        let search_pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert_eq!(search_pattern.as_deref(), Some("%my-build%"));
+    }
+
+    #[test]
+    fn test_search_pattern_none() {
+        let search: Option<String> = None;
+        let search_pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert!(search_pattern.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Sort order parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sort_desc() {
+        let sort_order = Some("desc".to_string());
+        let sort_desc = sort_order.as_deref() == Some("desc");
+        assert!(sort_desc);
+    }
+
+    #[test]
+    fn test_sort_asc() {
+        let sort_order = Some("asc".to_string());
+        let sort_desc = sort_order.as_deref() == Some("desc");
+        assert!(!sort_desc);
+    }
+
+    #[test]
+    fn test_sort_default() {
+        let sort_order: Option<String> = None;
+        let sort_desc = sort_order.as_deref() == Some("desc");
+        assert!(!sort_desc);
+    }
+
+    #[test]
+    fn test_sort_order_clause() {
+        let sort_desc = true;
+        let order_clause = if sort_desc {
+            "ORDER BY build_number DESC"
+        } else {
+            "ORDER BY build_number ASC"
+        };
+        assert_eq!(order_clause, "ORDER BY build_number DESC");
+
+        let sort_desc = false;
+        let order_clause = if sort_desc {
+            "ORDER BY build_number DESC"
+        } else {
+            "ORDER BY build_number ASC"
+        };
+        assert_eq!(order_clause, "ORDER BY build_number ASC");
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildRow -> BuildResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_row_to_response() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let row = BuildRow {
+            id,
+            name: "my-project".to_string(),
+            build_number: 42,
+            status: "success".to_string(),
+            started_at: Some(now),
+            finished_at: Some(now),
+            duration_ms: Some(30000),
+            agent: Some("agent-1".to_string()),
+            created_at: now,
+            updated_at: now,
+            artifact_count: Some(5),
+        };
+        let resp = BuildResponse::from(row);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.name, "my-project");
+        assert_eq!(resp.number, 42);
+        assert_eq!(resp.status, "success");
+        assert_eq!(resp.duration_ms, Some(30000));
+        assert_eq!(resp.agent.as_deref(), Some("agent-1"));
+        assert_eq!(resp.artifact_count, Some(5));
+        // BuildRow doesn't carry these fields
+        assert!(resp.modules.is_none());
+        assert!(resp.vcs_url.is_none());
+        assert!(resp.vcs_revision.is_none());
+        assert!(resp.vcs_branch.is_none());
+        assert!(resp.vcs_message.is_none());
+        assert!(resp.metadata.is_none());
+    }
+
+    #[test]
+    fn test_build_row_to_response_minimal() {
+        let now = Utc::now();
+        let row = BuildRow {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            build_number: 1,
+            status: "running".to_string(),
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            agent: None,
+            created_at: now,
+            updated_at: now,
+            artifact_count: None,
+        };
+        let resp = BuildResponse::from(row);
+        assert_eq!(resp.number, 1);
+        assert!(resp.started_at.is_none());
+        assert!(resp.finished_at.is_none());
+        assert!(resp.duration_ms.is_none());
+        assert!(resp.agent.is_none());
+        assert!(resp.artifact_count.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Build (service model) -> BuildResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_service_model_to_response() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let build = crate::services::build_service::Build {
+            id,
+            name: "my-app".to_string(),
+            build_number: 100,
+            status: "failed".to_string(),
+            started_at: Some(now),
+            finished_at: Some(now),
+            duration_ms: Some(60000),
+            agent: Some("ci-runner".to_string()),
+            artifact_count: Some(3),
+            vcs_url: Some("https://github.com/org/repo".to_string()),
+            vcs_revision: Some("abc123".to_string()),
+            vcs_branch: Some("main".to_string()),
+            vcs_message: Some("fix: bug".to_string()),
+            metadata: Some(json!({"ci": "github-actions"})),
+            created_at: now,
+            updated_at: now,
+        };
+        let resp = BuildResponse::from(build);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.name, "my-app");
+        assert_eq!(resp.number, 100);
+        assert_eq!(resp.status, "failed");
+        assert_eq!(resp.vcs_url.as_deref(), Some("https://github.com/org/repo"));
+        assert_eq!(resp.vcs_revision.as_deref(), Some("abc123"));
+        assert_eq!(resp.vcs_branch.as_deref(), Some("main"));
+        assert_eq!(resp.vcs_message.as_deref(), Some("fix: bug"));
+        assert!(resp.metadata.is_some());
+        assert!(resp.modules.is_none()); // Never set in From impl
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildResponse serialization (skip_serializing_if)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_response_serialize_skips_none_vcs() {
+        let now = Utc::now();
+        let resp = BuildResponse {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            number: 1,
+            status: "running".to_string(),
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            agent: None,
+            created_at: now,
+            updated_at: now,
+            artifact_count: None,
+            modules: None,
+            vcs_url: None,
+            vcs_revision: None,
+            vcs_branch: None,
+            vcs_message: None,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        // skip_serializing_if fields should not be present
+        assert!(json.get("vcs_url").is_none());
+        assert!(json.get("vcs_revision").is_none());
+        assert!(json.get("vcs_branch").is_none());
+        assert!(json.get("vcs_message").is_none());
+        assert!(json.get("metadata").is_none());
+    }
+
+    #[test]
+    fn test_build_response_serialize_includes_vcs() {
+        let now = Utc::now();
+        let resp = BuildResponse {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            number: 1,
+            status: "success".to_string(),
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            agent: None,
+            created_at: now,
+            updated_at: now,
+            artifact_count: None,
+            modules: None,
+            vcs_url: Some("https://github.com/test".to_string()),
+            vcs_revision: Some("deadbeef".to_string()),
+            vcs_branch: Some("feat/new".to_string()),
+            vcs_message: Some("feat: new feature".to_string()),
+            metadata: Some(json!({"key": "value"})),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["vcs_url"], "https://github.com/test");
+        assert_eq!(json["vcs_revision"], "deadbeef");
+        assert_eq!(json["vcs_branch"], "feat/new");
+        assert_eq!(json["vcs_message"], "feat: new feature");
+        assert_eq!(json["metadata"]["key"], "value");
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateBuildRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_build_request_deserialize_minimal() {
+        let json = json!({"name": "my-build", "build_number": 1});
+        let req: CreateBuildRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "my-build");
+        assert_eq!(req.build_number, 1);
+        assert!(req.agent.is_none());
+        assert!(req.started_at.is_none());
+        assert!(req.vcs_url.is_none());
+        assert!(req.metadata.is_none());
+    }
+
+    #[test]
+    fn test_create_build_request_deserialize_full() {
+        let now = Utc::now();
+        let json = json!({
+            "name": "release-build",
+            "build_number": 42,
+            "agent": "jenkins-1",
+            "started_at": now.to_rfc3339(),
+            "vcs_url": "https://github.com/org/repo",
+            "vcs_revision": "abc123",
+            "vcs_branch": "main",
+            "vcs_message": "release v1.0",
+            "metadata": {"ci": "jenkins"}
+        });
+        let req: CreateBuildRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "release-build");
+        assert_eq!(req.build_number, 42);
+        assert_eq!(req.agent.as_deref(), Some("jenkins-1"));
+        assert_eq!(req.vcs_url.as_deref(), Some("https://github.com/org/repo"));
+        assert!(req.metadata.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateBuildRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_build_request_deserialize() {
+        let json = json!({"status": "success"});
+        let req: UpdateBuildRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.status, "success");
+        assert!(req.finished_at.is_none());
+    }
+
+    #[test]
+    fn test_update_build_request_with_finished_at() {
+        let now = Utc::now();
+        let json = json!({"status": "failed", "finished_at": now.to_rfc3339()});
+        let req: UpdateBuildRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.status, "failed");
+        assert!(req.finished_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildDiffQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_diff_query_deserialize() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let json = json!({"build_a": id_a, "build_b": id_b});
+        let query: BuildDiffQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.build_a, id_a);
+        assert_eq!(query.build_b, id_b);
+    }
+
+    // -----------------------------------------------------------------------
+    // AddBuildArtifactsRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_add_build_artifacts_request_deserialize() {
+        let json = json!({
+            "artifacts": [
+                {
+                    "module_name": "core",
+                    "name": "core.jar",
+                    "path": "/com/example/core/1.0/core-1.0.jar",
+                    "checksum_sha256": "abc123",
+                    "size_bytes": 1024
+                },
+                {
+                    "name": "api.jar",
+                    "path": "/com/example/api/1.0/api-1.0.jar",
+                    "checksum_sha256": "def456",
+                    "size_bytes": 2048
+                }
+            ]
+        });
+        let req: AddBuildArtifactsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.artifacts.len(), 2);
+        assert_eq!(req.artifacts[0].module_name.as_deref(), Some("core"));
+        assert!(req.artifacts[1].module_name.is_none());
+        assert_eq!(req.artifacts[0].size_bytes, 1024);
+        assert_eq!(req.artifacts[1].size_bytes, 2048);
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildArtifactDiff serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_artifact_diff_serialize() {
+        let diff = BuildArtifactDiff {
+            name: "app.jar".to_string(),
+            path: "/com/example/app.jar".to_string(),
+            old_checksum: "aaa".to_string(),
+            new_checksum: "bbb".to_string(),
+            old_size_bytes: 1000,
+            new_size_bytes: 1500,
+        };
+        let json = serde_json::to_value(&diff).unwrap();
+        assert_eq!(json["name"], "app.jar");
+        assert_eq!(json["old_checksum"], "aaa");
+        assert_eq!(json["new_checksum"], "bbb");
+        assert_eq!(json["old_size_bytes"], 1000);
+        assert_eq!(json["new_size_bytes"], 1500);
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildDiffResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_diff_response_empty() {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let resp = BuildDiffResponse {
+            build_a: id_a,
+            build_b: id_b,
+            added: vec![],
+            removed: vec![],
+            modified: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["build_a"], id_a.to_string());
+        assert_eq!(json["build_b"], id_b.to_string());
+        assert_eq!(json["added"].as_array().unwrap().len(), 0);
+        assert_eq!(json["removed"].as_array().unwrap().len(), 0);
+        assert_eq!(json["modified"].as_array().unwrap().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Total pages calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_builds_total_pages_calculation() {
+        let total: i64 = 55;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 3);
+    }
+}

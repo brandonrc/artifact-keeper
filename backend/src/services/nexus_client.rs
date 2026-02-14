@@ -361,4 +361,254 @@ mod tests {
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.throttle_delay_ms, 100);
     }
+
+    #[test]
+    fn test_nexus_config_default_auth_empty() {
+        let config = NexusClientConfig::default();
+        assert!(config.auth.username.is_empty());
+        assert!(config.auth.password.is_empty());
+    }
+
+    #[test]
+    fn test_nexus_config_default_base_url_empty() {
+        let config = NexusClientConfig::default();
+        assert!(config.base_url.is_empty());
+    }
+
+    #[test]
+    fn test_nexus_client_creation() {
+        let config = NexusClientConfig {
+            base_url: "https://nexus.example.com".to_string(),
+            auth: NexusAuth {
+                username: "admin".to_string(),
+                password: "admin123".to_string(),
+            },
+            timeout_secs: 60,
+            throttle_delay_ms: 200,
+        };
+        let client = NexusClient::new(config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_nexus_repository_deserialization() {
+        let json = r#"{
+            "name": "maven-releases",
+            "format": "maven2",
+            "type": "hosted",
+            "url": "https://nexus.example.com/repository/maven-releases"
+        }"#;
+        let repo: NexusRepository = serde_json::from_str(json).unwrap();
+        assert_eq!(repo.name, "maven-releases");
+        assert_eq!(repo.format, "maven2");
+        assert_eq!(repo.repo_type, "hosted");
+        assert_eq!(
+            repo.url,
+            Some("https://nexus.example.com/repository/maven-releases".to_string())
+        );
+    }
+
+    #[test]
+    fn test_nexus_repository_without_url() {
+        let json = r#"{
+            "name": "npm-proxy",
+            "format": "npm",
+            "type": "proxy"
+        }"#;
+        let repo: NexusRepository = serde_json::from_str(json).unwrap();
+        assert_eq!(repo.name, "npm-proxy");
+        assert!(repo.url.is_none());
+    }
+
+    #[test]
+    fn test_nexus_component_deserialization() {
+        let json = r#"{
+            "id": "component-id-123",
+            "repository": "maven-releases",
+            "format": "maven2",
+            "group": "com.example",
+            "name": "my-artifact",
+            "version": "1.0.0",
+            "assets": [
+                {
+                    "id": "asset-id-1",
+                    "path": "com/example/my-artifact/1.0.0/my-artifact-1.0.0.jar",
+                    "downloadUrl": "https://nexus.example.com/repository/maven-releases/com/example/my-artifact/1.0.0/my-artifact-1.0.0.jar",
+                    "checksum": {
+                        "sha256": "abc123",
+                        "sha1": "def456",
+                        "md5": "789ghi"
+                    },
+                    "contentType": "application/java-archive",
+                    "fileSize": 2048
+                }
+            ]
+        }"#;
+        let component: NexusComponent = serde_json::from_str(json).unwrap();
+        assert_eq!(component.id, "component-id-123");
+        assert_eq!(component.repository, "maven-releases");
+        assert_eq!(component.group, Some("com.example".to_string()));
+        assert_eq!(component.name, "my-artifact");
+        assert_eq!(component.version, Some("1.0.0".to_string()));
+        assert_eq!(component.assets.len(), 1);
+    }
+
+    #[test]
+    fn test_nexus_asset_deserialization() {
+        let json = r#"{
+            "id": "asset-001",
+            "path": "org/example/lib/1.0/lib-1.0.jar",
+            "downloadUrl": "https://nexus.example.com/repo/org/example/lib/1.0/lib-1.0.jar",
+            "checksum": {
+                "sha256": "sha256hash",
+                "sha1": "sha1hash",
+                "md5": "md5hash"
+            },
+            "contentType": "application/java-archive",
+            "fileSize": 4096
+        }"#;
+        let asset: NexusAsset = serde_json::from_str(json).unwrap();
+        assert_eq!(asset.id, "asset-001");
+        assert_eq!(asset.file_size, Some(4096));
+        assert_eq!(asset.content_type, Some("application/java-archive".to_string()));
+        let checksum = asset.checksum.unwrap();
+        assert_eq!(checksum.sha256, Some("sha256hash".to_string()));
+    }
+
+    #[test]
+    fn test_nexus_asset_minimal() {
+        let json = r#"{"id": "asset-002"}"#;
+        let asset: NexusAsset = serde_json::from_str(json).unwrap();
+        assert_eq!(asset.id, "asset-002");
+        assert!(asset.path.is_none());
+        assert!(asset.download_url.is_none());
+        assert!(asset.checksum.is_none());
+        assert!(asset.content_type.is_none());
+        assert!(asset.file_size.is_none());
+    }
+
+    #[test]
+    fn test_nexus_checksum_deserialization() {
+        let json = r#"{
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+            "md5": "d41d8cd98f00b204e9800998ecf8427e"
+        }"#;
+        let checksum: NexusChecksum = serde_json::from_str(json).unwrap();
+        assert!(checksum.sha256.is_some());
+        assert!(checksum.sha1.is_some());
+        assert!(checksum.md5.is_some());
+    }
+
+    #[test]
+    fn test_nexus_checksum_partial() {
+        let json = r#"{"sha256": "hash_only"}"#;
+        let checksum: NexusChecksum = serde_json::from_str(json).unwrap();
+        assert_eq!(checksum.sha256, Some("hash_only".to_string()));
+        assert!(checksum.sha1.is_none());
+        assert!(checksum.md5.is_none());
+    }
+
+    #[test]
+    fn test_nexus_components_response_deserialization() {
+        let json = r#"{
+            "items": [
+                {
+                    "id": "comp-1",
+                    "repository": "npm-hosted",
+                    "format": "npm",
+                    "name": "my-package",
+                    "version": "2.0.0",
+                    "assets": []
+                }
+            ],
+            "continuationToken": "abc123token"
+        }"#;
+        let response: NexusComponentsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.items.len(), 1);
+        assert_eq!(response.continuation_token, Some("abc123token".to_string()));
+    }
+
+    #[test]
+    fn test_nexus_components_response_no_continuation() {
+        let json = r#"{
+            "items": [],
+            "continuationToken": null
+        }"#;
+        let response: NexusComponentsResponse = serde_json::from_str(json).unwrap();
+        assert!(response.items.is_empty());
+        assert!(response.continuation_token.is_none());
+    }
+
+    #[test]
+    fn test_nexus_status_response_deserialization() {
+        let json = r#"{
+            "edition": "PRO",
+            "version": "3.42.0"
+        }"#;
+        let status: NexusStatusResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(status.edition, Some("PRO".to_string()));
+        assert_eq!(status.version, Some("3.42.0".to_string()));
+    }
+
+    #[test]
+    fn test_nexus_status_response_minimal() {
+        let json = r#"{}"#;
+        let status: NexusStatusResponse = serde_json::from_str(json).unwrap();
+        assert!(status.edition.is_none());
+        assert!(status.version.is_none());
+    }
+
+    #[test]
+    fn test_nexus_component_without_optional_fields() {
+        let json = r#"{
+            "id": "comp-2",
+            "repository": "docker-hosted",
+            "format": "docker",
+            "name": "myimage",
+            "assets": []
+        }"#;
+        let component: NexusComponent = serde_json::from_str(json).unwrap();
+        assert_eq!(component.name, "myimage");
+        assert!(component.group.is_none());
+        assert!(component.version.is_none());
+        assert!(component.assets.is_empty());
+    }
+
+    #[test]
+    fn test_source_type_returns_nexus() {
+        let config = NexusClientConfig {
+            base_url: "https://nexus.example.com".to_string(),
+            auth: NexusAuth {
+                username: "admin".to_string(),
+                password: "admin123".to_string(),
+            },
+            ..Default::default()
+        };
+        let client = NexusClient::new(config).unwrap();
+        use crate::services::source_registry::SourceRegistry;
+        assert_eq!(client.source_type(), "nexus");
+    }
+
+    #[test]
+    fn test_nexus_component_multiple_assets() {
+        let json = r#"{
+            "id": "comp-3",
+            "repository": "maven-releases",
+            "format": "maven2",
+            "group": "org.test",
+            "name": "lib",
+            "version": "3.0",
+            "assets": [
+                {"id": "a1", "path": "org/test/lib/3.0/lib-3.0.jar", "fileSize": 100},
+                {"id": "a2", "path": "org/test/lib/3.0/lib-3.0.pom", "fileSize": 50},
+                {"id": "a3", "path": "org/test/lib/3.0/lib-3.0-sources.jar", "fileSize": 200}
+            ]
+        }"#;
+        let component: NexusComponent = serde_json::from_str(json).unwrap();
+        assert_eq!(component.assets.len(), 3);
+        assert_eq!(component.assets[0].file_size, Some(100));
+        assert_eq!(component.assets[1].file_size, Some(50));
+        assert_eq!(component.assets[2].file_size, Some(200));
+    }
 }

@@ -511,3 +511,411 @@ async fn update_network_profile(
     ))
 )]
 pub struct PeerApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Timelike;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // parse_peer_status tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_peer_status_active() {
+        assert!(matches!(parse_peer_status("active"), Some(PeerStatus::Active)));
+    }
+
+    #[test]
+    fn test_parse_peer_status_probing() {
+        assert!(matches!(parse_peer_status("probing"), Some(PeerStatus::Probing)));
+    }
+
+    #[test]
+    fn test_parse_peer_status_unreachable() {
+        assert!(matches!(parse_peer_status("unreachable"), Some(PeerStatus::Unreachable)));
+    }
+
+    #[test]
+    fn test_parse_peer_status_disabled() {
+        assert!(matches!(parse_peer_status("disabled"), Some(PeerStatus::Disabled)));
+    }
+
+    #[test]
+    fn test_parse_peer_status_case_insensitive() {
+        assert!(matches!(parse_peer_status("ACTIVE"), Some(PeerStatus::Active)));
+        assert!(matches!(parse_peer_status("Probing"), Some(PeerStatus::Probing)));
+        assert!(matches!(parse_peer_status("UNREACHABLE"), Some(PeerStatus::Unreachable)));
+        assert!(matches!(parse_peer_status("Disabled"), Some(PeerStatus::Disabled)));
+    }
+
+    #[test]
+    fn test_parse_peer_status_unknown() {
+        assert!(parse_peer_status("online").is_none());
+        assert!(parse_peer_status("unknown").is_none());
+        assert!(parse_peer_status("").is_none());
+        assert!(parse_peer_status("  active  ").is_none()); // no trim
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerStatus Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_status_display() {
+        assert_eq!(PeerStatus::Active.to_string(), "active");
+        assert_eq!(PeerStatus::Probing.to_string(), "probing");
+        assert_eq!(PeerStatus::Unreachable.to_string(), "unreachable");
+        assert_eq!(PeerStatus::Disabled.to_string(), "disabled");
+    }
+
+    // -----------------------------------------------------------------------
+    // ListPeersQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_peers_query_deserialize_with_status() {
+        let json = json!({"status": "active"});
+        let query: ListPeersQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.status.as_deref(), Some("active"));
+    }
+
+    #[test]
+    fn test_list_peers_query_deserialize_empty() {
+        let json = json!({});
+        let query: ListPeersQuery = serde_json::from_value(json).unwrap();
+        assert!(query.status.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ProbeBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_probe_body_deserialize_full() {
+        let target_id = Uuid::new_v4();
+        let json = json!({
+            "target_peer_id": target_id,
+            "latency_ms": 45,
+            "bandwidth_estimate_bps": 1000000
+        });
+        let body: ProbeBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.target_peer_id, target_id);
+        assert_eq!(body.latency_ms, 45);
+        assert_eq!(body.bandwidth_estimate_bps, Some(1000000));
+    }
+
+    #[test]
+    fn test_probe_body_deserialize_minimal() {
+        let target_id = Uuid::new_v4();
+        let json = json!({
+            "target_peer_id": target_id,
+            "latency_ms": 100
+        });
+        let body: ProbeBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.latency_ms, 100);
+        assert!(body.bandwidth_estimate_bps.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_response_serialize() {
+        let id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let resp = PeerResponse {
+            id,
+            target_peer_id: target_id,
+            status: "active".to_string(),
+            latency_ms: Some(25),
+            bandwidth_estimate_bps: Some(500_000),
+            shared_artifacts_count: 100,
+            shared_chunks_count: 200,
+            bytes_transferred_total: 1_000_000_000,
+            transfer_success_count: 95,
+            transfer_failure_count: 5,
+            last_probed_at: None,
+            last_transfer_at: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["status"], "active");
+        assert_eq!(json["latency_ms"], 25);
+        assert_eq!(json["bandwidth_estimate_bps"], 500_000);
+        assert_eq!(json["shared_artifacts_count"], 100);
+        assert_eq!(json["shared_chunks_count"], 200);
+        assert_eq!(json["bytes_transferred_total"], 1_000_000_000_i64);
+        assert_eq!(json["transfer_success_count"], 95);
+        assert_eq!(json["transfer_failure_count"], 5);
+    }
+
+    #[test]
+    fn test_peer_response_serialize_null_optionals() {
+        let resp = PeerResponse {
+            id: Uuid::nil(),
+            target_peer_id: Uuid::nil(),
+            status: "unreachable".to_string(),
+            latency_ms: None,
+            bandwidth_estimate_bps: None,
+            shared_artifacts_count: 0,
+            shared_chunks_count: 0,
+            bytes_transferred_total: 0,
+            transfer_success_count: 0,
+            transfer_failure_count: 0,
+            last_probed_at: None,
+            last_transfer_at: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["latency_ms"].is_null());
+        assert!(json["bandwidth_estimate_bps"].is_null());
+        assert!(json["last_probed_at"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // DiscoverablePeerResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_discoverable_peer_response_serialize() {
+        let resp = DiscoverablePeerResponse {
+            peer_id: Uuid::nil(),
+            name: "edge-node-us-east".to_string(),
+            endpoint_url: "https://edge-us.example.com".to_string(),
+            region: Some("us-east-1".to_string()),
+            status: "online".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "edge-node-us-east");
+        assert_eq!(json["endpoint_url"], "https://edge-us.example.com");
+        assert_eq!(json["region"], "us-east-1");
+        assert_eq!(json["status"], "online");
+    }
+
+    #[test]
+    fn test_discoverable_peer_response_no_region() {
+        let resp = DiscoverablePeerResponse {
+            peer_id: Uuid::nil(),
+            name: "peer".to_string(),
+            endpoint_url: "https://peer.example.com".to_string(),
+            region: None,
+            status: "online".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["region"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // ChunkAvailabilityResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_availability_response_serialize() {
+        let peer_id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let resp = ChunkAvailabilityResponse {
+            peer_instance_id: peer_id,
+            artifact_id,
+            chunk_bitmap: vec![0xFF, 0x0F, 0x00],
+            total_chunks: 24,
+            available_chunks: 12,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["total_chunks"], 24);
+        assert_eq!(json["available_chunks"], 12);
+        // chunk_bitmap serialized as array
+        let bitmap = json["chunk_bitmap"].as_array().unwrap();
+        assert_eq!(bitmap.len(), 3);
+        assert_eq!(bitmap[0], 255);
+        assert_eq!(bitmap[1], 15);
+        assert_eq!(bitmap[2], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateChunkAvailabilityBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_chunk_availability_body_deserialize() {
+        let json = json!({
+            "chunk_bitmap": [255, 15, 0],
+            "total_chunks": 24
+        });
+        let body: UpdateChunkAvailabilityBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.chunk_bitmap, vec![0xFF, 0x0F, 0x00]);
+        assert_eq!(body.total_chunks, 24);
+    }
+
+    // -----------------------------------------------------------------------
+    // ScoredPeerResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scored_peer_response_serialize() {
+        let resp = ScoredPeerResponse {
+            peer_id: Uuid::nil(),
+            endpoint_url: "https://peer.example.com".to_string(),
+            latency_ms: Some(10),
+            bandwidth_estimate_bps: Some(10_000_000),
+            available_chunks: 50,
+            score: 0.95,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["latency_ms"], 10);
+        assert_eq!(json["bandwidth_estimate_bps"], 10_000_000);
+        assert_eq!(json["available_chunks"], 50);
+        assert_eq!(json["score"], 0.95);
+    }
+
+    #[test]
+    fn test_scored_peer_response_no_metrics() {
+        let resp = ScoredPeerResponse {
+            peer_id: Uuid::nil(),
+            endpoint_url: "https://peer.example.com".to_string(),
+            latency_ms: None,
+            bandwidth_estimate_bps: None,
+            available_chunks: 0,
+            score: 0.0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["latency_ms"].is_null());
+        assert!(json["bandwidth_estimate_bps"].is_null());
+        assert_eq!(json["score"], 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // NetworkProfileBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_network_profile_body_deserialize_full() {
+        let json = json!({
+            "max_bandwidth_bps": 100000000,
+            "sync_window_start": "02:00:00",
+            "sync_window_end": "06:00:00",
+            "sync_window_timezone": "America/New_York",
+            "concurrent_transfers_limit": 4
+        });
+        let body: NetworkProfileBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.max_bandwidth_bps, Some(100000000));
+        assert_eq!(body.sync_window_start.as_deref(), Some("02:00:00"));
+        assert_eq!(body.sync_window_end.as_deref(), Some("06:00:00"));
+        assert_eq!(body.sync_window_timezone.as_deref(), Some("America/New_York"));
+        assert_eq!(body.concurrent_transfers_limit, Some(4));
+    }
+
+    #[test]
+    fn test_network_profile_body_deserialize_empty() {
+        let json = json!({});
+        let body: NetworkProfileBody = serde_json::from_value(json).unwrap();
+        assert!(body.max_bandwidth_bps.is_none());
+        assert!(body.sync_window_start.is_none());
+        assert!(body.sync_window_end.is_none());
+        assert!(body.sync_window_timezone.is_none());
+        assert!(body.concurrent_transfers_limit.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // NaiveTime parsing (used in update_network_profile)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_naive_time_parsing_valid() {
+        let time_str = "02:00:00";
+        let parsed = time_str.parse::<chrono::NaiveTime>();
+        assert!(parsed.is_ok());
+        let time = parsed.unwrap();
+        assert_eq!(time.hour(), 2);
+        assert_eq!(time.minute(), 0);
+    }
+
+    #[test]
+    fn test_naive_time_parsing_invalid() {
+        let time_str = "not-a-time";
+        let parsed = time_str.parse::<chrono::NaiveTime>();
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn test_naive_time_parsing_midnight() {
+        let time_str = "00:00:00";
+        let parsed = time_str.parse::<chrono::NaiveTime>();
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_naive_time_parsing_end_of_day() {
+        let time_str = "23:59:59";
+        let parsed = time_str.parse::<chrono::NaiveTime>();
+        assert!(parsed.is_ok());
+        let time = parsed.unwrap();
+        assert_eq!(time.hour(), 23);
+        assert_eq!(time.minute(), 59);
+    }
+
+    // -----------------------------------------------------------------------
+    // Time parsing via Option::map + transpose (handler pattern)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_optional_time_parsing_some_valid() {
+        let time_str = Some("14:30:00".to_string());
+        let result = time_str
+            .as_ref()
+            .map(|s| s.parse::<chrono::NaiveTime>())
+            .transpose();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn test_optional_time_parsing_none() {
+        let time_str: Option<String> = None;
+        let result = time_str
+            .as_ref()
+            .map(|s| s.parse::<chrono::NaiveTime>())
+            .transpose();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_optional_time_parsing_some_invalid() {
+        let time_str = Some("invalid".to_string());
+        let result = time_str
+            .as_ref()
+            .map(|s| s.parse::<chrono::NaiveTime>())
+            .transpose();
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Peer status filter logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_status_filter_from_query() {
+        let query = ListPeersQuery {
+            status: Some("active".to_string()),
+        };
+        let filter = query.status.as_ref().and_then(|s| parse_peer_status(s));
+        assert!(matches!(filter, Some(PeerStatus::Active)));
+    }
+
+    #[test]
+    fn test_status_filter_from_query_none() {
+        let query = ListPeersQuery { status: None };
+        let filter = query.status.as_ref().and_then(|s| parse_peer_status(s));
+        assert!(filter.is_none());
+    }
+
+    #[test]
+    fn test_status_filter_invalid() {
+        let query = ListPeersQuery {
+            status: Some("invalid".to_string()),
+        };
+        let filter = query.status.as_ref().and_then(|s| parse_peer_status(s));
+        assert!(filter.is_none());
+    }
+}

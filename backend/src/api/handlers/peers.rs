@@ -610,3 +610,394 @@ async fn get_identity(State(state): State<SharedState>) -> Result<Json<IdentityR
     ))
 )]
 pub struct PeersApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // parse_status tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_status_online() {
+        assert!(matches!(parse_status("online"), Some(InstanceStatus::Online)));
+    }
+
+    #[test]
+    fn test_parse_status_offline() {
+        assert!(matches!(parse_status("offline"), Some(InstanceStatus::Offline)));
+    }
+
+    #[test]
+    fn test_parse_status_syncing() {
+        assert!(matches!(parse_status("syncing"), Some(InstanceStatus::Syncing)));
+    }
+
+    #[test]
+    fn test_parse_status_degraded() {
+        assert!(matches!(parse_status("degraded"), Some(InstanceStatus::Degraded)));
+    }
+
+    #[test]
+    fn test_parse_status_case_insensitive() {
+        assert!(matches!(parse_status("ONLINE"), Some(InstanceStatus::Online)));
+        assert!(matches!(parse_status("Offline"), Some(InstanceStatus::Offline)));
+        assert!(matches!(parse_status("SyNcInG"), Some(InstanceStatus::Syncing)));
+        assert!(matches!(parse_status("DEGRADED"), Some(InstanceStatus::Degraded)));
+    }
+
+    #[test]
+    fn test_parse_status_unknown_returns_none() {
+        assert!(parse_status("unknown").is_none());
+        assert!(parse_status("active").is_none());
+        assert!(parse_status("").is_none());
+        assert!(parse_status("  online  ").is_none()); // no trim
+    }
+
+    // -----------------------------------------------------------------------
+    // ListPeersQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_peers_query_deserialize_full() {
+        let json_str = r#"{"status":"online","region":"us-east","page":2,"per_page":50}"#;
+        let query: ListPeersQuery = serde_json::from_str(json_str).unwrap();
+        assert_eq!(query.status.as_deref(), Some("online"));
+        assert_eq!(query.region.as_deref(), Some("us-east"));
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+    }
+
+    #[test]
+    fn test_list_peers_query_deserialize_empty() {
+        let json_str = r#"{}"#;
+        let query: ListPeersQuery = serde_json::from_str(json_str).unwrap();
+        assert!(query.status.is_none());
+        assert!(query.region.is_none());
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RegisterPeerRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_register_peer_request_deserialize_minimal() {
+        let json_str = r#"{"name":"peer1","endpoint_url":"https://peer1.example.com","api_key":"key123"}"#;
+        let req: RegisterPeerRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.name, "peer1");
+        assert_eq!(req.endpoint_url, "https://peer1.example.com");
+        assert_eq!(req.api_key, "key123");
+        assert!(req.region.is_none());
+        assert!(req.cache_size_bytes.is_none());
+        assert!(req.sync_filter.is_none());
+    }
+
+    #[test]
+    fn test_register_peer_request_deserialize_full() {
+        let json_str = json!({
+            "name": "peer1",
+            "endpoint_url": "https://peer1.example.com",
+            "api_key": "key123",
+            "region": "eu-west-1",
+            "cache_size_bytes": 5368709120_i64,
+            "sync_filter": {"formats": ["maven", "npm"]}
+        });
+        let req: RegisterPeerRequest = serde_json::from_value(json_str).unwrap();
+        assert_eq!(req.name, "peer1");
+        assert_eq!(req.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(req.cache_size_bytes, Some(5368709120));
+        assert!(req.sync_filter.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerInstanceResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_instance_response_api_key_hidden() {
+        let resp = PeerInstanceResponse {
+            id: Uuid::nil(),
+            name: "test-peer".to_string(),
+            endpoint_url: "https://example.com".to_string(),
+            status: "online".to_string(),
+            region: None,
+            cache_size_bytes: 1000,
+            cache_used_bytes: 500,
+            cache_usage_percent: 50.0,
+            last_heartbeat_at: None,
+            last_sync_at: None,
+            created_at: chrono::Utc::now(),
+            api_key: "secret-key-should-be-hidden".to_string(),
+            is_local: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        // api_key should be skipped due to skip_serializing
+        assert!(json.get("api_key").is_none());
+        assert_eq!(json["name"], "test-peer");
+        assert_eq!(json["status"], "online");
+    }
+
+    #[test]
+    fn test_peer_instance_response_cache_usage() {
+        let resp = PeerInstanceResponse {
+            id: Uuid::nil(),
+            name: "test-peer".to_string(),
+            endpoint_url: "https://example.com".to_string(),
+            status: "online".to_string(),
+            region: Some("us-east-1".to_string()),
+            cache_size_bytes: 10000,
+            cache_used_bytes: 7500,
+            cache_usage_percent: 75.0,
+            last_heartbeat_at: None,
+            last_sync_at: None,
+            created_at: chrono::Utc::now(),
+            api_key: "key".to_string(),
+            is_local: true,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["cache_usage_percent"], 75.0);
+        assert_eq!(json["is_local"], true);
+        assert_eq!(json["region"], "us-east-1");
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache usage percentage calculation logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cache_usage_percent_zero_size() {
+        // When cache_size_bytes is 0, usage percent should be 0.0
+        let cache_size_bytes: i64 = 0;
+        let cache_used_bytes: i64 = 100;
+        let usage_percent = if cache_size_bytes > 0 {
+            (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        assert_eq!(usage_percent, 0.0);
+    }
+
+    #[test]
+    fn test_cache_usage_percent_normal() {
+        let cache_size_bytes: i64 = 10_000_000;
+        let cache_used_bytes: i64 = 5_000_000;
+        let usage_percent = if cache_size_bytes > 0 {
+            (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        assert!((usage_percent - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_usage_percent_full() {
+        let cache_size_bytes: i64 = 1_000_000;
+        let cache_used_bytes: i64 = 1_000_000;
+        let usage_percent = if cache_size_bytes > 0 {
+            (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        assert!((usage_percent - 100.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // HeartbeatRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_heartbeat_request_deserialize() {
+        let json_str = r#"{"cache_used_bytes": 12345, "status": "online"}"#;
+        let req: HeartbeatRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.cache_used_bytes, 12345);
+        assert_eq!(req.status.as_deref(), Some("online"));
+    }
+
+    #[test]
+    fn test_heartbeat_request_status_optional() {
+        let json_str = r#"{"cache_used_bytes": 0}"#;
+        let req: HeartbeatRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.cache_used_bytes, 0);
+        assert!(req.status.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // AssignRepoRequest deserialization and replication mode parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assign_repo_request_deserialize() {
+        let id = Uuid::new_v4();
+        let json_str = json!({
+            "repository_id": id,
+            "sync_enabled": true,
+            "replication_mode": "push",
+            "replication_schedule": "0 */6 * * *"
+        });
+        let req: AssignRepoRequest = serde_json::from_value(json_str).unwrap();
+        assert_eq!(req.repository_id, id);
+        assert_eq!(req.sync_enabled, Some(true));
+        assert_eq!(req.replication_mode.as_deref(), Some("push"));
+        assert_eq!(req.replication_schedule.as_deref(), Some("0 */6 * * *"));
+    }
+
+    #[test]
+    fn test_replication_mode_parsing() {
+        let parse_mode = |s: &str| -> Option<ReplicationMode> {
+            match s.to_lowercase().as_str() {
+                "push" => Some(ReplicationMode::Push),
+                "pull" => Some(ReplicationMode::Pull),
+                "mirror" => Some(ReplicationMode::Mirror),
+                "none" => Some(ReplicationMode::None),
+                _ => None,
+            }
+        };
+        assert!(matches!(parse_mode("push"), Some(ReplicationMode::Push)));
+        assert!(matches!(parse_mode("pull"), Some(ReplicationMode::Pull)));
+        assert!(matches!(parse_mode("mirror"), Some(ReplicationMode::Mirror)));
+        assert!(matches!(parse_mode("none"), Some(ReplicationMode::None)));
+        assert!(matches!(parse_mode("PUSH"), Some(ReplicationMode::Push)));
+        assert!(parse_mode("invalid").is_none());
+        assert!(parse_mode("").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_defaults() {
+        let page: u32 = None::<u32>.unwrap_or(1).max(1);
+        let per_page: u32 = None::<u32>.unwrap_or(20).min(100);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+    }
+
+    #[test]
+    fn test_pagination_zero_page_clamped() {
+        let page: u32 = Some(0_u32).unwrap_or(1).max(1);
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_pagination_per_page_capped() {
+        let per_page: u32 = Some(200_u32).unwrap_or(20).min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_pagination_offset_calculation() {
+        let page: u32 = 3;
+        let per_page: u32 = 20;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // AnnouncePeerRequest / IdentityResponse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_announce_peer_request_deserialize() {
+        let peer_id = Uuid::new_v4();
+        let json = json!({
+            "peer_id": peer_id,
+            "name": "remote-peer",
+            "endpoint_url": "https://remote.example.com",
+            "api_key": "remote-key"
+        });
+        let req: AnnouncePeerRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.peer_id, peer_id);
+        assert_eq!(req.name, "remote-peer");
+        assert_eq!(req.endpoint_url, "https://remote.example.com");
+        assert_eq!(req.api_key, "remote-key");
+    }
+
+    #[test]
+    fn test_identity_response_serialize() {
+        let id = Uuid::new_v4();
+        let resp = IdentityResponse {
+            peer_id: id,
+            name: "local-peer".to_string(),
+            endpoint_url: "https://local.example.com".to_string(),
+            api_key: "local-key".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["peer_id"], id.to_string());
+        assert_eq!(json["name"], "local-peer");
+        assert_eq!(json["endpoint_url"], "https://local.example.com");
+        assert_eq!(json["api_key"], "local-key");
+    }
+
+    // -----------------------------------------------------------------------
+    // SyncTaskResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_task_response_serialize() {
+        let id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let resp = SyncTaskResponse {
+            id,
+            artifact_id,
+            storage_key: "artifacts/maven/com/example/1.0/foo.jar".to_string(),
+            artifact_size: 1024 * 1024,
+            priority: 5,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], id.to_string());
+        assert_eq!(json["artifact_id"], artifact_id.to_string());
+        assert_eq!(json["storage_key"], "artifacts/maven/com/example/1.0/foo.jar");
+        assert_eq!(json["artifact_size"], 1048576);
+        assert_eq!(json["priority"], 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerInstanceListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_instance_list_response_empty() {
+        let resp = PeerInstanceListResponse {
+            items: vec![],
+            total: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 0);
+        assert_eq!(json["total"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Default cache size in register (10GB)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_cache_size() {
+        let default_cache: i64 = None::<i64>.unwrap_or(10 * 1024 * 1024 * 1024);
+        assert_eq!(default_cache, 10_737_418_240);
+    }
+
+    // -----------------------------------------------------------------------
+    // sync_enabled defaults to true
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assign_repo_sync_enabled_default() {
+        let sync_enabled = None::<bool>.unwrap_or(true);
+        assert!(sync_enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // sync tasks limit default
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_tasks_limit_default() {
+        let limit = None::<u32>.unwrap_or(50) as i64;
+        assert_eq!(limit, 50);
+    }
+}

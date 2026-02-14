@@ -475,21 +475,8 @@ impl LdapService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_sanitize_ldap_input() {
-        assert_eq!(LdapService::sanitize_ldap_input("user"), "user");
-        assert_eq!(LdapService::sanitize_ldap_input("user*"), "user\\2a");
-        assert_eq!(LdapService::sanitize_ldap_input("(user)"), "\\28user\\29");
-        assert_eq!(
-            LdapService::sanitize_ldap_input("user\\name"),
-            "user\\5cname"
-        );
-    }
-
-    #[test]
-    fn test_ldap_config_from_env() {
-        // Config requires LDAP_URL and LDAP_BASE_DN
-        let config = Config {
+    fn make_test_config() -> Config {
+        Config {
             database_url: "postgres://localhost/test".into(),
             bind_address: "0.0.0.0:8080".into(),
             log_level: "info".into(),
@@ -520,12 +507,207 @@ mod tests {
             dependency_track_url: None,
             otel_exporter_otlp_endpoint: None,
             otel_service_name: "test".into(),
-        };
+        }
+    }
+
+    fn make_test_ldap_config() -> LdapConfig {
+        LdapConfig {
+            url: "ldap://ldap.example.com:389".to_string(),
+            base_dn: "dc=example,dc=com".to_string(),
+            user_filter: "(uid={username})".to_string(),
+            bind_dn: None,
+            bind_password: None,
+            username_attr: "uid".to_string(),
+            email_attr: "mail".to_string(),
+            display_name_attr: "cn".to_string(),
+            groups_attr: "memberOf".to_string(),
+            admin_group_dn: Some("cn=admins,ou=groups,dc=example,dc=com".to_string()),
+            use_starttls: false,
+        }
+    }
+
+    #[test]
+    fn test_sanitize_ldap_input() {
+        assert_eq!(LdapService::sanitize_ldap_input("user"), "user");
+        assert_eq!(LdapService::sanitize_ldap_input("user*"), "user\\2a");
+        assert_eq!(LdapService::sanitize_ldap_input("(user)"), "\\28user\\29");
+        assert_eq!(
+            LdapService::sanitize_ldap_input("user\\name"),
+            "user\\5cname"
+        );
+    }
+
+    #[test]
+    fn test_ldap_config_from_env() {
+        let config = make_test_config();
 
         let ldap_config = LdapConfig::from_config(&config);
         assert!(ldap_config.is_some());
         let ldap_config = ldap_config.unwrap();
         assert_eq!(ldap_config.url, "ldap://localhost:389");
         assert_eq!(ldap_config.base_dn, "dc=example,dc=com");
+    }
+
+    #[test]
+    fn test_sanitize_ldap_input_null_byte() {
+        assert_eq!(LdapService::sanitize_ldap_input("user\0name"), "user\\00name");
+    }
+
+    #[test]
+    fn test_sanitize_ldap_input_multiple_special_chars() {
+        let input = "*()\\\0";
+        let sanitized = LdapService::sanitize_ldap_input(input);
+        assert_eq!(sanitized, "\\2a\\28\\29\\5c\\00");
+    }
+
+    #[test]
+    fn test_sanitize_ldap_input_empty_string() {
+        assert_eq!(LdapService::sanitize_ldap_input(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_ldap_input_normal_chars_unmodified() {
+        let input = "john.doe@example.com";
+        assert_eq!(LdapService::sanitize_ldap_input(input), input);
+    }
+
+    #[test]
+    fn test_ldap_config_returns_none_without_url() {
+        let mut config = make_test_config();
+        config.ldap_url = None;
+        let ldap_config = LdapConfig::from_config(&config);
+        assert!(ldap_config.is_none());
+    }
+
+    #[test]
+    fn test_ldap_config_returns_none_without_base_dn() {
+        let mut config = make_test_config();
+        config.ldap_base_dn = None;
+        let ldap_config = LdapConfig::from_config(&config);
+        assert!(ldap_config.is_none());
+    }
+
+    #[test]
+    fn test_ldap_config_returns_none_without_both() {
+        let mut config = make_test_config();
+        config.ldap_url = None;
+        config.ldap_base_dn = None;
+        let ldap_config = LdapConfig::from_config(&config);
+        assert!(ldap_config.is_none());
+    }
+
+    #[test]
+    fn test_ldap_user_info_serialization_roundtrip() {
+        let user_info = LdapUserInfo {
+            dn: "uid=john,ou=users,dc=example,dc=com".to_string(),
+            username: "john".to_string(),
+            email: "john@example.com".to_string(),
+            display_name: Some("John Doe".to_string()),
+            groups: vec![
+                "cn=developers,ou=groups,dc=example,dc=com".to_string(),
+                "cn=admins,ou=groups,dc=example,dc=com".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&user_info).unwrap();
+        let deserialized: LdapUserInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.dn, user_info.dn);
+        assert_eq!(deserialized.username, user_info.username);
+        assert_eq!(deserialized.email, user_info.email);
+        assert_eq!(deserialized.display_name, user_info.display_name);
+        assert_eq!(deserialized.groups, user_info.groups);
+    }
+
+    #[test]
+    fn test_ldap_user_info_deserialization_minimal() {
+        let json = r#"{
+            "dn": "uid=test,dc=test",
+            "username": "test",
+            "email": "test@test.com",
+            "display_name": null,
+            "groups": []
+        }"#;
+        let user: LdapUserInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(user.username, "test");
+        assert!(user.display_name.is_none());
+        assert!(user.groups.is_empty());
+    }
+
+    #[test]
+    fn test_ldap_config_is_configured_true() {
+        let config = make_test_ldap_config();
+        // Create an LdapConfig directly and check is_configured logic
+        assert!(!config.url.is_empty());
+        assert!(!config.base_dn.is_empty());
+    }
+
+    #[test]
+    fn test_ldap_config_is_configured_empty_url() {
+        let mut config = make_test_ldap_config();
+        config.url = String::new();
+        // The is_configured check relies on url and base_dn being non-empty
+        assert!(config.url.is_empty());
+    }
+
+    #[test]
+    fn test_ldap_config_admin_group_dn() {
+        let config = make_test_ldap_config();
+        assert_eq!(
+            config.admin_group_dn,
+            Some("cn=admins,ou=groups,dc=example,dc=com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ldap_config_no_admin_group() {
+        let mut config = make_test_ldap_config();
+        config.admin_group_dn = None;
+        assert!(config.admin_group_dn.is_none());
+    }
+
+    #[test]
+    fn test_ldap_config_starttls_default() {
+        let config = make_test_ldap_config();
+        assert!(!config.use_starttls);
+    }
+
+    #[test]
+    fn test_ldap_config_default_attributes() {
+        let config = make_test_ldap_config();
+        assert_eq!(config.username_attr, "uid");
+        assert_eq!(config.email_attr, "mail");
+        assert_eq!(config.display_name_attr, "cn");
+        assert_eq!(config.groups_attr, "memberOf");
+    }
+
+    #[test]
+    fn test_ldap_config_custom_user_filter() {
+        let mut config = make_test_ldap_config();
+        config.user_filter = "(sAMAccountName={username})".to_string();
+        assert_eq!(config.user_filter, "(sAMAccountName={username})");
+    }
+
+    #[test]
+    fn test_ldap_config_with_bind_credentials() {
+        let mut config = make_test_ldap_config();
+        config.bind_dn = Some("cn=service,dc=example,dc=com".to_string());
+        config.bind_password = Some("secret".to_string());
+        assert!(config.bind_dn.is_some());
+        assert!(config.bind_password.is_some());
+    }
+
+    #[test]
+    fn test_ldap_user_info_clone() {
+        let user_info = LdapUserInfo {
+            dn: "uid=alice,dc=test".to_string(),
+            username: "alice".to_string(),
+            email: "alice@test.com".to_string(),
+            display_name: Some("Alice".to_string()),
+            groups: vec!["cn=users,dc=test".to_string()],
+        };
+        let cloned = user_info.clone();
+        assert_eq!(cloned.dn, user_info.dn);
+        assert_eq!(cloned.username, user_info.username);
+        assert_eq!(cloned.email, user_info.email);
+        assert_eq!(cloned.groups, user_info.groups);
     }
 }

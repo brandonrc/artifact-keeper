@@ -293,3 +293,120 @@ fn build_remote_repo(id: Uuid, key: &str, upstream_url: &str) -> Repository {
         updated_at: Utc::now(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    // ── build_remote_repo tests ──────────────────────────────────────
+
+    #[test]
+    fn test_build_remote_repo_sets_id() {
+        let id = Uuid::new_v4();
+        let repo = build_remote_repo(id, "my-repo", "https://upstream.example.com");
+        assert_eq!(repo.id, id);
+    }
+
+    #[test]
+    fn test_build_remote_repo_key_and_name_match() {
+        let id = Uuid::new_v4();
+        let repo = build_remote_repo(id, "npm-remote", "https://registry.npmjs.org");
+        assert_eq!(repo.key, "npm-remote");
+        assert_eq!(repo.name, "npm-remote");
+    }
+
+    #[test]
+    fn test_build_remote_repo_upstream_url() {
+        let id = Uuid::new_v4();
+        let url = "https://pypi.org/simple/";
+        let repo = build_remote_repo(id, "pypi-proxy", url);
+        assert_eq!(repo.upstream_url, Some(url.to_string()));
+    }
+
+    #[test]
+    fn test_build_remote_repo_type_is_remote() {
+        let repo = build_remote_repo(Uuid::new_v4(), "r", "https://x.com");
+        assert_eq!(repo.repo_type, RepositoryType::Remote);
+    }
+
+    #[test]
+    fn test_build_remote_repo_format_is_generic() {
+        let repo = build_remote_repo(Uuid::new_v4(), "r", "https://x.com");
+        assert_eq!(repo.format, RepositoryFormat::Generic);
+    }
+
+    #[test]
+    fn test_build_remote_repo_storage_backend_filesystem() {
+        let repo = build_remote_repo(Uuid::new_v4(), "r", "https://x.com");
+        assert_eq!(repo.storage_backend, "filesystem");
+    }
+
+    #[test]
+    fn test_build_remote_repo_storage_path_empty() {
+        let repo = build_remote_repo(Uuid::new_v4(), "r", "https://x.com");
+        assert!(repo.storage_path.is_empty());
+    }
+
+    #[test]
+    fn test_build_remote_repo_defaults() {
+        let repo = build_remote_repo(Uuid::new_v4(), "k", "https://u.com");
+        assert!(repo.description.is_none());
+        assert!(!repo.is_public);
+        assert!(repo.quota_bytes.is_none());
+        assert_eq!(repo.replication_priority, ReplicationPriority::OnDemand);
+        assert!(repo.promotion_target_id.is_none());
+        assert!(repo.promotion_policy_id.is_none());
+    }
+
+    #[test]
+    fn test_build_remote_repo_timestamps_set() {
+        let before = Utc::now();
+        let repo = build_remote_repo(Uuid::new_v4(), "k", "https://u.com");
+        let after = Utc::now();
+        assert!(repo.created_at >= before && repo.created_at <= after);
+        assert!(repo.updated_at >= before && repo.updated_at <= after);
+    }
+
+    // ── reject_write_if_not_hosted tests ─────────────────────────────
+
+    #[test]
+    fn test_reject_write_remote_returns_method_not_allowed() {
+        let result = reject_write_if_not_hosted("remote");
+        assert!(result.is_err());
+        let response = result.unwrap_err();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[test]
+    fn test_reject_write_virtual_returns_bad_request() {
+        let result = reject_write_if_not_hosted("virtual");
+        assert!(result.is_err());
+        let response = result.unwrap_err();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_reject_write_local_is_ok() {
+        let result = reject_write_if_not_hosted("local");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reject_write_staging_is_ok() {
+        let result = reject_write_if_not_hosted("staging");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reject_write_empty_string_is_ok() {
+        let result = reject_write_if_not_hosted("");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reject_write_unknown_type_is_ok() {
+        let result = reject_write_if_not_hosted("something-else");
+        assert!(result.is_ok());
+    }
+}

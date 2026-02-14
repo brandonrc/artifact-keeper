@@ -478,3 +478,386 @@ pub async fn create_download_ticket(
     ))
 )]
 pub struct AuthApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::{COOKIE, SET_COOKIE};
+    use axum::http::HeaderMap;
+
+    // -----------------------------------------------------------------------
+    // LoginRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_login_request_deserialize() {
+        let json = r#"{"username": "admin", "password": "secret123"}"#;
+        let req: LoginRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "admin");
+        assert_eq!(req.password, "secret123");
+    }
+
+    #[test]
+    fn test_login_request_missing_field() {
+        let json = r#"{"username": "admin"}"#;
+        let result = serde_json::from_str::<LoginRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_login_request_empty_strings() {
+        let json = r#"{"username": "", "password": ""}"#;
+        let req: LoginRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.username, "");
+        assert_eq!(req.password, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // LoginResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_login_response_serialize_without_totp() {
+        let resp = LoginResponse {
+            access_token: "access123".to_string(),
+            refresh_token: "refresh456".to_string(),
+            expires_in: 3600,
+            token_type: "Bearer".to_string(),
+            must_change_password: false,
+            totp_required: None,
+            totp_token: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["access_token"], "access123");
+        assert_eq!(json["refresh_token"], "refresh456");
+        assert_eq!(json["expires_in"], 3600);
+        assert_eq!(json["token_type"], "Bearer");
+        assert_eq!(json["must_change_password"], false);
+        // totp_required and totp_token should be absent (skip_serializing_if)
+        assert!(json.get("totp_required").is_none());
+        assert!(json.get("totp_token").is_none());
+    }
+
+    #[test]
+    fn test_login_response_serialize_with_totp() {
+        let resp = LoginResponse {
+            access_token: "".to_string(),
+            refresh_token: "".to_string(),
+            expires_in: 3600,
+            token_type: "Bearer".to_string(),
+            must_change_password: false,
+            totp_required: Some(true),
+            totp_token: Some("pending-token-123".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["totp_required"], true);
+        assert_eq!(json["totp_token"], "pending-token-123");
+    }
+
+    #[test]
+    fn test_login_response_serialize_totp_not_required() {
+        let resp = LoginResponse {
+            access_token: "tok".to_string(),
+            refresh_token: "ref".to_string(),
+            expires_in: 1800,
+            token_type: "Bearer".to_string(),
+            must_change_password: true,
+            totp_required: Some(false),
+            totp_token: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["must_change_password"], true);
+        assert_eq!(json["totp_required"], false);
+        assert!(json.get("totp_token").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RefreshTokenRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_refresh_token_request_with_token() {
+        let json = r#"{"refresh_token": "some_token"}"#;
+        let req: RefreshTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.refresh_token, Some("some_token".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_token_request_without_token() {
+        let json = r#"{}"#;
+        let req: RefreshTokenRequest = serde_json::from_str(json).unwrap();
+        assert!(req.refresh_token.is_none());
+    }
+
+    #[test]
+    fn test_refresh_token_request_null_token() {
+        let json = r#"{"refresh_token": null}"#;
+        let req: RefreshTokenRequest = serde_json::from_str(json).unwrap();
+        assert!(req.refresh_token.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // UserResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_user_response_serialize() {
+        let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let resp = UserResponse {
+            id,
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            display_name: Some("Test User".to_string()),
+            is_admin: true,
+            totp_enabled: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(json["username"], "testuser");
+        assert_eq!(json["email"], "test@example.com");
+        assert_eq!(json["display_name"], "Test User");
+        assert_eq!(json["is_admin"], true);
+        assert_eq!(json["totp_enabled"], false);
+    }
+
+    #[test]
+    fn test_user_response_serialize_no_display_name() {
+        let id = Uuid::new_v4();
+        let resp = UserResponse {
+            id,
+            username: "user".to_string(),
+            email: "user@test.com".to_string(),
+            display_name: None,
+            is_admin: false,
+            totp_enabled: true,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["display_name"].is_null());
+        assert_eq!(json["totp_enabled"], true);
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateApiTokenRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_api_token_request() {
+        let json = r#"{"name": "deploy-key", "scopes": ["read", "write"], "expires_in_days": 30}"#;
+        let req: CreateApiTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "deploy-key");
+        assert_eq!(req.scopes, vec!["read", "write"]);
+        assert_eq!(req.expires_in_days, Some(30));
+    }
+
+    #[test]
+    fn test_create_api_token_request_no_expiry() {
+        let json = r#"{"name": "permanent", "scopes": []}"#;
+        let req: CreateApiTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "permanent");
+        assert!(req.scopes.is_empty());
+        assert!(req.expires_in_days.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateApiTokenResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_api_token_response_serialize() {
+        let id = Uuid::new_v4();
+        let resp = CreateApiTokenResponse {
+            id,
+            token: "ak_token_abc123".to_string(),
+            name: "ci-key".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["token"], "ak_token_abc123");
+        assert_eq!(json["name"], "ci-key");
+        assert!(json.get("id").is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // SetupStatusResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_setup_status_response_serialize() {
+        let resp = SetupStatusResponse {
+            setup_required: true,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["setup_required"], true);
+    }
+
+    #[test]
+    fn test_setup_status_response_serialize_not_required() {
+        let resp = SetupStatusResponse {
+            setup_required: false,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["setup_required"], false);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_cookie
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_cookie_found() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, "ak_access_token=abc123; ak_refresh_token=xyz".parse().unwrap());
+        let result = extract_cookie(&headers, "ak_access_token");
+        assert_eq!(result, Some("abc123"));
+    }
+
+    #[test]
+    fn test_extract_cookie_second_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, "ak_access_token=abc; ak_refresh_token=xyz789".parse().unwrap());
+        let result = extract_cookie(&headers, "ak_refresh_token");
+        assert_eq!(result, Some("xyz789"));
+    }
+
+    #[test]
+    fn test_extract_cookie_not_found() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, "other_cookie=value".parse().unwrap());
+        let result = extract_cookie(&headers, "ak_access_token");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_cookie_no_cookie_header() {
+        let headers = HeaderMap::new();
+        let result = extract_cookie(&headers, "ak_access_token");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_cookie_empty_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, "ak_access_token=".parse().unwrap());
+        let result = extract_cookie(&headers, "ak_access_token");
+        assert_eq!(result, Some(""));
+    }
+
+    #[test]
+    fn test_extract_cookie_with_spaces() {
+        let mut headers = HeaderMap::new();
+        headers.insert(COOKIE, "  ak_access_token=spaced ; other=val ".parse().unwrap());
+        let result = extract_cookie(&headers, "ak_access_token");
+        assert_eq!(result, Some("spaced"));
+    }
+
+    // -----------------------------------------------------------------------
+    // set_auth_cookies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_auth_cookies_adds_two_cookies() {
+        let mut headers = HeaderMap::new();
+        set_auth_cookies(&mut headers, "access_tok", "refresh_tok", 3600);
+        let cookies: Vec<_> = headers.get_all(SET_COOKIE).iter().collect();
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn test_set_auth_cookies_access_token_format() {
+        let mut headers = HeaderMap::new();
+        set_auth_cookies(&mut headers, "myaccess", "myrefresh", 3600);
+        let cookies: Vec<_> = headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        let access_cookie = cookies.iter().find(|c| c.contains("ak_access_token=")).unwrap();
+        assert!(access_cookie.contains("ak_access_token=myaccess"));
+        assert!(access_cookie.contains("HttpOnly"));
+        assert!(access_cookie.contains("SameSite=Strict"));
+        assert!(access_cookie.contains("Path=/"));
+        assert!(access_cookie.contains("Max-Age=3600"));
+    }
+
+    #[test]
+    fn test_set_auth_cookies_refresh_token_path() {
+        let mut headers = HeaderMap::new();
+        set_auth_cookies(&mut headers, "acc", "ref", 1800);
+        let cookies: Vec<_> = headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        let refresh_cookie = cookies.iter().find(|c| c.contains("ak_refresh_token=")).unwrap();
+        assert!(refresh_cookie.contains("ak_refresh_token=ref"));
+        assert!(refresh_cookie.contains("Path=/api/v1/auth/refresh"));
+        // 7 days in seconds
+        assert!(refresh_cookie.contains("Max-Age=604800"));
+    }
+
+    // -----------------------------------------------------------------------
+    // clear_auth_cookies
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_clear_auth_cookies_sets_max_age_zero() {
+        let mut headers = HeaderMap::new();
+        clear_auth_cookies(&mut headers);
+        let cookies: Vec<_> = headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(cookies.len(), 2);
+        for cookie in &cookies {
+            assert!(cookie.contains("Max-Age=0"), "Cookie should have Max-Age=0: {}", cookie);
+        }
+    }
+
+    #[test]
+    fn test_clear_auth_cookies_empties_values() {
+        let mut headers = HeaderMap::new();
+        clear_auth_cookies(&mut headers);
+        let cookies: Vec<_> = headers
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        let access = cookies.iter().find(|c| c.starts_with("ak_access_token=")).unwrap();
+        assert!(access.starts_with("ak_access_token=;"));
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateTicketRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_ticket_request_with_resource_path() {
+        let json = r#"{"purpose": "download", "resource_path": "/artifacts/mylib/1.0.jar"}"#;
+        let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.purpose, "download");
+        assert_eq!(req.resource_path, Some("/artifacts/mylib/1.0.jar".to_string()));
+    }
+
+    #[test]
+    fn test_create_ticket_request_without_resource_path() {
+        let json = r#"{"purpose": "stream"}"#;
+        let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.purpose, "stream");
+        assert!(req.resource_path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TicketResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ticket_response_serialize() {
+        let resp = TicketResponse {
+            ticket: "ticket_abc123".to_string(),
+            expires_in: 30,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["ticket"], "ticket_abc123");
+        assert_eq!(json["expires_in"], 30);
+    }
+}

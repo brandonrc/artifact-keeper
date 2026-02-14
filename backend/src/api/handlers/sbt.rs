@@ -486,3 +486,342 @@ async fn check_exists(
         .body(Body::empty())
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::AUTHORIZATION;
+    use base64::Engine;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Bearer token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer_uppercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer mytoken123".parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "mytoken123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "bearer mytoken456".parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "mytoken456".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Basic auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_basic_auth() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:password123");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("admin".to_string(), "password123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_auth_lowercase() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("basic {}", encoded).parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_auth_with_colon_in_password() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass:word:extra");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass:word:extra".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_auth_empty_password() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — no auth / invalid auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        let result = extract_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_unknown_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Digest abc123".parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Basic !!!not-base64!!!".parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        // Valid base64 but no colon separator => splitn returns only one part
+        let encoded = base64::engine::general_purpose::STANDARD.encode("useronly");
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
+        let result = extract_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Content type determination logic (from upload_artifact)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_ivy_descriptor() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "com.example".to_string(),
+            module: "mylib".to_string(),
+            revision: Some("1.0".to_string()),
+            artifact: None,
+            ext: Some("xml".to_string()),
+            is_ivy_descriptor: true,
+        };
+        let content_type = if path_info.is_ivy_descriptor {
+            "application/xml"
+        } else {
+            "application/java-archive"
+        };
+        assert_eq!(content_type, "application/xml");
+    }
+
+    #[test]
+    fn test_content_type_jar() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "com.example".to_string(),
+            module: "mylib".to_string(),
+            revision: Some("1.0".to_string()),
+            artifact: Some("mylib-1.0".to_string()),
+            ext: Some("jar".to_string()),
+            is_ivy_descriptor: false,
+        };
+        let content_type = if path_info.is_ivy_descriptor {
+            "application/xml"
+        } else {
+            "application/java-archive"
+        };
+        assert_eq!(content_type, "application/java-archive");
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact name construction logic (from upload_artifact)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_name_ivy_descriptor() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "com.example".to_string(),
+            module: "mylib".to_string(),
+            revision: Some("1.0".to_string()),
+            artifact: None,
+            ext: Some("xml".to_string()),
+            is_ivy_descriptor: true,
+        };
+        let artifact_name = if path_info.is_ivy_descriptor {
+            format!("{}/{}", path_info.org, path_info.module)
+        } else {
+            path_info
+                .artifact
+                .clone()
+                .unwrap_or_else(|| format!("{}/{}", path_info.org, path_info.module))
+        };
+        assert_eq!(artifact_name, "com.example/mylib");
+    }
+
+    #[test]
+    fn test_artifact_name_with_artifact_field() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "org.apache".to_string(),
+            module: "commons".to_string(),
+            revision: Some("2.0".to_string()),
+            artifact: Some("commons-2.0".to_string()),
+            ext: Some("jar".to_string()),
+            is_ivy_descriptor: false,
+        };
+        let artifact_name = if path_info.is_ivy_descriptor {
+            format!("{}/{}", path_info.org, path_info.module)
+        } else {
+            path_info
+                .artifact
+                .clone()
+                .unwrap_or_else(|| format!("{}/{}", path_info.org, path_info.module))
+        };
+        assert_eq!(artifact_name, "commons-2.0");
+    }
+
+    #[test]
+    fn test_artifact_name_no_artifact_field() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "io.spray".to_string(),
+            module: "spray-json".to_string(),
+            revision: Some("1.3.6".to_string()),
+            artifact: None,
+            ext: None,
+            is_ivy_descriptor: false,
+        };
+        let artifact_name = if path_info.is_ivy_descriptor {
+            format!("{}/{}", path_info.org, path_info.module)
+        } else {
+            path_info
+                .artifact
+                .clone()
+                .unwrap_or_else(|| format!("{}/{}", path_info.org, path_info.module))
+        };
+        assert_eq!(artifact_name, "io.spray/spray-json");
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage key construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_storage_key_format() {
+        let artifact_path = "com.example/mylib/1.0/jars/mylib-1.0.jar";
+        let storage_key = format!("sbt/{}", artifact_path);
+        assert_eq!(storage_key, "sbt/com.example/mylib/1.0/jars/mylib-1.0.jar");
+    }
+
+    // -----------------------------------------------------------------------
+    // Content-Disposition filename extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_disposition_filename() {
+        let path = "com.example/mylib/1.0/jars/mylib-1.0.jar";
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        assert_eq!(filename, "mylib-1.0.jar");
+    }
+
+    #[test]
+    fn test_content_disposition_filename_no_slash() {
+        let path = "mylib.jar";
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        assert_eq!(filename, "mylib.jar");
+    }
+
+    #[test]
+    fn test_content_disposition_filename_deeply_nested() {
+        let path = "org/example/subgroup/lib/1.0/jars/lib-1.0.jar";
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        assert_eq!(filename, "lib-1.0.jar");
+    }
+
+    // -----------------------------------------------------------------------
+    // Content type fallback (from download_by_path)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_fallback_empty() {
+        let content_type_raw = "";
+        let content_type = if content_type_raw.is_empty() {
+            "application/octet-stream"
+        } else {
+            content_type_raw
+        };
+        assert_eq!(content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn test_content_type_no_fallback() {
+        let content_type_raw = "application/xml";
+        let content_type = if content_type_raw.is_empty() {
+            "application/octet-stream"
+        } else {
+            content_type_raw
+        };
+        assert_eq!(content_type, "application/xml");
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 computation (from upload_artifact)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        use sha2::{Digest, Sha256};
+        let body = b"hello world";
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let computed = format!("{:x}", hasher.finalize());
+        assert_eq!(
+            computed,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_sha256_empty_body() {
+        use sha2::{Digest, Sha256};
+        let body = b"";
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let computed = format!("{:x}", hasher.finalize());
+        assert_eq!(
+            computed,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SBT metadata JSON construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sbt_metadata_json() {
+        let path_info = crate::formats::sbt::SbtPathInfo {
+            org: "com.typesafe".to_string(),
+            module: "config".to_string(),
+            revision: Some("1.4.2".to_string()),
+            artifact: Some("config-1.4.2".to_string()),
+            ext: Some("jar".to_string()),
+            is_ivy_descriptor: false,
+        };
+        let metadata = serde_json::json!({
+            "org": path_info.org,
+            "module": path_info.module,
+            "revision": path_info.revision,
+            "artifact": path_info.artifact,
+            "ext": path_info.ext,
+            "is_ivy_descriptor": path_info.is_ivy_descriptor,
+        });
+        assert_eq!(metadata["org"], "com.typesafe");
+        assert_eq!(metadata["module"], "config");
+        assert_eq!(metadata["revision"], "1.4.2");
+        assert_eq!(metadata["artifact"], "config-1.4.2");
+        assert_eq!(metadata["ext"], "jar");
+        assert_eq!(metadata["is_ivy_descriptor"], false);
+    }
+}

@@ -401,3 +401,211 @@ async fn list_policies(
     ))
 )]
 pub struct DependencyTrackApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    // -----------------------------------------------------------------------
+    // default_days function
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_days_returns_30() {
+        assert_eq!(default_days(), 30);
+    }
+
+    // -----------------------------------------------------------------------
+    // MetricsHistoryQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_metrics_history_query_default_days() {
+        let json = r#"{}"#;
+        let query: MetricsHistoryQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.days, 30);
+    }
+
+    #[test]
+    fn test_metrics_history_query_custom_days() {
+        let json = r#"{"days": 90}"#;
+        let query: MetricsHistoryQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.days, 90);
+    }
+
+    #[test]
+    fn test_metrics_history_query_one_day() {
+        let json = r#"{"days": 1}"#;
+        let query: MetricsHistoryQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.days, 1);
+    }
+
+    #[test]
+    fn test_metrics_history_query_zero_days() {
+        let json = r#"{"days": 0}"#;
+        let query: MetricsHistoryQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.days, 0);
+    }
+
+    #[test]
+    fn test_metrics_history_query_large_days() {
+        let json = r#"{"days": 365}"#;
+        let query: MetricsHistoryQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.days, 365);
+    }
+
+    // -----------------------------------------------------------------------
+    // DtStatusResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_status_response_enabled() {
+        let resp = DtStatusResponse {
+            enabled: true,
+            healthy: true,
+            url: Some("http://dt.example.com".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["healthy"], true);
+        assert_eq!(json["url"], "http://dt.example.com");
+    }
+
+    #[test]
+    fn test_dt_status_response_disabled() {
+        let resp = DtStatusResponse {
+            enabled: false,
+            healthy: false,
+            url: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["enabled"], false);
+        assert_eq!(json["healthy"], false);
+        assert!(json["url"].is_null());
+    }
+
+    #[test]
+    fn test_dt_status_response_enabled_but_unhealthy() {
+        let resp = DtStatusResponse {
+            enabled: true,
+            healthy: false,
+            url: Some("http://dt.example.com:8081".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["healthy"], false);
+        assert_eq!(json["url"], "http://dt.example.com:8081");
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateAnalysisBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_analysis_body_minimal() {
+        let json = serde_json::json!({
+            "project_uuid": "proj-123",
+            "component_uuid": "comp-456",
+            "vulnerability_uuid": "vuln-789",
+            "state": "NOT_AFFECTED"
+        });
+        let body: UpdateAnalysisBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.project_uuid, "proj-123");
+        assert_eq!(body.component_uuid, "comp-456");
+        assert_eq!(body.vulnerability_uuid, "vuln-789");
+        assert_eq!(body.state, "NOT_AFFECTED");
+        assert!(body.justification.is_none());
+        assert!(body.details.is_none());
+        assert!(!body.suppressed);
+    }
+
+    #[test]
+    fn test_update_analysis_body_full() {
+        let json = serde_json::json!({
+            "project_uuid": "proj-123",
+            "component_uuid": "comp-456",
+            "vulnerability_uuid": "vuln-789",
+            "state": "FALSE_POSITIVE",
+            "justification": "PROTECTED_BY_MITIGATING_CONTROL",
+            "details": "WAF prevents exploitation",
+            "suppressed": true
+        });
+        let body: UpdateAnalysisBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.state, "FALSE_POSITIVE");
+        assert_eq!(
+            body.justification.as_deref(),
+            Some("PROTECTED_BY_MITIGATING_CONTROL")
+        );
+        assert_eq!(body.details.as_deref(), Some("WAF prevents exploitation"));
+        assert!(body.suppressed);
+    }
+
+    #[test]
+    fn test_update_analysis_body_missing_required_fails() {
+        let json = serde_json::json!({
+            "project_uuid": "proj-123",
+            "state": "NOT_AFFECTED"
+        });
+        let result: std::result::Result<UpdateAnalysisBody, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_analysis_body_suppressed_defaults_false() {
+        let json = serde_json::json!({
+            "project_uuid": "a",
+            "component_uuid": "b",
+            "vulnerability_uuid": "c",
+            "state": "IN_TRIAGE"
+        });
+        let body: UpdateAnalysisBody = serde_json::from_value(json).unwrap();
+        assert!(!body.suppressed);
+    }
+
+    #[test]
+    fn test_update_analysis_body_as_deref_for_optional_fields() {
+        let json = serde_json::json!({
+            "project_uuid": "a",
+            "component_uuid": "b",
+            "vulnerability_uuid": "c",
+            "state": "EXPLOITABLE",
+            "justification": "test-justification",
+            "details": "test-details"
+        });
+        let body: UpdateAnalysisBody = serde_json::from_value(json).unwrap();
+        // Mimics the handler's usage: body.justification.as_deref()
+        assert_eq!(body.justification.as_deref(), Some("test-justification"));
+        assert_eq!(body.details.as_deref(), Some("test-details"));
+    }
+
+    // -----------------------------------------------------------------------
+    // DtStatusResponse field variations
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_status_response_url_with_path() {
+        let resp = DtStatusResponse {
+            enabled: true,
+            healthy: true,
+            url: Some("http://dt.internal:8080/api".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["url"], "http://dt.internal:8080/api");
+    }
+
+    #[test]
+    fn test_dt_status_all_fields_present_in_json() {
+        let resp = DtStatusResponse {
+            enabled: true,
+            healthy: false,
+            url: Some("http://localhost".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("enabled"));
+        assert!(obj.contains_key("healthy"));
+        assert!(obj.contains_key("url"));
+        assert_eq!(obj.len(), 3);
+    }
+}

@@ -1125,4 +1125,424 @@ mod tests {
             "virtual"
         );
     }
+
+    #[test]
+    fn test_infer_repo_type_cache() {
+        assert_eq!(
+            ArtifactoryImporter::infer_repo_type("npm-cache"),
+            "remote"
+        );
+    }
+
+    #[test]
+    fn test_infer_repo_type_plain_name() {
+        assert_eq!(
+            ArtifactoryImporter::infer_repo_type("my-artifacts"),
+            "local"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_maven_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "maven-central"),
+            "maven"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_libs_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "libs-release"),
+            "maven"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_npm_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "npm-local"),
+            "npm"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_docker_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "docker-prod"),
+            "docker"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_pypi_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "pypi-releases"),
+            "pypi"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_nuget_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "nuget-packages"),
+            "nuget"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_helm_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "helm-charts"),
+            "helm"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_cargo_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "cargo-registry"),
+            "cargo"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_go_name() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "go-modules"),
+            "go"
+        );
+    }
+
+    #[test]
+    fn test_infer_package_type_generic_fallback() {
+        let temp = TempDir::new().unwrap();
+        assert_eq!(
+            ArtifactoryImporter::infer_package_type(temp.path(), "my-custom-repo"),
+            "generic"
+        );
+    }
+
+    #[test]
+    fn test_from_directory_not_a_directory() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("file.txt");
+        fs::write(&file_path, "content").unwrap();
+        let result = ArtifactoryImporter::from_directory(&file_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_directory_missing_repositories() {
+        let temp = TempDir::new().unwrap();
+        // No repositories directory
+        let result = ArtifactoryImporter::from_directory(temp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_valid_export() {
+        let temp = TempDir::new().unwrap();
+        assert!(!ArtifactoryImporter::is_valid_export(temp.path()));
+
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        assert!(ArtifactoryImporter::is_valid_export(temp.path()));
+    }
+
+    #[test]
+    fn test_validate_export_structure() {
+        let temp = TempDir::new().unwrap();
+        assert!(ArtifactoryImporter::validate_export_structure(temp.path()).is_err());
+
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        assert!(ArtifactoryImporter::validate_export_structure(temp.path()).is_ok());
+    }
+
+    #[test]
+    fn test_parse_repo_config_xml() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+    <key>my-repo</key>
+    <type>local</type>
+    <packageType>maven</packageType>
+    <description>My test repository</description>
+    <includesPattern>**/*</includesPattern>
+    <excludesPattern></excludesPattern>
+    <handleReleases>true</handleReleases>
+    <handleSnapshots>false</handleSnapshots>
+    <repoLayoutRef>maven-2-default</repoLayoutRef>
+</config>"#;
+        let repo = ArtifactoryImporter::parse_repo_config_xml(xml, "fallback-name").unwrap();
+        assert_eq!(repo.key, "my-repo");
+        assert_eq!(repo.repo_type, "local");
+        assert_eq!(repo.package_type, "maven");
+        assert_eq!(repo.description, Some("My test repository".to_string()));
+        assert!(repo.handle_releases);
+        assert!(!repo.handle_snapshots);
+        assert_eq!(repo.layout, Some("maven-2-default".to_string()));
+    }
+
+    #[test]
+    fn test_parse_repo_config_xml_minimal() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config></config>"#;
+        let repo = ArtifactoryImporter::parse_repo_config_xml(xml, "fallback").unwrap();
+        // Should use defaults
+        assert_eq!(repo.key, "fallback");
+        assert_eq!(repo.repo_type, "local");
+        assert_eq!(repo.package_type, "generic");
+    }
+
+    #[test]
+    fn test_get_metadata_counts_artifacts() {
+        let temp = create_test_export();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let metadata = importer.get_metadata().unwrap();
+
+        assert!(metadata.total_artifacts >= 1);
+        assert!(metadata.total_size_bytes > 0);
+    }
+
+    #[test]
+    fn test_get_metadata_skips_hidden_repos() {
+        let temp = create_test_export();
+        // Create hidden dir and _index dir
+        fs::create_dir_all(temp.path().join("repositories/.hidden")).unwrap();
+        fs::create_dir_all(temp.path().join("repositories/_index")).unwrap();
+
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let metadata = importer.get_metadata().unwrap();
+
+        assert!(!metadata.repositories.contains(&".hidden".to_string()));
+        assert!(!metadata.repositories.contains(&"_index".to_string()));
+    }
+
+    #[test]
+    fn test_list_artifacts_nonexistent_repo() {
+        let temp = create_test_export();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let result = importer.list_artifacts("nonexistent-repo");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_artifacts_skips_metadata_files() {
+        let temp = create_test_export();
+        // Create metadata files that should be skipped
+        let repo_path = temp.path().join("repositories/libs-release/com/example/test/1.0");
+        fs::write(repo_path.join(".gitkeep"), "").unwrap();
+        fs::write(repo_path.join("metadata.xml"), "<meta/>").unwrap();
+
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let artifacts: Vec<_> = importer
+            .list_artifacts("libs-release")
+            .unwrap()
+            .filter_map(|a| a.ok())
+            .collect();
+
+        // Should only find the jar file, not .gitkeep, .xml, or .sha1
+        let names: Vec<_> = artifacts.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"test-1.0.jar"));
+        assert!(!names.contains(&".gitkeep"));
+    }
+
+    #[test]
+    fn test_list_users_no_security_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let users = importer.list_users().unwrap();
+        assert!(users.is_empty());
+    }
+
+    #[test]
+    fn test_list_groups_no_security_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let groups = importer.list_groups().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_list_permissions_no_security_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let perms = importer.list_permissions().unwrap();
+        assert!(perms.is_empty());
+    }
+
+    #[test]
+    fn test_export_metadata_serialization() {
+        let metadata = ExportMetadata {
+            version: "7.55.0".to_string(),
+            export_time: Some("2024-01-01T00:00:00Z".to_string()),
+            artifactory_version: Some("7.55.0".to_string()),
+            repositories: vec!["libs-release".to_string()],
+            has_security: true,
+            total_artifacts: 100,
+            total_size_bytes: 1024 * 1024,
+        };
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: ExportMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.version, "7.55.0");
+        assert_eq!(deserialized.total_artifacts, 100);
+    }
+
+    #[test]
+    fn test_imported_repository_serialization() {
+        let repo = ImportedRepository {
+            key: "libs-release".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "maven".to_string(),
+            description: Some("Release repository".to_string()),
+            includes_pattern: Some("**/*".to_string()),
+            excludes_pattern: None,
+            handle_releases: true,
+            handle_snapshots: false,
+            layout: Some("maven-2-default".to_string()),
+        };
+        let json = serde_json::to_string(&repo).unwrap();
+        let deserialized: ImportedRepository = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.key, "libs-release");
+        assert!(deserialized.handle_releases);
+        assert!(!deserialized.handle_snapshots);
+    }
+
+    #[test]
+    fn test_imported_user_serialization() {
+        let user = ImportedUser {
+            username: "admin".to_string(),
+            email: Some("admin@example.com".to_string()),
+            admin: true,
+            enabled: true,
+            groups: vec!["admins".to_string(), "developers".to_string()],
+            realm: Some("ldap".to_string()),
+        };
+        let json = serde_json::to_string(&user).unwrap();
+        let deserialized: ImportedUser = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.username, "admin");
+        assert!(deserialized.admin);
+        assert_eq!(deserialized.groups.len(), 2);
+    }
+
+    #[test]
+    fn test_imported_group_serialization() {
+        let group = ImportedGroup {
+            name: "developers".to_string(),
+            description: Some("Developer group".to_string()),
+            auto_join: false,
+            realm: None,
+            admin_privileges: false,
+        };
+        let json = serde_json::to_string(&group).unwrap();
+        let deserialized: ImportedGroup = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "developers");
+        assert!(!deserialized.auto_join);
+    }
+
+    #[test]
+    fn test_import_progress_serialization() {
+        let progress = ImportProgress {
+            phase: "scanning".to_string(),
+            current: 5,
+            total: 100,
+            current_item: Some("libs-release".to_string()),
+            message: "Scanning repositories...".to_string(),
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        assert!(json.contains("scanning"));
+        assert!(json.contains("100"));
+    }
+
+    #[test]
+    fn test_import_error_display() {
+        let err = ImportError::InvalidFormat("bad format".to_string());
+        assert_eq!(err.to_string(), "Invalid export format: bad format");
+
+        let err = ImportError::MissingFile("config.xml".to_string());
+        assert_eq!(err.to_string(), "Missing required file: config.xml");
+
+        let err = ImportError::UnsupportedVersion("4.0".to_string());
+        assert_eq!(err.to_string(), "Unsupported export version: 4.0");
+    }
+
+    #[test]
+    fn test_find_export_root_current_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("repositories")).unwrap();
+        let root = ArtifactoryImporter::find_export_root(temp.path()).unwrap();
+        assert_eq!(root, temp.path());
+    }
+
+    #[test]
+    fn test_find_export_root_nested() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("export/repositories")).unwrap();
+        let root = ArtifactoryImporter::find_export_root(temp.path()).unwrap();
+        assert_eq!(root, temp.path().join("export"));
+    }
+
+    #[test]
+    fn test_find_export_root_invalid() {
+        let temp = TempDir::new().unwrap();
+        // No repositories dir anywhere
+        let result = ArtifactoryImporter::find_export_root(temp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_with_progress_callback() {
+        let temp = create_test_export();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let importer = importer.with_progress_callback(Box::new(move |_progress| {
+            called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        }));
+
+        // list_repositories triggers a progress report
+        let _ = importer.list_repositories().unwrap();
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_read_artifact() {
+        let temp = create_test_export();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let artifacts: Vec<_> = importer
+            .list_artifacts("libs-release")
+            .unwrap()
+            .filter_map(|a| a.ok())
+            .collect();
+
+        let content = importer.read_artifact(&artifacts[0]).unwrap();
+        assert_eq!(content, b"test artifact content");
+    }
+
+    #[test]
+    fn test_open_artifact() {
+        let temp = create_test_export();
+        let importer = ArtifactoryImporter::from_directory(temp.path()).unwrap();
+        let artifacts: Vec<_> = importer
+            .list_artifacts("libs-release")
+            .unwrap()
+            .filter_map(|a| a.ok())
+            .collect();
+
+        let file = importer.open_artifact(&artifacts[0]);
+        assert!(file.is_ok());
+    }
 }

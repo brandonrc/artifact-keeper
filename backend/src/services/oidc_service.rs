@@ -759,4 +759,235 @@ mod tests {
         assert_eq!(oidc_config.issuer, "https://accounts.google.com");
         assert_eq!(oidc_config.client_id, "client-123");
     }
+
+    fn make_test_config() -> Config {
+        Config {
+            database_url: "postgres://localhost/test".into(),
+            bind_address: "0.0.0.0:8080".into(),
+            log_level: "info".into(),
+            storage_backend: "filesystem".into(),
+            storage_path: "/tmp/artifacts".into(),
+            s3_bucket: None,
+            s3_region: None,
+            s3_endpoint: None,
+            jwt_secret: "test-secret".into(),
+            jwt_expiration_secs: 86400,
+            jwt_access_token_expiry_minutes: 30,
+            jwt_refresh_token_expiry_days: 7,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            ldap_url: None,
+            ldap_base_dn: None,
+            trivy_url: None,
+            openscap_url: None,
+            openscap_profile: "xccdf_org.ssgproject.content_profile_standard".into(),
+            meilisearch_url: None,
+            meilisearch_api_key: None,
+            scan_workspace_path: "/scan-workspace".into(),
+            demo_mode: false,
+            peer_instance_name: "test".into(),
+            peer_public_endpoint: "http://localhost:8080".into(),
+            peer_api_key: "test-key".into(),
+            dependency_track_url: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_service_name: "test".into(),
+        }
+    }
+
+    #[test]
+    fn test_oidc_config_from_env_missing_issuer() {
+        let config = make_test_config();
+        let oidc_config = OidcConfig::from_config(&config);
+        assert!(oidc_config.is_none());
+    }
+
+    #[test]
+    fn test_oidc_config_from_env_missing_client_id() {
+        let mut config = make_test_config();
+        config.oidc_issuer = Some("https://example.com".into());
+        // missing client_id
+        let oidc_config = OidcConfig::from_config(&config);
+        assert!(oidc_config.is_none());
+    }
+
+    #[test]
+    fn test_oidc_config_from_env_missing_client_secret() {
+        let mut config = make_test_config();
+        config.oidc_issuer = Some("https://example.com".into());
+        config.oidc_client_id = Some("client-123".into());
+        // missing client_secret
+        let oidc_config = OidcConfig::from_config(&config);
+        assert!(oidc_config.is_none());
+    }
+
+    #[test]
+    fn test_oidc_audience_single_match() {
+        let aud = OidcAudience::Single("my-client".to_string());
+        assert!(aud.contains("my-client"));
+        assert!(!aud.contains("other-client"));
+    }
+
+    #[test]
+    fn test_oidc_audience_multiple_match() {
+        let aud = OidcAudience::Multiple(vec![
+            "client-a".to_string(),
+            "client-b".to_string(),
+            "client-c".to_string(),
+        ]);
+        assert!(aud.contains("client-a"));
+        assert!(aud.contains("client-b"));
+        assert!(aud.contains("client-c"));
+        assert!(!aud.contains("client-d"));
+    }
+
+    #[test]
+    fn test_oidc_audience_empty_multiple() {
+        let aud = OidcAudience::Multiple(vec![]);
+        assert!(!aud.contains("any-client"));
+    }
+
+    #[test]
+    fn test_base64_decode_url_safe_hello() {
+        let result = base64_decode_url_safe("SGVsbG8=").unwrap();
+        assert_eq!(String::from_utf8(result).unwrap(), "Hello");
+    }
+
+    #[test]
+    fn test_base64_decode_url_safe_url_chars() {
+        // URL-safe base64 uses - instead of + and _ instead of /
+        // "Hello+World/" in standard base64 might use + and /
+        // Test that URL-safe decoding works
+        let standard_input = "SGVsbG8gV29ybGQ="; // "Hello World"
+        let result = base64_decode_url_safe(standard_input).unwrap();
+        assert_eq!(String::from_utf8(result).unwrap(), "Hello World");
+    }
+
+    #[test]
+    fn test_base64_decode_url_safe_no_padding() {
+        // "ab" in base64 without padding
+        let result = base64_decode_url_safe("YWI");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_base64_decode_invalid_char() {
+        let result = base64_decode_url_safe("!!!invalid!!!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_oidc_user_info_serialization() {
+        let user_info = OidcUserInfo {
+            sub: "user-123".to_string(),
+            username: "testuser".to_string(),
+            email: "test@example.com".to_string(),
+            email_verified: Some(true),
+            display_name: Some("Test User".to_string()),
+            groups: vec!["developers".to_string(), "admins".to_string()],
+            extra_claims: HashMap::new(),
+        };
+        let json = serde_json::to_string(&user_info).unwrap();
+        let deserialized: OidcUserInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.sub, "user-123");
+        assert_eq!(deserialized.username, "testuser");
+        assert_eq!(deserialized.email, "test@example.com");
+        assert_eq!(deserialized.groups.len(), 2);
+    }
+
+    #[test]
+    fn test_oidc_discovery_deserialization() {
+        let json = serde_json::json!({
+            "issuer": "https://accounts.google.com",
+            "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_endpoint": "https://oauth2.googleapis.com/token",
+            "userinfo_endpoint": "https://openidconnect.googleapis.com/v1/userinfo",
+            "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs",
+            "response_types_supported": ["code", "token"],
+            "scopes_supported": ["openid", "profile", "email"]
+        });
+        let discovery: OidcDiscovery = serde_json::from_value(json).unwrap();
+        assert_eq!(discovery.issuer, "https://accounts.google.com");
+        assert!(discovery.userinfo_endpoint.is_some());
+        assert_eq!(discovery.response_types_supported.len(), 2);
+    }
+
+    #[test]
+    fn test_token_response_deserialization() {
+        let json = serde_json::json!({
+            "access_token": "access-abc",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "refresh-xyz",
+            "id_token": "ey.jwt.token",
+            "scope": "openid profile email"
+        });
+        let response: TokenResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(response.access_token, "access-abc");
+        assert_eq!(response.token_type, "Bearer");
+        assert_eq!(response.expires_in, Some(3600));
+        assert_eq!(response.refresh_token, Some("refresh-xyz".to_string()));
+    }
+
+    #[test]
+    fn test_token_response_minimal() {
+        let json = serde_json::json!({
+            "access_token": "token",
+            "token_type": "Bearer"
+        });
+        let response: TokenResponse = serde_json::from_value(json).unwrap();
+        assert!(response.expires_in.is_none());
+        assert!(response.refresh_token.is_none());
+        assert!(response.id_token.is_none());
+    }
+
+    #[test]
+    fn test_authorization_params_construction() {
+        let params = AuthorizationParams {
+            authorization_url: "https://example.com/auth?client_id=abc".to_string(),
+            state: "random-state".to_string(),
+            nonce: "random-nonce".to_string(),
+        };
+        assert!(params.authorization_url.contains("client_id=abc"));
+        assert!(!params.state.is_empty());
+        assert!(!params.nonce.is_empty());
+    }
+
+    #[test]
+    fn test_id_token_claims_deserialization() {
+        let json = serde_json::json!({
+            "iss": "https://accounts.google.com",
+            "sub": "1234567890",
+            "aud": "client-123",
+            "exp": 9999999999_i64,
+            "iat": 1000000000,
+            "preferred_username": "testuser",
+            "email": "test@example.com",
+            "name": "Test User",
+            "groups": ["admins", "developers"]
+        });
+        let claims: IdTokenClaims = serde_json::from_value(json).unwrap();
+        assert_eq!(claims.iss, "https://accounts.google.com");
+        assert_eq!(claims.sub, "1234567890");
+        assert!(claims.aud.contains("client-123"));
+        assert_eq!(
+            claims.extra.get("preferred_username").and_then(|v| v.as_str()),
+            Some("testuser")
+        );
+    }
+
+    #[test]
+    fn test_id_token_claims_with_array_audience() {
+        let json = serde_json::json!({
+            "iss": "https://issuer.com",
+            "sub": "user-1",
+            "aud": ["client-a", "client-b"],
+            "exp": 9999999999_i64,
+            "iat": 1000000000
+        });
+        let claims: IdTokenClaims = serde_json::from_value(json).unwrap();
+        assert!(claims.aud.contains("client-a"));
+        assert!(claims.aud.contains("client-b"));
+        assert!(!claims.aud.contains("client-c"));
+    }
 }

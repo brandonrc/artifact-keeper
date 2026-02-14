@@ -297,3 +297,175 @@ async fn proxy_delete(
     components(schemas(CreateInstanceRequest, RemoteInstanceResponse,))
 )]
 pub struct RemoteInstancesApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    // -----------------------------------------------------------------------
+    // build_target_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_target_url_basic() {
+        let url = build_target_url("http://example.com", "api/v1/packages");
+        assert_eq!(url, "http://example.com/api/v1/packages");
+    }
+
+    #[test]
+    fn test_build_target_url_trailing_slash_removed() {
+        let url = build_target_url("http://example.com/", "api/v1/packages");
+        assert_eq!(url, "http://example.com/api/v1/packages");
+    }
+
+    #[test]
+    fn test_build_target_url_multiple_trailing_slashes() {
+        let url = build_target_url("http://example.com///", "api/v1");
+        // trim_end_matches('/') removes all trailing slashes
+        assert_eq!(url, "http://example.com/api/v1");
+    }
+
+    #[test]
+    fn test_build_target_url_no_trailing_slash() {
+        let url = build_target_url("http://example.com", "health");
+        assert_eq!(url, "http://example.com/health");
+    }
+
+    #[test]
+    fn test_build_target_url_with_port() {
+        let url = build_target_url("http://localhost:8080", "api/v1/repos");
+        assert_eq!(url, "http://localhost:8080/api/v1/repos");
+    }
+
+    #[test]
+    fn test_build_target_url_with_port_trailing_slash() {
+        let url = build_target_url("http://localhost:8080/", "api/v1/repos");
+        assert_eq!(url, "http://localhost:8080/api/v1/repos");
+    }
+
+    #[test]
+    fn test_build_target_url_empty_path() {
+        let url = build_target_url("http://example.com", "");
+        assert_eq!(url, "http://example.com/");
+    }
+
+    #[test]
+    fn test_build_target_url_with_base_path() {
+        let url = build_target_url("http://example.com/prefix", "api/v1/data");
+        assert_eq!(url, "http://example.com/prefix/api/v1/data");
+    }
+
+    #[test]
+    fn test_build_target_url_with_base_path_trailing_slash() {
+        let url = build_target_url("http://example.com/prefix/", "api/v1/data");
+        assert_eq!(url, "http://example.com/prefix/api/v1/data");
+    }
+
+    #[test]
+    fn test_build_target_url_https() {
+        let url = build_target_url("https://registry.example.com", "api/v1/artifacts");
+        assert_eq!(url, "https://registry.example.com/api/v1/artifacts");
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateInstanceRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_instance_request_deserialize() {
+        let json = serde_json::json!({
+            "name": "production-registry",
+            "url": "https://registry.prod.example.com",
+            "api_key": "secret-api-key-123"
+        });
+        let req: CreateInstanceRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "production-registry");
+        assert_eq!(req.url, "https://registry.prod.example.com");
+        assert_eq!(req.api_key, "secret-api-key-123");
+    }
+
+    #[test]
+    fn test_create_instance_request_missing_name_fails() {
+        let json = serde_json::json!({
+            "url": "http://example.com",
+            "api_key": "key"
+        });
+        let result: std::result::Result<CreateInstanceRequest, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_instance_request_missing_url_fails() {
+        let json = serde_json::json!({
+            "name": "test",
+            "api_key": "key"
+        });
+        let result: std::result::Result<CreateInstanceRequest, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_instance_request_missing_api_key_fails() {
+        let json = serde_json::json!({
+            "name": "test",
+            "url": "http://example.com"
+        });
+        let result: std::result::Result<CreateInstanceRequest, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_instance_request_empty_strings() {
+        let json = serde_json::json!({
+            "name": "",
+            "url": "",
+            "api_key": ""
+        });
+        // Should succeed at deserialization level (validation is handled elsewhere)
+        let req: CreateInstanceRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "");
+        assert_eq!(req.url, "");
+        assert_eq!(req.api_key, "");
+    }
+
+    #[test]
+    fn test_create_instance_request_special_chars_in_name() {
+        let json = serde_json::json!({
+            "name": "My Registry (Production) - v2",
+            "url": "https://registry.example.com",
+            "api_key": "key-with-dashes_and_underscores"
+        });
+        let req: CreateInstanceRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "My Registry (Production) - v2");
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases for build_target_url used by proxy handlers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_target_url_deeply_nested_path() {
+        let url = build_target_url(
+            "http://registry.internal",
+            "api/v1/repos/my-repo/packages/my-pkg/versions/1.0.0",
+        );
+        assert_eq!(
+            url,
+            "http://registry.internal/api/v1/repos/my-repo/packages/my-pkg/versions/1.0.0"
+        );
+    }
+
+    #[test]
+    fn test_build_target_url_with_query_in_path() {
+        // The path could include query strings since it comes from the wildcard
+        let url = build_target_url("http://example.com", "api/v1/search?q=hello&page=1");
+        assert_eq!(url, "http://example.com/api/v1/search?q=hello&page=1");
+    }
+
+    #[test]
+    fn test_build_target_url_preserves_path_slashes() {
+        let url = build_target_url("http://example.com", "a/b/c/d/e");
+        assert_eq!(url, "http://example.com/a/b/c/d/e");
+    }
+}

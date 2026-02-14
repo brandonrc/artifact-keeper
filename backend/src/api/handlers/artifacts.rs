@@ -219,3 +219,217 @@ pub async fn get_artifact_stats(
     components(schemas(ArtifactResponse, ArtifactMetadataResponse, ArtifactStatsResponse,))
 )]
 pub struct ArtifactsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // ── ArtifactResponse serialization tests ────────────────────────
+
+    #[test]
+    fn test_artifact_response_serialization_all_fields() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+        let resp = ArtifactResponse {
+            id,
+            repository_id: repo_id,
+            repository_key: Some("maven-releases".to_string()),
+            path: "com/example/lib/1.0/lib-1.0.jar".to_string(),
+            name: "lib".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 102400,
+            checksum_sha256: "abc123".to_string(),
+            checksum_md5: Some("def456".to_string()),
+            checksum_sha1: Some("ghi789".to_string()),
+            content_type: "application/java-archive".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], id.to_string());
+        assert_eq!(json["repository_id"], repo_id.to_string());
+        assert_eq!(json["repository_key"], "maven-releases");
+        assert_eq!(json["path"], "com/example/lib/1.0/lib-1.0.jar");
+        assert_eq!(json["name"], "lib");
+        assert_eq!(json["version"], "1.0");
+        assert_eq!(json["size_bytes"], 102400);
+        assert_eq!(json["checksum_sha256"], "abc123");
+        assert_eq!(json["checksum_md5"], "def456");
+        assert_eq!(json["checksum_sha1"], "ghi789");
+        assert_eq!(json["content_type"], "application/java-archive");
+    }
+
+    #[test]
+    fn test_artifact_response_optional_fields_null() {
+        let now = Utc::now();
+        let resp = ArtifactResponse {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            repository_key: None,
+            path: "file.tar.gz".to_string(),
+            name: "file".to_string(),
+            version: None,
+            size_bytes: 0,
+            checksum_sha256: "sha".to_string(),
+            checksum_md5: None,
+            checksum_sha1: None,
+            content_type: "application/octet-stream".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["repository_key"].is_null());
+        assert!(json["version"].is_null());
+        assert!(json["checksum_md5"].is_null());
+        assert!(json["checksum_sha1"].is_null());
+    }
+
+    #[test]
+    fn test_artifact_response_zero_size() {
+        let now = Utc::now();
+        let resp = ArtifactResponse {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            repository_key: None,
+            path: "empty".to_string(),
+            name: "empty".to_string(),
+            version: None,
+            size_bytes: 0,
+            checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            checksum_md5: None,
+            checksum_sha1: None,
+            content_type: "application/octet-stream".to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["size_bytes"], 0);
+    }
+
+    // ── ArtifactMetadataResponse serialization tests ────────────────
+
+    #[test]
+    fn test_artifact_metadata_response_serialization() {
+        let resp = ArtifactMetadataResponse {
+            artifact_id: Uuid::new_v4(),
+            format: "maven".to_string(),
+            metadata: serde_json::json!({"groupId": "com.example", "artifactId": "lib"}),
+            properties: serde_json::json!({"build.number": "42"}),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["format"], "maven");
+        assert_eq!(json["metadata"]["groupId"], "com.example");
+        assert_eq!(json["properties"]["build.number"], "42");
+    }
+
+    #[test]
+    fn test_artifact_metadata_response_empty_metadata() {
+        let resp = ArtifactMetadataResponse {
+            artifact_id: Uuid::new_v4(),
+            format: "generic".to_string(),
+            metadata: serde_json::json!({}),
+            properties: serde_json::json!({}),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["metadata"].as_object().unwrap().is_empty());
+        assert!(json["properties"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_artifact_metadata_response_complex_metadata() {
+        let resp = ArtifactMetadataResponse {
+            artifact_id: Uuid::new_v4(),
+            format: "npm".to_string(),
+            metadata: serde_json::json!({
+                "name": "@scope/pkg",
+                "version": "2.0.0",
+                "dependencies": {"lodash": "^4.0.0"},
+                "keywords": ["test", "example"]
+            }),
+            properties: serde_json::json!(null),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["metadata"]["dependencies"]["lodash"], "^4.0.0");
+        assert!(json["properties"].is_null());
+    }
+
+    // ── ArtifactStatsResponse serialization tests ───────────────────
+
+    #[test]
+    fn test_artifact_stats_response_with_downloads() {
+        let now = Utc::now();
+        let resp = ArtifactStatsResponse {
+            artifact_id: Uuid::new_v4(),
+            download_count: 1234,
+            first_downloaded: Some(now - chrono::Duration::days(30)),
+            last_downloaded: Some(now),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["download_count"], 1234);
+        assert!(!json["first_downloaded"].is_null());
+        assert!(!json["last_downloaded"].is_null());
+    }
+
+    #[test]
+    fn test_artifact_stats_response_no_downloads() {
+        let resp = ArtifactStatsResponse {
+            artifact_id: Uuid::new_v4(),
+            download_count: 0,
+            first_downloaded: None,
+            last_downloaded: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["download_count"], 0);
+        assert!(json["first_downloaded"].is_null());
+        assert!(json["last_downloaded"].is_null());
+    }
+
+    #[test]
+    fn test_artifact_stats_response_large_download_count() {
+        let resp = ArtifactStatsResponse {
+            artifact_id: Uuid::new_v4(),
+            download_count: i64::MAX,
+            first_downloaded: None,
+            last_downloaded: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["download_count"], i64::MAX);
+    }
+
+    // ── Struct field visibility / construction tests ─────────────────
+
+    #[test]
+    fn test_artifact_response_debug_impl() {
+        let resp = ArtifactResponse {
+            id: Uuid::nil(),
+            repository_id: Uuid::nil(),
+            repository_key: None,
+            path: "p".to_string(),
+            name: "n".to_string(),
+            version: None,
+            size_bytes: 0,
+            checksum_sha256: "s".to_string(),
+            checksum_md5: None,
+            checksum_sha1: None,
+            content_type: "t".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("ArtifactResponse"));
+    }
+
+    #[test]
+    fn test_artifact_metadata_response_debug_impl() {
+        let resp = ArtifactMetadataResponse {
+            artifact_id: Uuid::nil(),
+            format: "generic".to_string(),
+            metadata: serde_json::json!(null),
+            properties: serde_json::json!(null),
+        };
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("ArtifactMetadataResponse"));
+    }
+}

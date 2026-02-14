@@ -603,3 +603,464 @@ pub async fn recent(
     ))
 )]
 pub struct SearchApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // QuickSearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_quick_search_query_deserialize_full() {
+        let json = json!({"q": "my-artifact", "limit": 25, "types": "artifact,repository"});
+        let query: QuickSearchQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.q.as_deref(), Some("my-artifact"));
+        assert_eq!(query.limit, Some(25));
+        assert_eq!(query.types.as_deref(), Some("artifact,repository"));
+    }
+
+    #[test]
+    fn test_quick_search_query_deserialize_empty() {
+        let json = json!({});
+        let query: QuickSearchQuery = serde_json::from_value(json).unwrap();
+        assert!(query.q.is_none());
+        assert!(query.limit.is_none());
+        assert!(query.types.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Quick search limit clamping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_quick_search_limit_default() {
+        let limit = None::<i64>.unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 10);
+    }
+
+    #[test]
+    fn test_quick_search_limit_clamp_lower() {
+        let limit = Some(0_i64).unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 1);
+    }
+
+    #[test]
+    fn test_quick_search_limit_clamp_upper() {
+        let limit = Some(100_i64).unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 50);
+    }
+
+    #[test]
+    fn test_quick_search_limit_within_range() {
+        let limit = Some(30_i64).unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 30);
+    }
+
+    // -----------------------------------------------------------------------
+    // AdvancedSearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_advanced_search_query_deserialize_full() {
+        let json = json!({
+            "query": "spring-boot",
+            "format": "maven",
+            "repository_key": "libs-release",
+            "name": "spring-boot-starter",
+            "path": "org/springframework",
+            "version": "3.0.0",
+            "min_size": 1024,
+            "max_size": 10485760,
+            "created_after": "2024-01-01",
+            "created_before": "2024-12-31",
+            "page": 2,
+            "per_page": 50,
+            "sort_by": "name",
+            "sort_order": "asc"
+        });
+        let query: AdvancedSearchQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.query.as_deref(), Some("spring-boot"));
+        assert_eq!(query.format.as_deref(), Some("maven"));
+        assert_eq!(query.repository_key.as_deref(), Some("libs-release"));
+        assert_eq!(query.min_size, Some(1024));
+        assert_eq!(query.max_size, Some(10485760));
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+    }
+
+    #[test]
+    fn test_advanced_search_query_deserialize_empty() {
+        let json = json!({});
+        let query: AdvancedSearchQuery = serde_json::from_value(json).unwrap();
+        assert!(query.query.is_none());
+        assert!(query.format.is_none());
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+        assert!(query.sort_by.is_none());
+        assert!(query.sort_order.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Advanced search pagination logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_advanced_search_page_defaults() {
+        let page = None::<u32>.unwrap_or(1).max(1);
+        let per_page = None::<u32>.unwrap_or(20).clamp(1, 100);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+    }
+
+    #[test]
+    fn test_advanced_search_page_zero_clamped() {
+        let page = Some(0_u32).unwrap_or(1).max(1);
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_advanced_search_per_page_clamped_upper() {
+        let per_page = Some(500_u32).unwrap_or(20).clamp(1, 100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_advanced_search_per_page_clamped_lower() {
+        let per_page = Some(0_u32).unwrap_or(20).clamp(1, 100);
+        assert_eq!(per_page, 1);
+    }
+
+    #[test]
+    fn test_advanced_search_offset_calculation() {
+        let page: u32 = 3;
+        let per_page: u32 = 25;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Total pages calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_total_pages_exact_division() {
+        let total: i64 = 100;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 5);
+    }
+
+    #[test]
+    fn test_total_pages_with_remainder() {
+        let total: i64 = 101;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 6);
+    }
+
+    #[test]
+    fn test_total_pages_zero_total() {
+        let total: i64 = 0;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 0);
+    }
+
+    #[test]
+    fn test_total_pages_single_item() {
+        let total: i64 = 1;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // ChecksumQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_checksum_query_deserialize() {
+        let json = json!({"checksum": "abc123def456", "algorithm": "sha256"});
+        let query: ChecksumQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.checksum, "abc123def456");
+        assert_eq!(query.algorithm.as_deref(), Some("sha256"));
+    }
+
+    #[test]
+    fn test_checksum_query_algorithm_default() {
+        let json = json!({"checksum": "abc123"});
+        let query: ChecksumQuery = serde_json::from_value(json).unwrap();
+        let algorithm = query.algorithm.as_deref().unwrap_or("sha256");
+        assert_eq!(algorithm, "sha256");
+    }
+
+    // -----------------------------------------------------------------------
+    // Checksum normalization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_checksum_trim_and_lowercase() {
+        let checksum = "  ABC123DEF  ".trim().to_lowercase();
+        assert_eq!(checksum, "abc123def");
+    }
+
+    #[test]
+    fn test_checksum_empty_after_trim() {
+        let checksum = "   ".trim().to_lowercase();
+        assert!(checksum.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Unsupported algorithm validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_checksum_algorithm_validation() {
+        let algorithm = "sha512";
+        let result = match algorithm {
+            "sha256" | "sha1" | "md5" => Ok(()),
+            other => Err(format!(
+                "Unsupported checksum algorithm: {other}. Use sha256, sha1, or md5."
+            )),
+        };
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sha512"));
+    }
+
+    #[test]
+    fn test_checksum_algorithm_sha256_valid() {
+        let algorithm = "sha256";
+        let is_valid = matches!(algorithm, "sha256" | "sha1" | "md5");
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_checksum_algorithm_sha1_valid() {
+        let is_valid = matches!("sha1", "sha256" | "sha1" | "md5");
+        assert!(is_valid);
+    }
+
+    #[test]
+    fn test_checksum_algorithm_md5_valid() {
+        let is_valid = matches!("md5", "sha256" | "sha1" | "md5");
+        assert!(is_valid);
+    }
+
+    // -----------------------------------------------------------------------
+    // SuggestQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_suggest_query_deserialize() {
+        let json = json!({"prefix": "spring", "limit": 5});
+        let query: SuggestQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.prefix, "spring");
+        assert_eq!(query.limit, Some(5));
+    }
+
+    #[test]
+    fn test_suggest_limit_clamping() {
+        let limit = Some(100_i64).unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 50);
+        let limit = Some(0_i64).unwrap_or(10).clamp(1, 50);
+        assert_eq!(limit, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // TrendingQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trending_query_deserialize() {
+        let json = json!({"days": 30, "limit": 10});
+        let query: TrendingQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.days, Some(30));
+        assert_eq!(query.limit, Some(10));
+    }
+
+    #[test]
+    fn test_trending_days_default_and_clamp() {
+        let days = None::<i32>.unwrap_or(7).clamp(1, 90);
+        assert_eq!(days, 7);
+        let days = Some(0_i32).unwrap_or(7).clamp(1, 90);
+        assert_eq!(days, 1);
+        let days = Some(365_i32).unwrap_or(7).clamp(1, 90);
+        assert_eq!(days, 90);
+    }
+
+    #[test]
+    fn test_trending_limit_default_and_clamp() {
+        let limit = None::<i64>.unwrap_or(20).clamp(1, 100);
+        assert_eq!(limit, 20);
+    }
+
+    // -----------------------------------------------------------------------
+    // RecentQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_recent_query_deserialize() {
+        let json = json!({"limit": 15});
+        let query: RecentQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.limit, Some(15));
+    }
+
+    #[test]
+    fn test_recent_limit_default_and_clamp() {
+        let limit = None::<i64>.unwrap_or(20).clamp(1, 100);
+        assert_eq!(limit, 20);
+        let limit = Some(0_i64).unwrap_or(20).clamp(1, 100);
+        assert_eq!(limit, 1);
+        let limit = Some(500_i64).unwrap_or(20).clamp(1, 100);
+        assert_eq!(limit, 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchResultItem serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_result_item_serialize() {
+        let item = SearchResultItem {
+            id: Uuid::nil(),
+            result_type: "artifact".to_string(),
+            name: "my-lib".to_string(),
+            path: Some("/com/example/my-lib/1.0/my-lib-1.0.jar".to_string()),
+            repository_key: "libs-release".to_string(),
+            format: Some("maven".to_string()),
+            version: Some("1.0".to_string()),
+            size_bytes: Some(524288),
+            created_at: chrono::Utc::now(),
+            highlights: Some(vec!["matched <em>my-lib</em>".to_string()]),
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        // "type" rename check
+        assert_eq!(json["type"], "artifact");
+        assert!(json.get("result_type").is_none());
+        assert_eq!(json["name"], "my-lib");
+        assert_eq!(json["format"], "maven");
+        assert_eq!(json["size_bytes"], 524288);
+    }
+
+    #[test]
+    fn test_search_result_item_skip_none_fields() {
+        let item = SearchResultItem {
+            id: Uuid::nil(),
+            result_type: "artifact".to_string(),
+            name: "test".to_string(),
+            path: None,
+            repository_key: "test-repo".to_string(),
+            format: None,
+            version: None,
+            size_bytes: None,
+            created_at: chrono::Utc::now(),
+            highlights: None,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        // skip_serializing_if = "Option::is_none" fields
+        assert!(json.get("path").is_none());
+        assert!(json.get("format").is_none());
+        assert!(json.get("version").is_none());
+        assert!(json.get("size_bytes").is_none());
+        assert!(json.get("highlights").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // PaginationInfo serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_info_serialize() {
+        let info = PaginationInfo {
+            page: 1,
+            per_page: 20,
+            total: 100,
+            total_pages: 5,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["per_page"], 20);
+        assert_eq!(json["total"], 100);
+        assert_eq!(json["total_pages"], 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // FacetValue and FacetsResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_facet_value_serialize() {
+        let facet = FacetValue {
+            value: "maven".to_string(),
+            count: 42,
+        };
+        let json = serde_json::to_value(&facet).unwrap();
+        assert_eq!(json["value"], "maven");
+        assert_eq!(json["count"], 42);
+    }
+
+    #[test]
+    fn test_facets_response_serialize() {
+        let facets = FacetsResponse {
+            formats: vec![
+                FacetValue { value: "maven".to_string(), count: 100 },
+                FacetValue { value: "npm".to_string(), count: 50 },
+            ],
+            repositories: vec![
+                FacetValue { value: "libs-release".to_string(), count: 75 },
+            ],
+            content_types: vec![],
+        };
+        let json = serde_json::to_value(&facets).unwrap();
+        assert_eq!(json["formats"].as_array().unwrap().len(), 2);
+        assert_eq!(json["repositories"].as_array().unwrap().len(), 1);
+        assert_eq!(json["content_types"].as_array().unwrap().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ChecksumArtifact serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_checksum_artifact_serialize() {
+        let artifact = ChecksumArtifact {
+            id: Uuid::nil(),
+            repository_key: "libs-release".to_string(),
+            path: "/com/example/1.0/example-1.0.jar".to_string(),
+            name: "example-1.0.jar".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 1024,
+            checksum_sha256: "abc123".to_string(),
+            content_type: "application/java-archive".to_string(),
+            download_count: 42,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(json["download_count"], 42);
+        assert_eq!(json["content_type"], "application/java-archive");
+    }
+
+    // -----------------------------------------------------------------------
+    // QuickSearchResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_quick_search_response_empty() {
+        let resp = QuickSearchResponse { results: Vec::new() };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["results"].as_array().unwrap().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty query returns empty results (logic test)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_query_text_logic() {
+        let query_text = None::<String>.unwrap_or_default();
+        assert!(query_text.is_empty());
+    }
+}

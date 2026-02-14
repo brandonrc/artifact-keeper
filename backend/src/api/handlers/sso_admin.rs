@@ -619,3 +619,363 @@ pub async fn list_providers(
     ))
 )]
 pub struct SsoAdminApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // require_admin tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_admin_passes_for_admin() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "admin".to_string(),
+            email: "admin@example.com".to_string(),
+            is_admin: true,
+            is_api_token: false,
+            scopes: None,
+        };
+        assert!(require_admin(&auth).is_ok());
+    }
+
+    #[test]
+    fn test_require_admin_fails_for_non_admin() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "user@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            scopes: None,
+        };
+        let result = require_admin(&auth);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let err_msg = format!("{}", err);
+        assert!(err_msg.contains("Admin required"), "Error message: {}", err_msg);
+    }
+
+    #[test]
+    fn test_require_admin_fails_even_with_api_token() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "api-user".to_string(),
+            email: "api@example.com".to_string(),
+            is_admin: false,
+            is_api_token: true,
+            scopes: Some(vec!["read".to_string(), "write".to_string()]),
+        };
+        assert!(require_admin(&auth).is_err());
+    }
+
+    #[test]
+    fn test_require_admin_passes_for_admin_api_token() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "admin-api".to_string(),
+            email: "admin-api@example.com".to_string(),
+            is_admin: true,
+            is_api_token: true,
+            scopes: Some(vec!["admin".to_string()]),
+        };
+        assert!(require_admin(&auth).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateOidcConfigRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_oidc_request_deserialize_minimal() {
+        let json = json!({
+            "name": "Okta",
+            "issuer_url": "https://dev-123.okta.com",
+            "client_id": "client-id-123",
+            "client_secret": "secret-456"
+        });
+        let req: CreateOidcConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "Okta");
+        assert_eq!(req.issuer_url, "https://dev-123.okta.com");
+        assert_eq!(req.client_id, "client-id-123");
+        assert_eq!(req.client_secret, "secret-456");
+        assert!(req.scopes.is_none());
+        assert!(req.attribute_mapping.is_none());
+        assert!(req.is_enabled.is_none());
+        assert!(req.auto_create_users.is_none());
+    }
+
+    #[test]
+    fn test_create_oidc_request_deserialize_full() {
+        let json = json!({
+            "name": "Azure AD",
+            "issuer_url": "https://login.microsoftonline.com/tenant-id/v2.0",
+            "client_id": "azure-client",
+            "client_secret": "azure-secret",
+            "scopes": ["openid", "profile", "email"],
+            "attribute_mapping": {"email": "preferred_username"},
+            "is_enabled": true,
+            "auto_create_users": false
+        });
+        let req: CreateOidcConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.scopes.as_ref().unwrap().len(), 3);
+        assert!(req.is_enabled.unwrap());
+        assert!(!req.auto_create_users.unwrap());
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateOidcConfigRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_oidc_request_all_none() {
+        let json = json!({});
+        let req: UpdateOidcConfigRequest = serde_json::from_value(json).unwrap();
+        assert!(req.name.is_none());
+        assert!(req.issuer_url.is_none());
+        assert!(req.client_id.is_none());
+        assert!(req.client_secret.is_none());
+        assert!(req.scopes.is_none());
+        assert!(req.attribute_mapping.is_none());
+        assert!(req.is_enabled.is_none());
+        assert!(req.auto_create_users.is_none());
+    }
+
+    #[test]
+    fn test_update_oidc_request_partial() {
+        let json = json!({
+            "name": "Updated Name",
+            "is_enabled": false
+        });
+        let req: UpdateOidcConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name.as_deref(), Some("Updated Name"));
+        assert_eq!(req.is_enabled, Some(false));
+        assert!(req.issuer_url.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateLdapConfigRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_ldap_request_deserialize_minimal() {
+        let json = json!({
+            "name": "Corporate LDAP",
+            "server_url": "ldaps://ldap.example.com:636",
+            "user_base_dn": "ou=users,dc=example,dc=com"
+        });
+        let req: CreateLdapConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "Corporate LDAP");
+        assert_eq!(req.server_url, "ldaps://ldap.example.com:636");
+        assert_eq!(req.user_base_dn, "ou=users,dc=example,dc=com");
+        assert!(req.bind_dn.is_none());
+        assert!(req.bind_password.is_none());
+        assert!(req.user_filter.is_none());
+        assert!(req.use_starttls.is_none());
+        assert!(req.is_enabled.is_none());
+    }
+
+    #[test]
+    fn test_create_ldap_request_deserialize_full() {
+        let json = json!({
+            "name": "Corp LDAP",
+            "server_url": "ldap://ldap.corp.com",
+            "bind_dn": "cn=admin,dc=corp,dc=com",
+            "bind_password": "admin-pass",
+            "user_base_dn": "ou=people,dc=corp,dc=com",
+            "user_filter": "(objectClass=inetOrgPerson)",
+            "group_base_dn": "ou=groups,dc=corp,dc=com",
+            "group_filter": "(objectClass=groupOfNames)",
+            "email_attribute": "mail",
+            "display_name_attribute": "cn",
+            "username_attribute": "uid",
+            "groups_attribute": "memberOf",
+            "admin_group_dn": "cn=admins,ou=groups,dc=corp,dc=com",
+            "use_starttls": true,
+            "is_enabled": true,
+            "priority": 10
+        });
+        let req: CreateLdapConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.bind_dn.as_deref(), Some("cn=admin,dc=corp,dc=com"));
+        assert!(req.use_starttls.unwrap());
+        assert_eq!(req.priority, Some(10));
+        assert_eq!(req.email_attribute.as_deref(), Some("mail"));
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateSamlConfigRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_saml_request_deserialize() {
+        let json = json!({
+            "name": "Okta SAML",
+            "entity_id": "http://www.okta.com/exk1234",
+            "sso_url": "https://dev-123.okta.com/app/exk1234/sso/saml",
+            "certificate": "MIIDpDCCA...",
+            "sp_entity_id": "https://registry.example.com/saml/metadata"
+        });
+        let req: CreateSamlConfigRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "Okta SAML");
+        assert_eq!(req.entity_id, "http://www.okta.com/exk1234");
+        assert_eq!(req.sp_entity_id, Some("https://registry.example.com/saml/metadata".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // ToggleRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_toggle_request_enabled() {
+        let json = json!({"enabled": true});
+        let req: ToggleRequest = serde_json::from_value(json).unwrap();
+        assert!(req.enabled);
+    }
+
+    #[test]
+    fn test_toggle_request_disabled() {
+        let json = json!({"enabled": false});
+        let req: ToggleRequest = serde_json::from_value(json).unwrap();
+        assert!(!req.enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // OidcConfigResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_oidc_config_response_serialize() {
+        let resp = OidcConfigResponse {
+            id: Uuid::nil(),
+            name: "Test OIDC".to_string(),
+            issuer_url: "https://issuer.example.com".to_string(),
+            client_id: "client-abc".to_string(),
+            has_secret: true,
+            scopes: vec!["openid".to_string(), "profile".to_string()],
+            attribute_mapping: json!({"email": "email"}),
+            is_enabled: true,
+            auto_create_users: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "Test OIDC");
+        assert_eq!(json["has_secret"], true);
+        assert_eq!(json["scopes"].as_array().unwrap().len(), 2);
+        assert!(json["is_enabled"].as_bool().unwrap());
+        assert!(!json["auto_create_users"].as_bool().unwrap());
+    }
+
+    // -----------------------------------------------------------------------
+    // LdapConfigResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ldap_config_response_serialize() {
+        let resp = LdapConfigResponse {
+            id: Uuid::nil(),
+            name: "Test LDAP".to_string(),
+            server_url: "ldaps://ldap.example.com".to_string(),
+            bind_dn: Some("cn=admin,dc=example,dc=com".to_string()),
+            has_bind_password: true,
+            user_base_dn: "ou=users,dc=example,dc=com".to_string(),
+            user_filter: "(objectClass=person)".to_string(),
+            group_base_dn: None,
+            group_filter: None,
+            email_attribute: "mail".to_string(),
+            display_name_attribute: "cn".to_string(),
+            username_attribute: "uid".to_string(),
+            groups_attribute: "memberOf".to_string(),
+            admin_group_dn: None,
+            use_starttls: false,
+            is_enabled: true,
+            priority: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "Test LDAP");
+        assert_eq!(json["has_bind_password"], true);
+        assert_eq!(json["priority"], 1);
+        assert!(json["group_base_dn"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // SamlConfigResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_saml_config_response_serialize() {
+        let resp = SamlConfigResponse {
+            id: Uuid::nil(),
+            name: "Test SAML".to_string(),
+            entity_id: "http://idp.example.com".to_string(),
+            sso_url: "https://idp.example.com/sso".to_string(),
+            slo_url: Some("https://idp.example.com/slo".to_string()),
+            has_certificate: true,
+            name_id_format: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress".to_string(),
+            attribute_mapping: json!({"email": "user.email"}),
+            sp_entity_id: "https://sp.example.com/metadata".to_string(),
+            sign_requests: true,
+            require_signed_assertions: true,
+            admin_group: Some("admin-group".to_string()),
+            is_enabled: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "Test SAML");
+        assert!(json["sign_requests"].as_bool().unwrap());
+        assert!(json["require_signed_assertions"].as_bool().unwrap());
+        assert!(!json["is_enabled"].as_bool().unwrap());
+        assert_eq!(json["slo_url"], "https://idp.example.com/slo");
+    }
+
+    // -----------------------------------------------------------------------
+    // SsoProviderInfo serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sso_provider_info_serialize() {
+        let info = SsoProviderInfo {
+            id: Uuid::nil(),
+            name: "My OIDC Provider".to_string(),
+            provider_type: "oidc".to_string(),
+            login_url: "/api/v1/auth/sso/oidc/00000000-0000-0000-0000-000000000000/login".to_string(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["provider_type"], "oidc");
+        assert!(json["login_url"].as_str().unwrap().contains("/login"));
+    }
+
+    // -----------------------------------------------------------------------
+    // LdapTestResult serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ldap_test_result_success() {
+        let result = LdapTestResult {
+            success: true,
+            message: "Connection successful".to_string(),
+            response_time_ms: 45,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json["success"].as_bool().unwrap());
+        assert_eq!(json["response_time_ms"], 45);
+    }
+
+    #[test]
+    fn test_ldap_test_result_failure() {
+        let result = LdapTestResult {
+            success: false,
+            message: "Connection timed out".to_string(),
+            response_time_ms: 30000,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(!json["success"].as_bool().unwrap());
+        assert!(json["message"].as_str().unwrap().contains("timed out"));
+    }
+}

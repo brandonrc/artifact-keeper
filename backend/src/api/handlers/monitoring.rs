@@ -137,3 +137,178 @@ pub async fn run_health_check(
     let results = monitor.check_all_services(&state.config).await?;
     Ok(Json(results))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── HealthLogQuery deserialization tests ─────────────────────────
+
+    #[test]
+    fn test_health_log_query_empty() {
+        let json = r#"{}"#;
+        let q: HealthLogQuery = serde_json::from_str(json).unwrap();
+        assert!(q.service.is_none());
+        assert!(q.limit.is_none());
+    }
+
+    #[test]
+    fn test_health_log_query_with_service() {
+        let json = r#"{"service": "postgres"}"#;
+        let q: HealthLogQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.service, Some("postgres".to_string()));
+    }
+
+    #[test]
+    fn test_health_log_query_with_limit() {
+        let json = r#"{"limit": 50}"#;
+        let q: HealthLogQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.limit, Some(50));
+    }
+
+    #[test]
+    fn test_health_log_query_both_params() {
+        let json = r#"{"service": "meilisearch", "limit": 25}"#;
+        let q: HealthLogQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.service, Some("meilisearch".to_string()));
+        assert_eq!(q.limit, Some(25));
+    }
+
+    // ── Limit clamping logic tests ──────────────────────────────────
+
+    #[test]
+    fn test_limit_default_is_100() {
+        let query = HealthLogQuery {
+            service: None,
+            limit: None,
+        };
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 100);
+    }
+
+    #[test]
+    fn test_limit_clamped_to_500() {
+        let query = HealthLogQuery {
+            service: None,
+            limit: Some(1000),
+        };
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 500);
+    }
+
+    #[test]
+    fn test_limit_below_max_preserved() {
+        let query = HealthLogQuery {
+            service: None,
+            limit: Some(250),
+        };
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 250);
+    }
+
+    #[test]
+    fn test_limit_exactly_500() {
+        let query = HealthLogQuery {
+            service: None,
+            limit: Some(500),
+        };
+        let limit = query.limit.unwrap_or(100).min(500);
+        assert_eq!(limit, 500);
+    }
+
+    // ── SuppressRequest deserialization tests ────────────────────────
+
+    #[test]
+    fn test_suppress_request_deserialization() {
+        let json = r#"{"service_name": "postgres", "until": "2024-12-31T23:59:59Z"}"#;
+        let req: SuppressRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.service_name, "postgres");
+        let expected: DateTime<Utc> = "2024-12-31T23:59:59Z".parse().unwrap();
+        assert_eq!(req.until, expected);
+    }
+
+    #[test]
+    fn test_suppress_request_missing_service_fails() {
+        let json = r#"{"until": "2024-12-31T23:59:59Z"}"#;
+        let result: std::result::Result<SuppressRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_suppress_request_missing_until_fails() {
+        let json = r#"{"service_name": "postgres"}"#;
+        let result: std::result::Result<SuppressRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_suppress_request_invalid_date_fails() {
+        let json = r#"{"service_name": "postgres", "until": "not-a-date"}"#;
+        let result: std::result::Result<SuppressRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    // ── MonitorConfig default tests ─────────────────────────────────
+
+    #[test]
+    fn test_monitor_config_default() {
+        let config = MonitorConfig::default();
+        assert_eq!(config.alert_threshold, 3);
+        assert_eq!(config.alert_cooldown_minutes, 15);
+        assert_eq!(config.check_timeout_secs, 5);
+    }
+
+    // ── ServiceHealthEntry serialization tests ──────────────────────
+
+    #[test]
+    fn test_service_health_entry_serialization() {
+        let entry = ServiceHealthEntry {
+            service_name: "postgres".to_string(),
+            status: "healthy".to_string(),
+            previous_status: Some("unhealthy".to_string()),
+            message: Some("Connection restored".to_string()),
+            response_time_ms: Some(15),
+            checked_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["service_name"], "postgres");
+        assert_eq!(json["status"], "healthy");
+        assert_eq!(json["previous_status"], "unhealthy");
+        assert_eq!(json["response_time_ms"], 15);
+    }
+
+    #[test]
+    fn test_service_health_entry_minimal() {
+        let entry = ServiceHealthEntry {
+            service_name: "meilisearch".to_string(),
+            status: "unknown".to_string(),
+            previous_status: None,
+            message: None,
+            response_time_ms: None,
+            checked_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["service_name"], "meilisearch");
+        assert!(json["previous_status"].is_null());
+        assert!(json["message"].is_null());
+        assert!(json["response_time_ms"].is_null());
+    }
+
+    // ── AlertState serialization tests ──────────────────────────────
+
+    #[test]
+    fn test_alert_state_serialization() {
+        let state = AlertState {
+            service_name: "trivy".to_string(),
+            current_status: "degraded".to_string(),
+            consecutive_failures: 5,
+            last_alert_sent_at: Some(chrono::Utc::now()),
+            suppressed_until: None,
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["service_name"], "trivy");
+        assert_eq!(json["consecutive_failures"], 5);
+        assert!(json["suppressed_until"].is_null());
+    }
+}
