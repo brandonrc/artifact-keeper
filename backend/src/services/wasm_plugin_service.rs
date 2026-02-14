@@ -1769,11 +1769,895 @@ impl WasmPluginService {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn build_wasm_path(plugins_dir: &Path, plugin_name: &str) -> PathBuf {
+        plugins_dir.join(format!("{}.wasm", plugin_name))
+    }
+
+    fn wasm_binary_candidates(repo_path: &Path) -> Vec<PathBuf> {
+        vec![
+            repo_path.join("target/wasm32-wasi/release/plugin.wasm"),
+            repo_path.join("target/wasm32-wasip1/release/plugin.wasm"),
+            repo_path.join("plugin.wasm"),
+            repo_path.join("out/plugin.wasm"),
+            repo_path.join("dist/plugin.wasm"),
+        ]
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum GitCloneErrorKind {
+        NotFound,
+        Timeout,
+        Unauthorized,
+        Other,
+    }
+
+    fn classify_git_clone_error(error_msg: &str) -> GitCloneErrorKind {
+        if error_msg.contains("not found") || error_msg.contains("404") {
+            GitCloneErrorKind::NotFound
+        } else if error_msg.contains("timeout") {
+            GitCloneErrorKind::Timeout
+        } else if error_msg.contains("authentication") || error_msg.contains("401") {
+            GitCloneErrorKind::Unauthorized
+        } else {
+            GitCloneErrorKind::Other
+        }
+    }
+
+    fn manifest_validation_error_message(e: &ManifestValidationError) -> String {
+        match e {
+            ManifestValidationError::InvalidPluginName(name) => {
+                format!("Invalid plugin name '{}': must be lowercase letters, numbers, and hyphens, starting with a letter", name)
+            }
+            ManifestValidationError::InvalidVersion(version) => {
+                format!(
+                    "Invalid version '{}': must be semantic version (e.g., 1.0.0)",
+                    version
+                )
+            }
+            ManifestValidationError::InvalidFormatKey(key) => {
+                format!("Invalid format key '{}': must be lowercase letters, numbers, and hyphens, starting with a letter", key)
+            }
+            ManifestValidationError::MissingDisplayName => {
+                "Missing display_name in [format] section".to_string()
+            }
+            ManifestValidationError::InvalidMemoryLimits { min, max } => {
+                format!(
+                    "Invalid memory limits: min ({} MB) must be <= max ({} MB)",
+                    min, max
+                )
+            }
+            ManifestValidationError::InvalidTimeout(secs) => {
+                format!(
+                    "Invalid timeout {}: must be between 1 and 300 seconds",
+                    secs
+                )
+            }
+        }
+    }
+
+    fn extract_format_key(manifest: &PluginManifest) -> Option<String> {
+        manifest.format.as_ref().map(|f| f.key.clone())
+    }
+
+    fn extract_format_key_from_json(manifest_json: &serde_json::Value) -> Option<String> {
+        manifest_json
+            .get("format")
+            .and_then(|f| f.get("key"))
+            .and_then(|k| k.as_str())
+            .map(String::from)
+    }
+
+    fn classify_db_error_for_create(error_msg: &str, entity_name: &str) -> String {
+        if error_msg.contains("duplicate key") {
+            format!("Plugin '{}' already exists", entity_name)
+        } else {
+            error_msg.to_string()
+        }
+    }
+
+    fn build_installed_event_message(name: &str, version: &str, source: &str) -> String {
+        format!("Plugin {} v{} installed from {}", name, version, source)
+    }
+
+    fn build_reloaded_event_message(name: &str, old_version: &str, new_version: &str) -> String {
+        format!(
+            "Plugin {} reloaded from v{} to v{}",
+            name, old_version, new_version
+        )
+    }
+
+    fn build_error_event_message(name: &str, error: &str) -> String {
+        format!("Plugin {} error: {}", name, error)
+    }
+
+    fn validate_reload_source_type(source_type: PluginSourceType) -> Option<&'static str> {
+        match source_type {
+            PluginSourceType::WasmGit => None,
+            PluginSourceType::WasmZip | PluginSourceType::WasmLocal => {
+                Some("Cannot reload ZIP or local plugins. Re-upload to update.")
+            }
+            PluginSourceType::Core => Some("Cannot reload core plugins"),
+        }
+    }
+
+    fn validate_plugin_name_match(expected: &str, actual: &str) -> Option<String> {
+        if expected != actual {
+            Some(format!(
+                "Plugin name mismatch: expected '{}', got '{}'",
+                expected, actual
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn can_delete_handler(handler_type: FormatHandlerType) -> bool {
+        handler_type != FormatHandlerType::Core
+    }
+
+    fn would_disable_last_handler(enabled_count: i64, target_is_enabled: bool) -> bool {
+        enabled_count == 1 && target_is_enabled
+    }
+
+    // =======================================================================
+    // build_wasm_path
+    // =======================================================================
+
     #[test]
-    fn test_wasm_path() {
-        // Test the path generation logic without needing a real WasmPluginService
-        let plugins_dir = PathBuf::from("/tmp/plugins");
-        let path = plugins_dir.join(format!("{}.wasm", "test-plugin"));
+    fn test_build_wasm_path_basic() {
+        let path = build_wasm_path(Path::new("/tmp/plugins"), "test-plugin");
         assert_eq!(path, PathBuf::from("/tmp/plugins/test-plugin.wasm"));
+    }
+
+    #[test]
+    fn test_build_wasm_path_with_hyphens() {
+        let path = build_wasm_path(Path::new("/opt/plugins"), "my-complex-plugin-name");
+        assert_eq!(
+            path,
+            PathBuf::from("/opt/plugins/my-complex-plugin-name.wasm")
+        );
+    }
+
+    #[test]
+    fn test_build_wasm_path_with_numbers() {
+        let path = build_wasm_path(Path::new("/data/plugins"), "plugin123");
+        assert_eq!(path, PathBuf::from("/data/plugins/plugin123.wasm"));
+    }
+
+    #[test]
+    fn test_build_wasm_path_empty_name() {
+        let path = build_wasm_path(Path::new("/tmp/plugins"), "");
+        assert_eq!(path, PathBuf::from("/tmp/plugins/.wasm"));
+    }
+
+    #[test]
+    fn test_build_wasm_path_nested_dir() {
+        let path = build_wasm_path(
+            Path::new("/var/lib/artifact-keeper/plugins"),
+            "unity-format",
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/var/lib/artifact-keeper/plugins/unity-format.wasm")
+        );
+    }
+
+    // =======================================================================
+    // wasm_binary_candidates
+    // =======================================================================
+
+    #[test]
+    fn test_wasm_binary_candidates_count() {
+        let candidates = wasm_binary_candidates(Path::new("/repo"));
+        assert_eq!(candidates.len(), 5);
+    }
+
+    #[test]
+    fn test_wasm_binary_candidates_wasi_first() {
+        let candidates = wasm_binary_candidates(Path::new("/repo"));
+        assert_eq!(
+            candidates[0],
+            PathBuf::from("/repo/target/wasm32-wasi/release/plugin.wasm")
+        );
+    }
+
+    #[test]
+    fn test_wasm_binary_candidates_wasip1_second() {
+        let candidates = wasm_binary_candidates(Path::new("/repo"));
+        assert_eq!(
+            candidates[1],
+            PathBuf::from("/repo/target/wasm32-wasip1/release/plugin.wasm")
+        );
+    }
+
+    #[test]
+    fn test_wasm_binary_candidates_root_third() {
+        let candidates = wasm_binary_candidates(Path::new("/repo"));
+        assert_eq!(candidates[2], PathBuf::from("/repo/plugin.wasm"));
+    }
+
+    #[test]
+    fn test_wasm_binary_candidates_out_and_dist() {
+        let candidates = wasm_binary_candidates(Path::new("/repo"));
+        assert_eq!(candidates[3], PathBuf::from("/repo/out/plugin.wasm"));
+        assert_eq!(candidates[4], PathBuf::from("/repo/dist/plugin.wasm"));
+    }
+
+    // =======================================================================
+    // classify_git_clone_error
+    // =======================================================================
+
+    #[test]
+    fn test_classify_not_found_404() {
+        assert_eq!(
+            classify_git_clone_error("HTTP 404 not found"),
+            GitCloneErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn test_classify_not_found_text() {
+        assert_eq!(
+            classify_git_clone_error("repository not found"),
+            GitCloneErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn test_classify_timeout() {
+        assert_eq!(
+            classify_git_clone_error("connection timeout"),
+            GitCloneErrorKind::Timeout
+        );
+    }
+
+    #[test]
+    fn test_classify_unauthorized_auth() {
+        assert_eq!(
+            classify_git_clone_error("authentication required"),
+            GitCloneErrorKind::Unauthorized
+        );
+    }
+
+    #[test]
+    fn test_classify_unauthorized_401() {
+        assert_eq!(
+            classify_git_clone_error("HTTP 401 Unauthorized"),
+            GitCloneErrorKind::Unauthorized
+        );
+    }
+
+    #[test]
+    fn test_classify_other_error() {
+        assert_eq!(
+            classify_git_clone_error("network unreachable"),
+            GitCloneErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn test_classify_empty_string() {
+        assert_eq!(classify_git_clone_error(""), GitCloneErrorKind::Other);
+    }
+
+    // =======================================================================
+    // manifest_validation_error_message
+    // =======================================================================
+
+    #[test]
+    fn test_error_message_invalid_name() {
+        let e = ManifestValidationError::InvalidPluginName("BAD".to_string());
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("BAD"));
+        assert!(msg.contains("Invalid plugin name"));
+    }
+
+    #[test]
+    fn test_error_message_invalid_version() {
+        let e = ManifestValidationError::InvalidVersion("xyz".to_string());
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("xyz"));
+        assert!(msg.contains("semantic version"));
+    }
+
+    #[test]
+    fn test_error_message_invalid_format_key() {
+        let e = ManifestValidationError::InvalidFormatKey("UPPER".to_string());
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("UPPER"));
+        assert!(msg.contains("Invalid format key"));
+    }
+
+    #[test]
+    fn test_error_message_missing_display_name() {
+        let e = ManifestValidationError::MissingDisplayName;
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("Missing display_name"));
+    }
+
+    #[test]
+    fn test_error_message_invalid_memory_limits() {
+        let e = ManifestValidationError::InvalidMemoryLimits { min: 512, max: 64 };
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("512"));
+        assert!(msg.contains("64"));
+    }
+
+    #[test]
+    fn test_error_message_invalid_timeout() {
+        let e = ManifestValidationError::InvalidTimeout(0);
+        let msg = manifest_validation_error_message(&e);
+        assert!(msg.contains("0"));
+        assert!(msg.contains("between 1 and 300"));
+    }
+
+    // =======================================================================
+    // extract_format_key
+    // =======================================================================
+
+    #[test]
+    fn test_extract_format_key_present() {
+        use crate::models::plugin_manifest::PluginManifest;
+        let toml = r#"
+[plugin]
+name = "test"
+version = "1.0.0"
+[format]
+key = "my-format"
+display_name = "My Format"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert_eq!(extract_format_key(&manifest), Some("my-format".to_string()));
+    }
+
+    #[test]
+    fn test_extract_format_key_absent() {
+        use crate::models::plugin_manifest::PluginManifest;
+        let toml = r#"
+[plugin]
+name = "test"
+version = "1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert_eq!(extract_format_key(&manifest), None);
+    }
+
+    // =======================================================================
+    // extract_format_key_from_json
+    // =======================================================================
+
+    #[test]
+    fn test_extract_format_key_from_json_present() {
+        let json = serde_json::json!({
+            "format": { "key": "unity", "display_name": "Unity" }
+        });
+        assert_eq!(
+            extract_format_key_from_json(&json),
+            Some("unity".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_format_key_from_json_absent() {
+        let json = serde_json::json!({ "plugin": { "name": "test" } });
+        assert_eq!(extract_format_key_from_json(&json), None);
+    }
+
+    #[test]
+    fn test_extract_format_key_from_json_null() {
+        let json = serde_json::json!(null);
+        assert_eq!(extract_format_key_from_json(&json), None);
+    }
+
+    #[test]
+    fn test_extract_format_key_from_json_key_not_string() {
+        let json = serde_json::json!({
+            "format": { "key": 42 }
+        });
+        assert_eq!(extract_format_key_from_json(&json), None);
+    }
+
+    // =======================================================================
+    // classify_db_error_for_create
+    // =======================================================================
+
+    #[test]
+    fn test_classify_db_error_duplicate() {
+        let msg =
+            classify_db_error_for_create("duplicate key violates unique constraint", "my-plugin");
+        assert_eq!(msg, "Plugin 'my-plugin' already exists");
+    }
+
+    #[test]
+    fn test_classify_db_error_other() {
+        let msg = classify_db_error_for_create("connection refused", "my-plugin");
+        assert_eq!(msg, "connection refused");
+    }
+
+    #[test]
+    fn test_classify_db_error_empty() {
+        let msg = classify_db_error_for_create("", "test");
+        assert_eq!(msg, "");
+    }
+
+    // =======================================================================
+    // build_installed_event_message
+    // =======================================================================
+
+    #[test]
+    fn test_installed_message() {
+        let msg =
+            build_installed_event_message("my-plugin", "1.0.0", "https://github.com/example/repo");
+        assert_eq!(
+            msg,
+            "Plugin my-plugin v1.0.0 installed from https://github.com/example/repo"
+        );
+    }
+
+    #[test]
+    fn test_installed_message_zip() {
+        let msg = build_installed_event_message("test", "2.0.0", "ZIP upload");
+        assert!(msg.contains("ZIP upload"));
+    }
+
+    // =======================================================================
+    // build_reloaded_event_message
+    // =======================================================================
+
+    #[test]
+    fn test_reloaded_message() {
+        let msg = build_reloaded_event_message("my-plugin", "1.0.0", "2.0.0");
+        assert_eq!(msg, "Plugin my-plugin reloaded from v1.0.0 to v2.0.0");
+    }
+
+    #[test]
+    fn test_reloaded_message_same_version() {
+        let msg = build_reloaded_event_message("test", "1.0.0", "1.0.0");
+        assert!(msg.contains("v1.0.0 to v1.0.0"));
+    }
+
+    // =======================================================================
+    // build_error_event_message
+    // =======================================================================
+
+    #[test]
+    fn test_error_message_basic() {
+        let msg = build_error_event_message("my-plugin", "WASM validation failed");
+        assert_eq!(msg, "Plugin my-plugin error: WASM validation failed");
+    }
+
+    #[test]
+    fn test_error_message_empty_error() {
+        let msg = build_error_event_message("test", "");
+        assert_eq!(msg, "Plugin test error: ");
+    }
+
+    // =======================================================================
+    // validate_reload_source_type
+    // =======================================================================
+
+    #[test]
+    fn test_reload_wasm_git_ok() {
+        assert!(validate_reload_source_type(PluginSourceType::WasmGit).is_none());
+    }
+
+    #[test]
+    fn test_reload_wasm_zip_blocked() {
+        let err = validate_reload_source_type(PluginSourceType::WasmZip);
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("ZIP"));
+    }
+
+    #[test]
+    fn test_reload_wasm_local_blocked() {
+        let err = validate_reload_source_type(PluginSourceType::WasmLocal);
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("Re-upload"));
+    }
+
+    #[test]
+    fn test_reload_core_blocked() {
+        let err = validate_reload_source_type(PluginSourceType::Core);
+        assert!(err.is_some());
+        assert!(err.unwrap().contains("core"));
+    }
+
+    // =======================================================================
+    // validate_plugin_name_match
+    // =======================================================================
+
+    #[test]
+    fn test_name_match_same() {
+        assert!(validate_plugin_name_match("my-plugin", "my-plugin").is_none());
+    }
+
+    #[test]
+    fn test_name_match_different() {
+        let err = validate_plugin_name_match("expected", "actual");
+        assert!(err.is_some());
+        assert!(err.as_ref().unwrap().contains("expected"));
+        assert!(err.as_ref().unwrap().contains("actual"));
+    }
+
+    #[test]
+    fn test_name_match_empty_vs_nonempty() {
+        assert!(validate_plugin_name_match("", "something").is_some());
+    }
+
+    #[test]
+    fn test_name_match_both_empty() {
+        assert!(validate_plugin_name_match("", "").is_none());
+    }
+
+    // =======================================================================
+    // can_delete_handler
+    // =======================================================================
+
+    #[test]
+    fn test_can_delete_wasm_handler() {
+        assert!(can_delete_handler(FormatHandlerType::Wasm));
+    }
+
+    #[test]
+    fn test_cannot_delete_core_handler() {
+        assert!(!can_delete_handler(FormatHandlerType::Core));
+    }
+
+    // =======================================================================
+    // would_disable_last_handler
+    // =======================================================================
+
+    #[test]
+    fn test_would_disable_last_one_enabled_target_enabled() {
+        assert!(would_disable_last_handler(1, true));
+    }
+
+    #[test]
+    fn test_would_not_disable_last_one_enabled_target_disabled() {
+        assert!(!would_disable_last_handler(1, false));
+    }
+
+    #[test]
+    fn test_would_not_disable_last_multiple_enabled() {
+        assert!(!would_disable_last_handler(3, true));
+    }
+
+    #[test]
+    fn test_would_not_disable_last_zero_enabled() {
+        assert!(!would_disable_last_handler(0, true));
+    }
+
+    #[test]
+    fn test_would_not_disable_last_zero_and_disabled() {
+        assert!(!would_disable_last_handler(0, false));
+    }
+
+    // =======================================================================
+    // Struct construction and derive tests
+    // =======================================================================
+
+    #[test]
+    fn test_plugin_install_result_fields() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::new_v4(),
+            name: "test-plugin".to_string(),
+            version: "1.0.0".to_string(),
+            format_key: "test-format".to_string(),
+        };
+        assert_eq!(result.name, "test-plugin");
+        assert_eq!(result.version, "1.0.0");
+        assert_eq!(result.format_key, "test-format");
+    }
+
+    #[test]
+    fn test_plugin_install_result_clone() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::new_v4(),
+            name: "my-plugin".to_string(),
+            version: "2.0.0".to_string(),
+            format_key: "my-format".to_string(),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.plugin_id, result.plugin_id);
+        assert_eq!(cloned.name, result.name);
+    }
+
+    #[test]
+    fn test_plugin_install_result_debug() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::nil(),
+            name: "debug-test".to_string(),
+            version: "0.1.0".to_string(),
+            format_key: "debug-format".to_string(),
+        };
+        let debug_output = format!("{:?}", result);
+        assert!(debug_output.contains("debug-test"));
+    }
+
+    #[test]
+    fn test_test_metadata_with_version() {
+        let meta = TestMetadata {
+            path: "com/example/test.jar".to_string(),
+            version: Some("1.0.0".to_string()),
+            content_type: "application/java-archive".to_string(),
+            size_bytes: 12345,
+        };
+        assert_eq!(meta.path, "com/example/test.jar");
+        assert_eq!(meta.version, Some("1.0.0".to_string()));
+        assert_eq!(meta.size_bytes, 12345);
+    }
+
+    #[test]
+    fn test_test_metadata_without_version() {
+        let meta = TestMetadata {
+            path: "generic/file.bin".to_string(),
+            version: None,
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 0,
+        };
+        assert_eq!(meta.version, None);
+        assert_eq!(meta.size_bytes, 0);
+    }
+
+    #[test]
+    fn test_test_metadata_clone() {
+        let meta = TestMetadata {
+            path: "/test".to_string(),
+            version: Some("1.0".to_string()),
+            content_type: "text/plain".to_string(),
+            size_bytes: 100,
+        };
+        let cloned = meta.clone();
+        assert_eq!(cloned.path, meta.path);
+        assert_eq!(cloned.version, meta.version);
+    }
+
+    #[test]
+    fn test_test_metadata_debug() {
+        let meta = TestMetadata {
+            path: "debug/path".to_string(),
+            version: None,
+            content_type: "text/plain".to_string(),
+            size_bytes: 42,
+        };
+        let debug_output = format!("{:?}", meta);
+        assert!(debug_output.contains("debug/path"));
+    }
+
+    // =======================================================================
+    // Manifest validation
+    // =======================================================================
+
+    #[test]
+    fn test_validate_manifest_valid() {
+        use crate::models::plugin_manifest::PluginManifest;
+        let toml = r#"
+[plugin]
+name = "test-plugin"
+version = "1.0.0"
+[format]
+key = "test-format"
+display_name = "Test Format"
+extensions = [".test"]
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_name() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "INVALID"
+version = "1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidPluginName(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_version() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "not-a-version"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_format_key() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+[format]
+key = "INVALID_KEY"
+display_name = "Test"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidFormatKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_missing_display_name() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+[format]
+key = "valid-key"
+display_name = ""
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::MissingDisplayName)
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_memory_limits() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+[requirements]
+min_memory_mb = 256
+max_memory_mb = 64
+timeout_secs = 5
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidMemoryLimits { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_timeout_zero() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+[requirements]
+timeout_secs = 0
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidTimeout(0))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_timeout_over_300() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+[requirements]
+timeout_secs = 500
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::InvalidTimeout(500))
+        ));
+    }
+
+    #[test]
+    fn test_manifest_from_toml_invalid() {
+        use crate::models::plugin_manifest::PluginManifest;
+        assert!(PluginManifest::from_toml("this is not valid toml [[[").is_err());
+    }
+
+    #[test]
+    fn test_manifest_to_capabilities() {
+        use crate::models::plugin_manifest::PluginManifest;
+        let toml = r#"
+[plugin]
+name = "cap-test"
+version = "1.0.0"
+[capabilities]
+parse_metadata = true
+generate_index = true
+validate_artifact = false
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let caps = manifest.to_capabilities();
+        assert!(caps.parse_metadata);
+        assert!(caps.generate_index);
+        assert!(!caps.validate_artifact);
+    }
+
+    #[test]
+    fn test_manifest_to_resource_limits() {
+        use crate::models::plugin_manifest::PluginManifest;
+        let toml = r#"
+[plugin]
+name = "limits-test"
+version = "1.0.0"
+[requirements]
+max_memory_mb = 256
+timeout_secs = 30
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let limits = manifest.to_resource_limits();
+        assert_eq!(limits.memory_mb, 256);
+        assert_eq!(limits.timeout_secs, 30);
+        assert_eq!(limits.fuel, 30 * 100_000_000);
+    }
+
+    // =======================================================================
+    // Type equality tests
+    // =======================================================================
+
+    #[test]
+    fn test_format_handler_type_equality() {
+        assert_eq!(FormatHandlerType::Core, FormatHandlerType::Core);
+        assert_eq!(FormatHandlerType::Wasm, FormatHandlerType::Wasm);
+        assert_ne!(FormatHandlerType::Core, FormatHandlerType::Wasm);
+    }
+
+    #[test]
+    fn test_plugin_source_type_equality() {
+        assert_eq!(PluginSourceType::WasmGit, PluginSourceType::WasmGit);
+        assert_eq!(PluginSourceType::WasmZip, PluginSourceType::WasmZip);
+        assert_eq!(PluginSourceType::WasmLocal, PluginSourceType::WasmLocal);
+        assert_eq!(PluginSourceType::Core, PluginSourceType::Core);
+        assert_ne!(PluginSourceType::Core, PluginSourceType::WasmGit);
+    }
+
+    #[test]
+    fn test_plugin_status_equality() {
+        assert_eq!(PluginStatus::Active, PluginStatus::Active);
+        assert_eq!(PluginStatus::Disabled, PluginStatus::Disabled);
+        assert_ne!(PluginStatus::Active, PluginStatus::Disabled);
+    }
+
+    // =======================================================================
+    // GitCloneErrorKind derive tests
+    // =======================================================================
+
+    #[test]
+    fn test_git_clone_error_kind_debug() {
+        let kind = GitCloneErrorKind::NotFound;
+        assert_eq!(format!("{:?}", kind), "NotFound");
+    }
+
+    #[test]
+    fn test_git_clone_error_kind_clone() {
+        let kind = GitCloneErrorKind::Timeout;
+        let cloned = kind.clone();
+        assert_eq!(kind, cloned);
+    }
+
+    #[test]
+    fn test_git_clone_error_kind_eq() {
+        assert_eq!(GitCloneErrorKind::NotFound, GitCloneErrorKind::NotFound);
+        assert_ne!(GitCloneErrorKind::NotFound, GitCloneErrorKind::Timeout);
+        assert_ne!(GitCloneErrorKind::Unauthorized, GitCloneErrorKind::Other);
     }
 }

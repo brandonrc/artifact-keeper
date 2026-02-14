@@ -655,3 +655,247 @@ async fn list_files(
         .body(Body::from(serde_json::to_string(&files).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer hf_abc123"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "hf_abc123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer hf_token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "hf_token".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:hf-pass");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "hf-pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Filename extraction from headers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filename_from_x_filename_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-filename", HeaderValue::from_static("model.bin"));
+        let filename = headers
+            .get("x-filename")
+            .or(headers.get("content-disposition"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                if v.contains("filename=") {
+                    v.split("filename=")
+                        .nth(1)
+                        .map(|f| f.trim_matches('"').to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+            .unwrap_or_else(|| "uploaded_file".to_string());
+        assert_eq!(filename, "model.bin");
+    }
+
+    #[test]
+    fn test_filename_from_content_disposition() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-disposition",
+            HeaderValue::from_static("attachment; filename=\"weights.safetensors\""),
+        );
+        let filename = headers
+            .get("x-filename")
+            .or(headers.get("content-disposition"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                if v.contains("filename=") {
+                    v.split("filename=")
+                        .nth(1)
+                        .map(|f| f.trim_matches('"').to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+            .unwrap_or_else(|| "uploaded_file".to_string());
+        assert_eq!(filename, "weights.safetensors");
+    }
+
+    #[test]
+    fn test_filename_default() {
+        let headers = HeaderMap::new();
+        let filename = headers
+            .get("x-filename")
+            .or(headers.get("content-disposition"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                if v.contains("filename=") {
+                    v.split("filename=")
+                        .nth(1)
+                        .map(|f| f.trim_matches('"').to_string())
+                } else {
+                    Some(v.to_string())
+                }
+            })
+            .unwrap_or_else(|| "uploaded_file".to_string());
+        assert_eq!(filename, "uploaded_file");
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic: artifact_path, storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_path_format() {
+        let model_id = "bert-base-uncased";
+        let revision = "main";
+        let filename = "pytorch_model.bin";
+        let path = format!("{}/{}/{}", model_id, revision, filename);
+        assert_eq!(path, "bert-base-uncased/main/pytorch_model.bin");
+    }
+
+    #[test]
+    fn test_storage_key_format() {
+        let model_id = "gpt2";
+        let revision = "v1.0";
+        let filename = "config.json";
+        let key = format!("huggingface/{}/{}/{}", model_id, revision, filename);
+        assert_eq!(key, "huggingface/gpt2/v1.0/config.json");
+    }
+
+    #[test]
+    fn test_upstream_path_format() {
+        let model_id = "bert-base-uncased";
+        let revision = "main";
+        let filename = "tokenizer.json";
+        let path = format!("{}/resolve/{}/{}", model_id, revision, filename);
+        assert_eq!(path, "bert-base-uncased/resolve/main/tokenizer.json");
+    }
+
+    #[test]
+    fn test_path_prefix_for_file_listing() {
+        let model_id = "llama-2-7b";
+        let revision = "main";
+        let prefix = format!("{}/{}/", model_id, revision);
+        assert_eq!(prefix, "llama-2-7b/main/");
+    }
+
+    #[test]
+    fn test_relative_path_stripping() {
+        let path_prefix = "llama-2-7b/main/";
+        let full_path = "llama-2-7b/main/model-00001.safetensors";
+        let relative = full_path.strip_prefix(path_prefix).unwrap_or(full_path);
+        assert_eq!(relative, "model-00001.safetensors");
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"model weights");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Metadata JSON construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_metadata_json() {
+        let model_id = "gpt2";
+        let revision = "main";
+        let filename = "config.json";
+        let meta = serde_json::json!({
+            "model_id": model_id,
+            "revision": revision,
+            "filename": filename,
+        });
+        assert_eq!(meta["model_id"], "gpt2");
+        assert_eq!(meta["revision"], "main");
+        assert_eq!(meta["filename"], "config.json");
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/huggingface".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache/hf".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://huggingface.co".to_string()),
+        };
+        assert_eq!(repo.upstream_url.as_deref(), Some("https://huggingface.co"));
+    }
+}

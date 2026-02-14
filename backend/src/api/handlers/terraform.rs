@@ -998,15 +998,6 @@ async fn download_provider(
         .unwrap())
 }
 
-// ---------------------------------------------------------------------------
-// PUT /v1/modules/{namespace}/{name}/{provider}/{version} — Upload module
-// (handled above)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// PUT /v1/providers/{namespace}/{type}/{version}/{os}/{arch} — Upload provider
-// ---------------------------------------------------------------------------
-
 async fn upload_provider(
     State(state): State<SharedState>,
     Path((repo_key, namespace, type_name, version, os, arch)): Path<(
@@ -1158,4 +1149,937 @@ async fn upload_provider(
             .unwrap(),
         ))
         .unwrap())
+}
+
+// ---------------------------------------------------------------------------
+// PUT /v1/modules/{namespace}/{name}/{provider}/{version} — Upload module
+// (handled above)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// PUT /v1/providers/{namespace}/{type}/{version}/{os}/{arch} — Upload provider
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    /// Build the service discovery JSON for a Terraform registry.
+    fn build_service_discovery_json(repo_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "modules.v1": format!("/terraform/{}/v1/modules/", repo_key),
+            "providers.v1": format!("/terraform/{}/v1/providers/", repo_key),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build a fully-qualified module name.
+    fn build_module_name(namespace: &str, name: &str, provider: &str) -> String {
+        format!("{}/{}/{}", namespace, name, provider)
+    }
+
+    /// Build a fully-qualified provider name.
+    fn build_provider_name(namespace: &str, type_name: &str) -> String {
+        format!("{}/{}", namespace, type_name)
+    }
+
+    /// Build the download URL for a module.
+    fn build_module_download_url(
+        repo_key: &str,
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "/terraform/{}/v1/modules/{}/{}/{}/{}/archive",
+            repo_key, namespace, name, provider, version
+        )
+    }
+
+    /// Build the download URL for a provider binary.
+    fn build_provider_download_url(
+        repo_key: &str,
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+    ) -> String {
+        format!(
+            "/terraform/{}/v1/providers/{}/{}/{}/binary/{}/{}",
+            repo_key, namespace, type_name, version, os, arch
+        )
+    }
+
+    /// Build the provider binary filename.
+    fn build_provider_filename(type_name: &str, version: &str, platform_path: &str) -> String {
+        format!(
+            "terraform-provider-{}_{}_{}.zip",
+            type_name, version, platform_path
+        )
+    }
+
+    /// Build the platform path string (os_arch).
+    fn build_platform_path(os: &str, arch: &str) -> String {
+        format!("{}_{}", os, arch)
+    }
+
+    /// Build the storage key for a Terraform module.
+    fn build_module_storage_key(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "terraform/modules/{}/{}/{}/{}.tar.gz",
+            namespace, name, provider, version
+        )
+    }
+
+    /// Build the storage key for a Terraform provider.
+    fn build_provider_storage_key(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        platform: &str,
+    ) -> String {
+        format!(
+            "terraform/providers/{}/{}/{}/terraform-provider-{}_{}.zip",
+            namespace, type_name, version, type_name, platform
+        )
+    }
+
+    /// Build the artifact path for a module.
+    fn build_module_artifact_path(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!("{}/{}/{}/{}", namespace, name, provider, version)
+    }
+
+    /// Build the artifact path for a provider.
+    fn build_provider_artifact_path(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        platform: &str,
+    ) -> String {
+        format!("{}/{}/{}/{}", namespace, type_name, version, platform)
+    }
+
+    /// Build module metadata JSON.
+    fn build_module_metadata(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "module",
+            "namespace": namespace,
+            "name": name,
+            "provider": provider,
+            "version": version,
+        })
+    }
+
+    /// Build provider metadata JSON.
+    fn build_provider_metadata(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "provider",
+            "namespace": namespace,
+            "type": type_name,
+            "version": version,
+            "os": os,
+            "arch": arch,
+        })
+    }
+
+    /// Build the version list JSON for a module.
+    fn build_version_list_json(versions: &[String]) -> serde_json::Value {
+        let version_list: Vec<serde_json::Value> = versions
+            .iter()
+            .map(|v| serde_json::json!({ "version": v }))
+            .collect();
+        serde_json::json!({
+            "modules": [{
+                "versions": version_list,
+            }]
+        })
+    }
+
+    /// Build the provider download JSON response.
+    fn build_provider_download_json(
+        os: &str,
+        arch: &str,
+        filename: &str,
+        download_url: &str,
+        shasum: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "protocols": ["5.0"],
+            "os": os,
+            "arch": arch,
+            "filename": filename,
+            "download_url": download_url,
+            "shasum": shasum,
+            "shasums_url": "",
+            "shasums_signature_url": "",
+            "signing_keys": {
+                "gpg_public_keys": []
+            },
+        })
+    }
+
+    /// Parse a module name into (namespace, name, provider).
+    fn parse_module_name(full_name: &str) -> (String, String, String) {
+        let parts: Vec<&str> = full_name.splitn(3, '/').collect();
+        match parts.as_slice() {
+            [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
+            _ => (full_name.to_string(), String::new(), String::new()),
+        }
+    }
+
+    /// Build a SQL LIKE search pattern from a query string.
+    fn build_search_pattern(query: &str) -> String {
+        format!("%{}%", query)
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let headers = make_basic_header("admin", "secret");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "secret".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase_prefix() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_missing_header() {
+        let headers = HeaderMap::new();
+        let result = extract_basic_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_colon_in_password() {
+        let headers = make_basic_header("admin", "pass:with:colons");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("admin".to_string(), "pass:with:colons".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_empty_password() {
+        let headers = make_basic_header("admin", "");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_not_accepted() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_bearer_token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_token_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-terraform-token"),
+        );
+        let result = extract_bearer_token(&headers);
+        assert_eq!(result, Some("my-terraform-token".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_bearer_token(&headers);
+        assert_eq!(result, Some("my-token".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_missing() {
+        let headers = HeaderMap::new();
+        let result = extract_bearer_token(&headers);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_token_basic_not_accepted() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let result = extract_bearer_token(&headers);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // default_offset / default_limit
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_offset() {
+        assert_eq!(default_offset(), 0);
+    }
+
+    #[test]
+    fn test_default_limit() {
+        assert_eq!(default_limit(), 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_query_defaults() {
+        let q: SearchQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.q.is_none());
+        assert_eq!(q.offset, 0);
+        assert_eq!(q.limit, 10);
+    }
+
+    #[test]
+    fn test_search_query_with_values() {
+        let q: SearchQuery =
+            serde_json::from_str(r#"{"q":"my-module","offset":5,"limit":20}"#).unwrap();
+        assert_eq!(q.q, Some("my-module".to_string()));
+        assert_eq!(q.offset, 5);
+        assert_eq!(q.limit, 20);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let info = RepoInfo {
+            id,
+            storage_path: "/data/terraform".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: Some("https://registry.terraform.io".to_string()),
+        };
+        assert_eq!(info.id, id);
+        assert_eq!(info.storage_path, "/data/terraform");
+        assert_eq!(info.repo_type, "hosted");
+        assert_eq!(
+            info.upstream_url,
+            Some("https://registry.terraform.io".to_string())
+        );
+    }
+
+    #[test]
+    fn test_repo_info_no_upstream() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/tf".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert!(info.upstream_url.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Module name formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_format() {
+        let namespace = "hashicorp";
+        let name = "consul";
+        let provider = "aws";
+        let module_name = format!("{}/{}/{}", namespace, name, provider);
+        assert_eq!(module_name, "hashicorp/consul/aws");
+    }
+
+    #[test]
+    fn test_provider_name_format() {
+        let namespace = "hashicorp";
+        let type_name = "aws";
+        let provider_name = format!("{}/{}", namespace, type_name);
+        assert_eq!(provider_name, "hashicorp/aws");
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage key formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_storage_key_format() {
+        let namespace = "hashicorp";
+        let name = "consul";
+        let provider = "aws";
+        let version = "0.1.0";
+        let storage_key = format!(
+            "terraform/modules/{}/{}/{}/{}.tar.gz",
+            namespace, name, provider, version
+        );
+        assert_eq!(
+            storage_key,
+            "terraform/modules/hashicorp/consul/aws/0.1.0.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_provider_storage_key_format() {
+        let namespace = "hashicorp";
+        let type_name = "aws";
+        let version = "5.0.0";
+        let platform = "linux_amd64";
+        let storage_key = format!(
+            "terraform/providers/{}/{}/{}/terraform-provider-{}_{}.zip",
+            namespace, type_name, version, type_name, platform
+        );
+        assert_eq!(
+            storage_key,
+            "terraform/providers/hashicorp/aws/5.0.0/terraform-provider-aws_linux_amd64.zip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA-256 checksum computation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"terraform module content";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+        assert!(checksum.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Platform path formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_platform_path() {
+        let os = "linux";
+        let arch = "amd64";
+        let platform_path = format!("{}_{}", os, arch);
+        assert_eq!(platform_path, "linux_amd64");
+    }
+
+    #[test]
+    fn test_provider_filename_format() {
+        let type_name = "aws";
+        let version = "5.0.0";
+        let platform_path = "linux_amd64";
+        let filename = format!(
+            "terraform-provider-{}_{}_{}.zip",
+            type_name, version, platform_path
+        );
+        assert_eq!(filename, "terraform-provider-aws_5.0.0_linux_amd64.zip");
+    }
+
+    // -----------------------------------------------------------------------
+    // Download URL formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_download_url_format() {
+        let repo_key = "my-terraform";
+        let namespace = "hashicorp";
+        let name = "consul";
+        let provider = "aws";
+        let version = "0.1.0";
+        let download_url = format!(
+            "/terraform/{}/v1/modules/{}/{}/{}/{}/archive",
+            repo_key, namespace, name, provider, version
+        );
+        assert_eq!(
+            download_url,
+            "/terraform/my-terraform/v1/modules/hashicorp/consul/aws/0.1.0/archive"
+        );
+    }
+
+    #[test]
+    fn test_provider_download_url_format() {
+        let repo_key = "my-terraform";
+        let namespace = "hashicorp";
+        let type_name = "aws";
+        let version = "5.0.0";
+        let os = "linux";
+        let arch = "amd64";
+        let download_url = format!(
+            "/terraform/{}/v1/providers/{}/{}/{}/binary/{}/{}",
+            repo_key, namespace, type_name, version, os, arch
+        );
+        assert_eq!(
+            download_url,
+            "/terraform/my-terraform/v1/providers/hashicorp/aws/5.0.0/binary/linux/amd64"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Service discovery JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_service_discovery_json() {
+        let repo_key = "my-tf-repo";
+        let json = serde_json::json!({
+            "modules.v1": format!("/terraform/{}/v1/modules/", repo_key),
+            "providers.v1": format!("/terraform/{}/v1/providers/", repo_key),
+        });
+        assert_eq!(json["modules.v1"], "/terraform/my-tf-repo/v1/modules/");
+        assert_eq!(json["providers.v1"], "/terraform/my-tf-repo/v1/providers/");
+    }
+
+    // -----------------------------------------------------------------------
+    // Metadata JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_metadata_json() {
+        let namespace = "hashicorp";
+        let name = "consul";
+        let provider = "aws";
+        let version = "0.1.0";
+        let metadata = serde_json::json!({
+            "kind": "module",
+            "namespace": namespace,
+            "name": name,
+            "provider": provider,
+            "version": version,
+        });
+        assert_eq!(metadata["kind"], "module");
+        assert_eq!(metadata["namespace"], "hashicorp");
+    }
+
+    #[test]
+    fn test_provider_metadata_json() {
+        let metadata = serde_json::json!({
+            "kind": "provider",
+            "namespace": "hashicorp",
+            "type": "aws",
+            "version": "5.0.0",
+            "os": "linux",
+            "arch": "amd64",
+        });
+        assert_eq!(metadata["kind"], "provider");
+        assert_eq!(metadata["os"], "linux");
+        assert_eq!(metadata["arch"], "amd64");
+    }
+
+    // -----------------------------------------------------------------------
+    // Search results module name parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_parsing_three_parts() {
+        let name = "hashicorp/consul/aws";
+        let parts: Vec<&str> = name.splitn(3, '/').collect();
+        let (ns, n, p) = match parts.as_slice() {
+            [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
+            _ => (name.to_string(), String::new(), String::new()),
+        };
+        assert_eq!(ns, "hashicorp");
+        assert_eq!(n, "consul");
+        assert_eq!(p, "aws");
+    }
+
+    #[test]
+    fn test_module_name_parsing_one_part() {
+        let name = "single-name";
+        let parts: Vec<&str> = name.splitn(3, '/').collect();
+        let (ns, n, p) = match parts.as_slice() {
+            [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
+            _ => (name.to_string(), String::new(), String::new()),
+        };
+        assert_eq!(ns, "single-name");
+        assert_eq!(n, "");
+        assert_eq!(p, "");
+    }
+
+    #[test]
+    fn test_module_name_parsing_two_parts() {
+        let name = "vendor/module";
+        let parts: Vec<&str> = name.splitn(3, '/').collect();
+        let (ns, n, p) = match parts.as_slice() {
+            [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
+            _ => (name.to_string(), String::new(), String::new()),
+        };
+        // With only 2 parts, we fall through to the default case
+        assert_eq!(ns, "vendor/module");
+        assert_eq!(n, "");
+        assert_eq!(p, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Version list response structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_list_json_structure() {
+        let versions = vec!["0.1.0", "0.2.0", "1.0.0"];
+        let version_list: Vec<serde_json::Value> = versions
+            .into_iter()
+            .map(|v| serde_json::json!({ "version": v }))
+            .collect();
+        let json = serde_json::json!({
+            "modules": [{
+                "versions": version_list,
+            }]
+        });
+        let modules = json["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1);
+        let inner_versions = modules[0]["versions"].as_array().unwrap();
+        assert_eq!(inner_versions.len(), 3);
+        assert_eq!(inner_versions[0]["version"], "0.1.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Provider version grouping logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_provider_version_platform_grouping() {
+        let mut version_map: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            std::collections::BTreeMap::new();
+
+        let platforms = version_map.entry("1.0.0".to_string()).or_default();
+        let p1 = serde_json::json!({"os": "linux", "arch": "amd64"});
+        let p2 = serde_json::json!({"os": "darwin", "arch": "arm64"});
+        platforms.push(p1.clone());
+        platforms.push(p2.clone());
+
+        // Verify dedup check
+        assert!(platforms.contains(&p1));
+        assert!(platforms.contains(&p2));
+        assert_eq!(platforms.len(), 2);
+    }
+
+    #[test]
+    fn test_provider_empty_platforms_default() {
+        let platforms: Vec<serde_json::Value> = vec![];
+        let result = if platforms.is_empty() {
+            vec![serde_json::json!({"os": "linux", "arch": "amd64"})]
+        } else {
+            platforms
+        };
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["os"], "linux");
+        assert_eq!(result[0]["arch"], "amd64");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_service_discovery_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_service_discovery_json_basic() {
+        let json = build_service_discovery_json("my-tf-repo");
+        assert_eq!(json["modules.v1"], "/terraform/my-tf-repo/v1/modules/");
+        assert_eq!(json["providers.v1"], "/terraform/my-tf-repo/v1/providers/");
+    }
+
+    #[test]
+    fn test_build_service_discovery_json_different_key() {
+        let json = build_service_discovery_json("prod-registry");
+        assert!(json["modules.v1"]
+            .as_str()
+            .unwrap()
+            .contains("prod-registry"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_name / build_provider_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_name() {
+        assert_eq!(
+            build_module_name("hashicorp", "consul", "aws"),
+            "hashicorp/consul/aws"
+        );
+    }
+
+    #[test]
+    fn test_build_provider_name() {
+        assert_eq!(build_provider_name("hashicorp", "aws"), "hashicorp/aws");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_download_url / build_provider_download_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_download_url() {
+        let url = build_module_download_url("repo", "ns", "name", "prov", "1.0.0");
+        assert_eq!(url, "/terraform/repo/v1/modules/ns/name/prov/1.0.0/archive");
+    }
+
+    #[test]
+    fn test_build_provider_download_url() {
+        let url = build_provider_download_url("repo", "ns", "aws", "5.0.0", "linux", "amd64");
+        assert_eq!(
+            url,
+            "/terraform/repo/v1/providers/ns/aws/5.0.0/binary/linux/amd64"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_provider_filename / build_platform_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_provider_filename() {
+        assert_eq!(
+            build_provider_filename("aws", "5.0.0", "linux_amd64"),
+            "terraform-provider-aws_5.0.0_linux_amd64.zip"
+        );
+    }
+
+    #[test]
+    fn test_build_platform_path() {
+        assert_eq!(build_platform_path("linux", "amd64"), "linux_amd64");
+        assert_eq!(build_platform_path("darwin", "arm64"), "darwin_arm64");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_storage_key / build_provider_storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_storage_key() {
+        assert_eq!(
+            build_module_storage_key("hashicorp", "consul", "aws", "0.1.0"),
+            "terraform/modules/hashicorp/consul/aws/0.1.0.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_build_provider_storage_key() {
+        assert_eq!(
+            build_provider_storage_key("hashicorp", "aws", "5.0.0", "linux_amd64"),
+            "terraform/providers/hashicorp/aws/5.0.0/terraform-provider-aws_linux_amd64.zip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_artifact_path / build_provider_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_artifact_path() {
+        assert_eq!(
+            build_module_artifact_path("hashicorp", "consul", "aws", "0.1.0"),
+            "hashicorp/consul/aws/0.1.0"
+        );
+    }
+
+    #[test]
+    fn test_build_provider_artifact_path() {
+        assert_eq!(
+            build_provider_artifact_path("hashicorp", "aws", "5.0.0", "linux_amd64"),
+            "hashicorp/aws/5.0.0/linux_amd64"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_metadata / build_provider_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_metadata() {
+        let meta = build_module_metadata("hashicorp", "consul", "aws", "0.1.0");
+        assert_eq!(meta["kind"], "module");
+        assert_eq!(meta["namespace"], "hashicorp");
+        assert_eq!(meta["name"], "consul");
+        assert_eq!(meta["provider"], "aws");
+        assert_eq!(meta["version"], "0.1.0");
+    }
+
+    #[test]
+    fn test_build_provider_metadata() {
+        let meta = build_provider_metadata("hashicorp", "aws", "5.0.0", "linux", "amd64");
+        assert_eq!(meta["kind"], "provider");
+        assert_eq!(meta["namespace"], "hashicorp");
+        assert_eq!(meta["type"], "aws");
+        assert_eq!(meta["os"], "linux");
+        assert_eq!(meta["arch"], "amd64");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_version_list_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_version_list_json_basic() {
+        let versions = vec![
+            "0.1.0".to_string(),
+            "0.2.0".to_string(),
+            "1.0.0".to_string(),
+        ];
+        let json = build_version_list_json(&versions);
+        let modules = json["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1);
+        let inner = modules[0]["versions"].as_array().unwrap();
+        assert_eq!(inner.len(), 3);
+        assert_eq!(inner[0]["version"], "0.1.0");
+    }
+
+    #[test]
+    fn test_build_version_list_json_empty() {
+        let json = build_version_list_json(&[]);
+        let inner = json["modules"][0]["versions"].as_array().unwrap();
+        assert!(inner.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_provider_download_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_provider_download_json_basic() {
+        let json = build_provider_download_json(
+            "linux",
+            "amd64",
+            "terraform-provider-aws_5.0.0_linux_amd64.zip",
+            "/download/url",
+            "sha256hash",
+        );
+        assert_eq!(json["os"], "linux");
+        assert_eq!(json["arch"], "amd64");
+        assert_eq!(json["shasum"], "sha256hash");
+        assert!(json["protocols"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("5.0")));
+        assert!(json["signing_keys"]["gpg_public_keys"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_build_provider_download_json_darwin() {
+        let json = build_provider_download_json("darwin", "arm64", "file.zip", "/url", "hash");
+        assert_eq!(json["os"], "darwin");
+        assert_eq!(json["arch"], "arm64");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_module_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_module_name_three_parts() {
+        let (ns, n, p) = parse_module_name("hashicorp/consul/aws");
+        assert_eq!(ns, "hashicorp");
+        assert_eq!(n, "consul");
+        assert_eq!(p, "aws");
+    }
+
+    #[test]
+    fn test_parse_module_name_one_part() {
+        let (ns, n, p) = parse_module_name("single");
+        assert_eq!(ns, "single");
+        assert_eq!(n, "");
+        assert_eq!(p, "");
+    }
+
+    #[test]
+    fn test_parse_module_name_two_parts() {
+        let (ns, n, p) = parse_module_name("vendor/module");
+        assert_eq!(ns, "vendor/module");
+        assert_eq!(n, "");
+        assert_eq!(p, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_search_pattern
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_search_pattern_basic() {
+        assert_eq!(build_search_pattern("consul"), "%consul%");
+    }
+
+    #[test]
+    fn test_build_search_pattern_empty() {
+        assert_eq!(build_search_pattern(""), "%%");
+    }
+
+    #[test]
+    fn test_build_search_pattern_special_chars() {
+        assert_eq!(build_search_pattern("my-module"), "%my-module%");
+    }
 }

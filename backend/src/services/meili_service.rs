@@ -430,3 +430,366 @@ struct RepositoryRow {
     is_public: bool,
     created_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(unused_imports)]
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // Constants tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(ARTIFACTS_INDEX, "artifacts");
+        assert_eq!(REPOSITORIES_INDEX, "repositories");
+        assert_eq!(BATCH_SIZE, 1000);
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactDocument serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_document_serialization() {
+        let doc = ArtifactDocument {
+            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            name: "my-artifact".to_string(),
+            path: "com/example/my-artifact/1.0.0/my-artifact-1.0.0.jar".to_string(),
+            version: Some("1.0.0".to_string()),
+            format: "maven".to_string(),
+            repository_id: "repo-id-123".to_string(),
+            repository_key: "maven-central".to_string(),
+            repository_name: "Maven Central".to_string(),
+            content_type: "application/java-archive".to_string(),
+            size_bytes: 1024 * 1024,
+            download_count: 42,
+            created_at: 1700000000,
+        };
+
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"name\":\"my-artifact\""));
+        assert!(json.contains("\"version\":\"1.0.0\""));
+        assert!(json.contains("\"format\":\"maven\""));
+        assert!(json.contains("\"download_count\":42"));
+        assert!(json.contains("\"size_bytes\":1048576"));
+    }
+
+    #[test]
+    fn test_artifact_document_deserialization() {
+        let json_val = json!({
+            "id": "abc-123",
+            "name": "pkg",
+            "path": "pkg/1.0",
+            "version": null,
+            "format": "npm",
+            "repository_id": "repo-1",
+            "repository_key": "npm-local",
+            "repository_name": "NPM Local",
+            "content_type": "application/gzip",
+            "size_bytes": 512,
+            "download_count": 0,
+            "created_at": 1700000000
+        });
+
+        let doc: ArtifactDocument = serde_json::from_value(json_val).unwrap();
+        assert_eq!(doc.id, "abc-123");
+        assert_eq!(doc.name, "pkg");
+        assert!(doc.version.is_none());
+        assert_eq!(doc.format, "npm");
+        assert_eq!(doc.size_bytes, 512);
+        assert_eq!(doc.download_count, 0);
+    }
+
+    #[test]
+    fn test_artifact_document_roundtrip() {
+        let doc = ArtifactDocument {
+            id: "test-id".to_string(),
+            name: "test-name".to_string(),
+            path: "test/path".to_string(),
+            version: Some("2.0.0".to_string()),
+            format: "docker".to_string(),
+            repository_id: "repo".to_string(),
+            repository_key: "docker-local".to_string(),
+            repository_name: "Docker Local".to_string(),
+            content_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+            size_bytes: 0,
+            download_count: 100,
+            created_at: 1234567890,
+        };
+
+        let json = serde_json::to_string(&doc).unwrap();
+        let deserialized: ArtifactDocument = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(doc.id, deserialized.id);
+        assert_eq!(doc.name, deserialized.name);
+        assert_eq!(doc.path, deserialized.path);
+        assert_eq!(doc.version, deserialized.version);
+        assert_eq!(doc.format, deserialized.format);
+        assert_eq!(doc.repository_id, deserialized.repository_id);
+        assert_eq!(doc.repository_key, deserialized.repository_key);
+        assert_eq!(doc.repository_name, deserialized.repository_name);
+        assert_eq!(doc.content_type, deserialized.content_type);
+        assert_eq!(doc.size_bytes, deserialized.size_bytes);
+        assert_eq!(doc.download_count, deserialized.download_count);
+        assert_eq!(doc.created_at, deserialized.created_at);
+    }
+
+    #[test]
+    fn test_artifact_document_clone() {
+        let doc = ArtifactDocument {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            path: "path".to_string(),
+            version: None,
+            format: "generic".to_string(),
+            repository_id: "repo".to_string(),
+            repository_key: "key".to_string(),
+            repository_name: "name".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 100,
+            download_count: 0,
+            created_at: 0,
+        };
+        let cloned = doc.clone();
+        assert_eq!(doc.id, cloned.id);
+        assert_eq!(doc.name, cloned.name);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryDocument serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_document_serialization() {
+        let doc = RepositoryDocument {
+            id: "repo-id".to_string(),
+            name: "My Repository".to_string(),
+            key: "my-repo".to_string(),
+            description: Some("A test repository".to_string()),
+            format: "maven".to_string(),
+            repo_type: "local".to_string(),
+            is_public: true,
+            created_at: 1700000000,
+        };
+
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(json.contains("\"name\":\"My Repository\""));
+        assert!(json.contains("\"key\":\"my-repo\""));
+        assert!(json.contains("\"is_public\":true"));
+        assert!(json.contains("\"format\":\"maven\""));
+        assert!(json.contains("\"repo_type\":\"local\""));
+    }
+
+    #[test]
+    fn test_repository_document_deserialization() {
+        let json_val = json!({
+            "id": "repo-1",
+            "name": "NPM Repo",
+            "key": "npm-local",
+            "description": null,
+            "format": "npm",
+            "repo_type": "remote",
+            "is_public": false,
+            "created_at": 1700000000
+        });
+
+        let doc: RepositoryDocument = serde_json::from_value(json_val).unwrap();
+        assert_eq!(doc.name, "NPM Repo");
+        assert_eq!(doc.key, "npm-local");
+        assert!(doc.description.is_none());
+        assert!(!doc.is_public);
+    }
+
+    #[test]
+    fn test_repository_document_roundtrip() {
+        let doc = RepositoryDocument {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            key: "test-key".to_string(),
+            description: Some("desc".to_string()),
+            format: "docker".to_string(),
+            repo_type: "virtual".to_string(),
+            is_public: false,
+            created_at: 999,
+        };
+        let json = serde_json::to_string(&doc).unwrap();
+        let deserialized: RepositoryDocument = serde_json::from_str(&json).unwrap();
+        assert_eq!(doc.id, deserialized.id);
+        assert_eq!(doc.name, deserialized.name);
+        assert_eq!(doc.key, deserialized.key);
+        assert_eq!(doc.description, deserialized.description);
+        assert_eq!(doc.format, deserialized.format);
+        assert_eq!(doc.repo_type, deserialized.repo_type);
+        assert_eq!(doc.is_public, deserialized.is_public);
+        assert_eq!(doc.created_at, deserialized.created_at);
+    }
+
+    #[test]
+    fn test_repository_document_clone() {
+        let doc = RepositoryDocument {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            key: "key".to_string(),
+            description: None,
+            format: "pypi".to_string(),
+            repo_type: "local".to_string(),
+            is_public: true,
+            created_at: 0,
+        };
+        let cloned = doc.clone();
+        assert_eq!(doc.id, cloned.id);
+        assert_eq!(doc.is_public, cloned.is_public);
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchResults serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_results_serialization_empty() {
+        let results: SearchResults<ArtifactDocument> = SearchResults {
+            hits: vec![],
+            total_hits: 0,
+            processing_time_ms: 5,
+            query: "test".to_string(),
+        };
+
+        let json = serde_json::to_string(&results).unwrap();
+        assert!(json.contains("\"hits\":[]"));
+        assert!(json.contains("\"total_hits\":0"));
+        assert!(json.contains("\"processing_time_ms\":5"));
+        assert!(json.contains("\"query\":\"test\""));
+    }
+
+    #[test]
+    fn test_search_results_serialization_with_hits() {
+        let doc = ArtifactDocument {
+            id: "1".to_string(),
+            name: "artifact1".to_string(),
+            path: "a/b".to_string(),
+            version: Some("1.0".to_string()),
+            format: "npm".to_string(),
+            repository_id: "r".to_string(),
+            repository_key: "k".to_string(),
+            repository_name: "n".to_string(),
+            content_type: "application/gzip".to_string(),
+            size_bytes: 100,
+            download_count: 10,
+            created_at: 0,
+        };
+
+        let results = SearchResults {
+            hits: vec![doc],
+            total_hits: 1,
+            processing_time_ms: 12,
+            query: "artifact".to_string(),
+        };
+
+        let json = serde_json::to_string(&results).unwrap();
+        assert!(json.contains("\"total_hits\":1"));
+        assert!(json.contains("\"name\":\"artifact1\""));
+    }
+
+    #[test]
+    fn test_search_results_clone() {
+        let results: SearchResults<RepositoryDocument> = SearchResults {
+            hits: vec![],
+            total_hits: 0,
+            processing_time_ms: 0,
+            query: "q".to_string(),
+        };
+        let cloned = results.clone();
+        assert_eq!(results.total_hits, cloned.total_hits);
+        assert_eq!(results.query, cloned.query);
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactRow construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_row_to_document_conversion() {
+        // Mirrors the mapping in full_reindex_artifacts
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+
+        let row = ArtifactRow {
+            id,
+            name: "my-lib".to_string(),
+            path: "org/my-lib/1.0/my-lib-1.0.jar".to_string(),
+            version: Some("1.0".to_string()),
+            content_type: "application/java-archive".to_string(),
+            size_bytes: 2048,
+            created_at: now,
+            repository_id: repo_id,
+            repository_key: "maven-local".to_string(),
+            repository_name: "Maven Local".to_string(),
+            format: "maven".to_string(),
+            download_count: 7,
+        };
+
+        let doc = ArtifactDocument {
+            id: row.id.to_string(),
+            name: row.name.clone(),
+            path: row.path.clone(),
+            version: row.version.clone(),
+            format: row.format.clone(),
+            repository_id: row.repository_id.to_string(),
+            repository_key: row.repository_key.clone(),
+            repository_name: row.repository_name.clone(),
+            content_type: row.content_type.clone(),
+            size_bytes: row.size_bytes,
+            download_count: row.download_count,
+            created_at: row.created_at.timestamp(),
+        };
+
+        assert_eq!(doc.id, id.to_string());
+        assert_eq!(doc.name, "my-lib");
+        assert_eq!(doc.version, Some("1.0".to_string()));
+        assert_eq!(doc.repository_key, "maven-local");
+        assert_eq!(doc.download_count, 7);
+        assert_eq!(doc.created_at, now.timestamp());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryRow to document conversion tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_row_to_document_conversion() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+
+        let row = RepositoryRow {
+            id,
+            name: "Docker Local".to_string(),
+            key: "docker-local".to_string(),
+            description: Some("Local docker repo".to_string()),
+            format: "docker".to_string(),
+            repo_type: "local".to_string(),
+            is_public: true,
+            created_at: now,
+        };
+
+        let doc = RepositoryDocument {
+            id: row.id.to_string(),
+            name: row.name.clone(),
+            key: row.key.clone(),
+            description: row.description.clone(),
+            format: row.format.clone(),
+            repo_type: row.repo_type.clone(),
+            is_public: row.is_public,
+            created_at: row.created_at.timestamp(),
+        };
+
+        assert_eq!(doc.id, id.to_string());
+        assert_eq!(doc.name, "Docker Local");
+        assert_eq!(doc.key, "docker-local");
+        assert_eq!(doc.description, Some("Local docker repo".to_string()));
+        assert!(doc.is_public);
+    }
+}

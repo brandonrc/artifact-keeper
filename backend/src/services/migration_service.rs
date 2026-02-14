@@ -1169,4 +1169,883 @@ mod tests {
         ));
         assert!(MigrationService::matches_pattern("anything", &[]));
     }
+
+    // -----------------------------------------------------------------------
+    // Format compatibility - exhaustive coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_compatibility_all_full() {
+        let full_formats = [
+            "maven", "npm", "docker", "pypi", "helm", "nuget", "cargo", "go", "generic",
+        ];
+        for fmt in &full_formats {
+            assert_eq!(
+                MigrationService::get_format_compatibility(fmt),
+                FormatCompatibility::Full,
+                "Expected Full for '{}'",
+                fmt
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_compatibility_all_partial() {
+        let partial_formats = ["conan", "conda", "debian", "rpm"];
+        for fmt in &partial_formats {
+            assert_eq!(
+                MigrationService::get_format_compatibility(fmt),
+                FormatCompatibility::Partial,
+                "Expected Partial for '{}'",
+                fmt
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_compatibility_unsupported() {
+        let unsupported = ["bower", "gitlfs", "p2", "yum", ""];
+        for fmt in &unsupported {
+            assert_eq!(
+                MigrationService::get_format_compatibility(fmt),
+                FormatCompatibility::Unsupported,
+                "Expected Unsupported for '{}'",
+                fmt
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_compatibility_case_insensitive() {
+        assert_eq!(
+            MigrationService::get_format_compatibility("Maven"),
+            FormatCompatibility::Full
+        );
+        assert_eq!(
+            MigrationService::get_format_compatibility("NPM"),
+            FormatCompatibility::Full
+        );
+        assert_eq!(
+            MigrationService::get_format_compatibility("DOCKER"),
+            FormatCompatibility::Full
+        );
+        assert_eq!(
+            MigrationService::get_format_compatibility("CONAN"),
+            FormatCompatibility::Partial
+        );
+        assert_eq!(
+            MigrationService::get_format_compatibility("RPM"),
+            FormatCompatibility::Partial
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Permission mapping - exhaustive coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_permission_mapping_all_mapped() {
+        assert_eq!(MigrationService::map_permission("read"), Some("read"));
+        assert_eq!(MigrationService::map_permission("annotate"), Some("read"));
+        assert_eq!(MigrationService::map_permission("deploy"), Some("write"));
+        assert_eq!(MigrationService::map_permission("delete"), Some("delete"));
+        assert_eq!(MigrationService::map_permission("admin"), Some("admin"));
+    }
+
+    #[test]
+    fn test_permission_mapping_unsupported() {
+        assert_eq!(MigrationService::map_permission("managedxraymeta"), None);
+        assert_eq!(MigrationService::map_permission("distribute"), None);
+    }
+
+    #[test]
+    fn test_permission_mapping_unknown() {
+        assert_eq!(MigrationService::map_permission("execute"), None);
+        assert_eq!(MigrationService::map_permission(""), None);
+        assert_eq!(MigrationService::map_permission("superadmin"), None);
+    }
+
+    #[test]
+    fn test_permission_mapping_case_insensitive() {
+        assert_eq!(MigrationService::map_permission("READ"), Some("read"));
+        assert_eq!(MigrationService::map_permission("Deploy"), Some("write"));
+        assert_eq!(MigrationService::map_permission("ADMIN"), Some("admin"));
+        assert_eq!(MigrationService::map_permission("Annotate"), Some("read"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryType conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_type_from_artifactory() {
+        assert_eq!(
+            RepositoryType::from_artifactory("local"),
+            Some(RepositoryType::Local)
+        );
+        assert_eq!(
+            RepositoryType::from_artifactory("remote"),
+            Some(RepositoryType::Remote)
+        );
+        assert_eq!(
+            RepositoryType::from_artifactory("virtual"),
+            Some(RepositoryType::Virtual)
+        );
+    }
+
+    #[test]
+    fn test_repository_type_from_artifactory_case_insensitive() {
+        assert_eq!(
+            RepositoryType::from_artifactory("LOCAL"),
+            Some(RepositoryType::Local)
+        );
+        assert_eq!(
+            RepositoryType::from_artifactory("Remote"),
+            Some(RepositoryType::Remote)
+        );
+        assert_eq!(
+            RepositoryType::from_artifactory("VIRTUAL"),
+            Some(RepositoryType::Virtual)
+        );
+    }
+
+    #[test]
+    fn test_repository_type_from_artifactory_unknown() {
+        assert_eq!(RepositoryType::from_artifactory("federated"), None);
+        assert_eq!(RepositoryType::from_artifactory(""), None);
+        assert_eq!(RepositoryType::from_artifactory("hosted"), None);
+    }
+
+    #[test]
+    fn test_repository_type_to_artifact_keeper() {
+        assert_eq!(RepositoryType::Local.to_artifact_keeper(), "hosted");
+        assert_eq!(RepositoryType::Remote.to_artifact_keeper(), "proxy");
+        assert_eq!(RepositoryType::Virtual.to_artifact_keeper(), "group");
+    }
+
+    #[test]
+    fn test_repository_type_roundtrip() {
+        for rclass in ["local", "remote", "virtual"] {
+            let repo_type = RepositoryType::from_artifactory(rclass).unwrap();
+            let ak_type = repo_type.to_artifact_keeper();
+            // Verify the AK type is valid
+            assert!(
+                ["hosted", "proxy", "group"].contains(&ak_type),
+                "Unexpected AK type '{}' for '{}'",
+                ak_type,
+                rclass
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // map_repository_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_map_repository_type() {
+        assert_eq!(
+            MigrationService::map_repository_type("local"),
+            Some(RepositoryType::Local)
+        );
+        assert_eq!(
+            MigrationService::map_repository_type("remote"),
+            Some(RepositoryType::Remote)
+        );
+        assert_eq!(
+            MigrationService::map_repository_type("virtual"),
+            Some(RepositoryType::Virtual)
+        );
+        assert_eq!(MigrationService::map_repository_type("unknown"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pattern matching - advanced cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pattern_matching_multiple_patterns() {
+        let patterns = vec!["libs-*".to_string(), "plugins-*".to_string()];
+        assert!(MigrationService::matches_pattern("libs-release", &patterns));
+        assert!(MigrationService::matches_pattern(
+            "plugins-local",
+            &patterns
+        ));
+        assert!(!MigrationService::matches_pattern("ext-repo", &patterns));
+    }
+
+    #[test]
+    fn test_pattern_matching_exact_match() {
+        let patterns = vec!["my-repo".to_string()];
+        assert!(MigrationService::matches_pattern("my-repo", &patterns));
+        assert!(!MigrationService::matches_pattern("my-repo-2", &patterns));
+    }
+
+    #[test]
+    fn test_pattern_matching_wildcard_at_start() {
+        let patterns = vec!["*-local".to_string()];
+        assert!(MigrationService::matches_pattern("libs-local", &patterns));
+        assert!(MigrationService::matches_pattern("npm-local", &patterns));
+        assert!(!MigrationService::matches_pattern("libs-remote", &patterns));
+    }
+
+    #[test]
+    fn test_pattern_matching_question_mark_with_wildcard() {
+        // Note: ? is only interpreted as regex when pattern also contains *
+        let patterns = vec!["lib?-release*".to_string()];
+        assert!(MigrationService::matches_pattern("libs-release", &patterns));
+        assert!(MigrationService::matches_pattern(
+            "libx-release-local",
+            &patterns
+        ));
+        assert!(!MigrationService::matches_pattern(
+            "library-release",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_pattern_matching_question_mark_without_wildcard() {
+        // Without *, the pattern is treated as an exact match
+        let patterns = vec!["lib?-release".to_string()];
+        // Exact match only, ? is literal
+        assert!(!MigrationService::matches_pattern(
+            "libs-release",
+            &patterns
+        ));
+        assert!(MigrationService::matches_pattern("lib?-release", &patterns));
+    }
+
+    #[test]
+    fn test_pattern_matching_dots_in_pattern() {
+        let patterns = vec!["com.example.*".to_string()];
+        assert!(MigrationService::matches_pattern(
+            "com.example.mylib",
+            &patterns
+        ));
+        // Dot should be treated as literal dot (escaped in regex)
+        assert!(!MigrationService::matches_pattern(
+            "comXexampleXmylib",
+            &patterns
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // should_exclude_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_exclude_path_no_patterns() {
+        assert!(!MigrationService::should_exclude_path("some/path", &[]));
+    }
+
+    #[test]
+    fn test_should_exclude_path_exact_substring() {
+        let patterns = vec![".index".to_string()];
+        assert!(MigrationService::should_exclude_path(
+            "repo/.index/data",
+            &patterns
+        ));
+        assert!(!MigrationService::should_exclude_path(
+            "repo/data/file.jar",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_should_exclude_path_wildcard_single() {
+        let patterns = vec!["*.tmp".to_string()];
+        assert!(MigrationService::should_exclude_path("file.tmp", &patterns));
+        assert!(!MigrationService::should_exclude_path(
+            "file.jar", &patterns
+        ));
+    }
+
+    #[test]
+    fn test_should_exclude_path_double_wildcard_substring_fallback() {
+        // Note: ** glob pattern has a bug where .* from ** replacement gets
+        // clobbered by the subsequent * -> [^/]* replacement. However,
+        // the substring fallback (.git) still works for non-wildcard patterns.
+        let patterns = vec![".git".to_string()];
+        // Substring match works
+        assert!(MigrationService::should_exclude_path(
+            "repo/.git/objects/pack",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_should_exclude_path_single_wildcard_in_dir() {
+        // Single wildcard should NOT match across directory separators in exclude
+        let patterns = vec!["*.log".to_string()];
+        assert!(MigrationService::should_exclude_path(
+            "debug.log",
+            &patterns
+        ));
+        // * maps to [^/]* so it won't match across /
+        assert!(!MigrationService::should_exclude_path(
+            "dir/debug.log",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn test_should_exclude_path_multiple_patterns() {
+        let patterns = vec![
+            ".index".to_string(),
+            "*.tmp".to_string(),
+            "_trash".to_string(),
+        ];
+        assert!(MigrationService::should_exclude_path(
+            "repo/.index/data",
+            &patterns
+        ));
+        assert!(MigrationService::should_exclude_path("temp.tmp", &patterns));
+        assert!(MigrationService::should_exclude_path(
+            "repo/_trash/old",
+            &patterns
+        ));
+        assert!(!MigrationService::should_exclude_path(
+            "repo/good/file.jar",
+            &patterns
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // sanitize_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_path_normal() {
+        assert_eq!(
+            MigrationService::sanitize_path("com/example/lib/1.0/lib-1.0.jar"),
+            "com/example/lib/1.0/lib-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_control_characters() {
+        assert_eq!(
+            MigrationService::sanitize_path("file\x00name\x01.jar"),
+            "file_name_.jar"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_windows_forbidden() {
+        assert_eq!(
+            MigrationService::sanitize_path("file<name>:test|?.jar"),
+            "file_name__test__.jar"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_backslash_to_forward_slash() {
+        assert_eq!(
+            MigrationService::sanitize_path("com\\example\\lib.jar"),
+            "com/example/lib.jar"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_collapse_slashes() {
+        assert_eq!(
+            MigrationService::sanitize_path("com//example///lib.jar"),
+            "com/example/lib.jar"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_trailing_slash() {
+        assert_eq!(
+            MigrationService::sanitize_path("com/example/"),
+            "com/example"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_leading_slash_removed() {
+        // Leading slash is a special case: the collapse logic skips if result is empty
+        let result = MigrationService::sanitize_path("/com/example");
+        assert_eq!(result, "com/example");
+    }
+
+    #[test]
+    fn test_sanitize_path_star_replaced() {
+        // * is a Windows-forbidden character
+        assert_eq!(MigrationService::sanitize_path("file*.jar"), "file_.jar");
+    }
+
+    #[test]
+    fn test_sanitize_path_empty() {
+        assert_eq!(MigrationService::sanitize_path(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // sanitize_repo_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_repo_key_normal() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("libs-release-local"),
+            "libs-release-local"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_spaces_to_dashes() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("my repo name"),
+            "my-repo-name"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_removes_special_chars() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("repo@#$%!name"),
+            "reponame"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_trims_dots_and_dashes() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("..repo-name--"),
+            "repo-name"
+        );
+        assert_eq!(MigrationService::sanitize_repo_key("-.-repo-.-"), "repo");
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_preserves_dots_in_middle() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("com.example.repo"),
+            "com.example.repo"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_allows_underscore() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("my_repo_name"),
+            "my_repo_name"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_empty() {
+        assert_eq!(MigrationService::sanitize_repo_key(""), "");
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_only_special_chars() {
+        assert_eq!(MigrationService::sanitize_repo_key("@#$%"), "");
+    }
+
+    #[test]
+    fn test_sanitize_repo_key_alphanumeric() {
+        assert_eq!(
+            MigrationService::sanitize_repo_key("MyRepo123"),
+            "MyRepo123"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_path_safe
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_path_safe_normal() {
+        assert!(MigrationService::is_path_safe(
+            "com/example/lib/1.0/lib.jar"
+        ));
+    }
+
+    #[test]
+    fn test_is_path_safe_relative_path() {
+        assert!(MigrationService::is_path_safe("some/relative/path"));
+    }
+
+    #[test]
+    fn test_is_path_safe_traversal() {
+        assert!(!MigrationService::is_path_safe("../etc/passwd"));
+        assert!(!MigrationService::is_path_safe("com/../../etc/passwd"));
+        assert!(!MigrationService::is_path_safe(".."));
+    }
+
+    #[test]
+    fn test_is_path_safe_absolute_forward_slash() {
+        assert!(!MigrationService::is_path_safe("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_is_path_safe_absolute_backslash() {
+        assert!(!MigrationService::is_path_safe("\\Windows\\System32"));
+    }
+
+    #[test]
+    fn test_is_path_safe_windows_drive() {
+        assert!(!MigrationService::is_path_safe("C:\\Users\\admin"));
+        assert!(!MigrationService::is_path_safe("D:data"));
+    }
+
+    #[test]
+    fn test_is_path_safe_unc_path() {
+        assert!(!MigrationService::is_path_safe("\\\\server\\share"));
+    }
+
+    #[test]
+    fn test_is_path_safe_empty() {
+        assert!(MigrationService::is_path_safe(""));
+    }
+
+    #[test]
+    fn test_is_path_safe_single_dot_ok() {
+        // Single dot is not traversal
+        assert!(MigrationService::is_path_safe("./file.jar"));
+    }
+
+    // -----------------------------------------------------------------------
+    // order_repositories_for_migration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_order_repositories_local_first() {
+        let repos = vec![
+            RepositoryMigrationConfig {
+                source_key: "virtual-repo".to_string(),
+                target_key: "virtual-repo".to_string(),
+                repo_type: RepositoryType::Virtual,
+                package_type: "maven".to_string(),
+                description: None,
+                format_compatibility: FormatCompatibility::Full,
+                upstream_url: None,
+                members: vec![],
+            },
+            RepositoryMigrationConfig {
+                source_key: "local-repo".to_string(),
+                target_key: "local-repo".to_string(),
+                repo_type: RepositoryType::Local,
+                package_type: "maven".to_string(),
+                description: None,
+                format_compatibility: FormatCompatibility::Full,
+                upstream_url: None,
+                members: vec![],
+            },
+            RepositoryMigrationConfig {
+                source_key: "remote-repo".to_string(),
+                target_key: "remote-repo".to_string(),
+                repo_type: RepositoryType::Remote,
+                package_type: "maven".to_string(),
+                description: None,
+                format_compatibility: FormatCompatibility::Full,
+                upstream_url: None,
+                members: vec![],
+            },
+        ];
+
+        let ordered = MigrationService::order_repositories_for_migration(repos);
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(ordered[0].repo_type, RepositoryType::Local);
+        assert_eq!(ordered[1].repo_type, RepositoryType::Remote);
+        assert_eq!(ordered[2].repo_type, RepositoryType::Virtual);
+    }
+
+    #[test]
+    fn test_order_repositories_empty() {
+        let repos = vec![];
+        let ordered = MigrationService::order_repositories_for_migration(repos);
+        assert!(ordered.is_empty());
+    }
+
+    #[test]
+    fn test_order_repositories_only_locals() {
+        let repos = vec![
+            RepositoryMigrationConfig {
+                source_key: "a".to_string(),
+                target_key: "a".to_string(),
+                repo_type: RepositoryType::Local,
+                package_type: "npm".to_string(),
+                description: None,
+                format_compatibility: FormatCompatibility::Full,
+                upstream_url: None,
+                members: vec![],
+            },
+            RepositoryMigrationConfig {
+                source_key: "b".to_string(),
+                target_key: "b".to_string(),
+                repo_type: RepositoryType::Local,
+                package_type: "npm".to_string(),
+                description: None,
+                format_compatibility: FormatCompatibility::Full,
+                upstream_url: None,
+                members: vec![],
+            },
+        ];
+
+        let ordered = MigrationService::order_repositories_for_migration(repos);
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].source_key, "a");
+        assert_eq!(ordered[1].source_key, "b");
+    }
+
+    // -----------------------------------------------------------------------
+    // prepare_repository_migration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_prepare_repository_migration_local() {
+        use crate::services::artifactory_client::RepositoryListItem;
+
+        let repo = RepositoryListItem {
+            key: "libs-release-local".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "maven".to_string(),
+            description: Some("Maven releases".to_string()),
+            url: Some("http://artifactory/libs-release-local".to_string()),
+        };
+
+        let config = MigrationService::prepare_repository_migration(&repo, None).unwrap();
+        assert_eq!(config.source_key, "libs-release-local");
+        assert_eq!(config.target_key, "libs-release-local");
+        assert_eq!(config.repo_type, RepositoryType::Local);
+        assert_eq!(config.package_type, "maven");
+        assert_eq!(config.description, Some("Maven releases".to_string()));
+        assert_eq!(config.format_compatibility, FormatCompatibility::Full);
+        assert!(config.upstream_url.is_none());
+        assert!(config.members.is_empty());
+    }
+
+    #[test]
+    fn test_prepare_repository_migration_partial_format() {
+        use crate::services::artifactory_client::RepositoryListItem;
+
+        let repo = RepositoryListItem {
+            key: "conan-local".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "conan".to_string(),
+            description: None,
+            url: Some("http://artifactory/conan-local".to_string()),
+        };
+
+        let config = MigrationService::prepare_repository_migration(&repo, None).unwrap();
+        assert_eq!(config.format_compatibility, FormatCompatibility::Partial);
+    }
+
+    #[test]
+    fn test_prepare_repository_migration_unknown_type() {
+        use crate::services::artifactory_client::RepositoryListItem;
+
+        let repo = RepositoryListItem {
+            key: "federated-repo".to_string(),
+            repo_type: "federated".to_string(),
+            package_type: "maven".to_string(),
+            description: None,
+            url: Some("http://artifactory/federated-repo".to_string()),
+        };
+
+        let result = MigrationService::prepare_repository_migration(&repo, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unknown repository type"));
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationError display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_error_display() {
+        let err = MigrationError::JobNotFound(Uuid::nil());
+        assert!(err.to_string().contains("Job not found"));
+
+        let err = MigrationError::InvalidJobState {
+            expected: "running".to_string(),
+            actual: "completed".to_string(),
+        };
+        assert!(err.to_string().contains("expected running"));
+        assert!(err.to_string().contains("got completed"));
+
+        let err = MigrationError::ConfigError("missing key".to_string());
+        assert!(err.to_string().contains("missing key"));
+
+        let err = MigrationError::ChecksumMismatch {
+            path: "file.jar".to_string(),
+            expected: "abc".to_string(),
+            actual: "def".to_string(),
+        };
+        assert!(err.to_string().contains("file.jar"));
+        assert!(err.to_string().contains("abc"));
+        assert!(err.to_string().contains("def"));
+
+        let err = MigrationError::StorageError("disk full".to_string());
+        assert!(err.to_string().contains("disk full"));
+
+        let err = MigrationError::Other("unknown".to_string());
+        assert!(err.to_string().contains("unknown"));
+    }
+
+    // -----------------------------------------------------------------------
+    // FormatCompatibility and RepositoryType - Debug, Clone, PartialEq
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_compatibility_debug_clone_eq() {
+        let full = FormatCompatibility::Full;
+        let full_clone = full;
+        assert_eq!(full, full_clone);
+        assert_ne!(full, FormatCompatibility::Partial);
+        let _ = format!("{:?}", full);
+    }
+
+    #[test]
+    fn test_repository_type_debug_clone_eq() {
+        let local = RepositoryType::Local;
+        let local_clone = local;
+        assert_eq!(local, local_clone);
+        assert_ne!(local, RepositoryType::Remote);
+        let _ = format!("{:?}", local);
+    }
+
+    // -----------------------------------------------------------------------
+    // ConflictType and ConflictCheck
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conflict_type_variants() {
+        let same = ConflictType::SameKey;
+        let type_mm = ConflictType::TypeMismatch;
+        let format_mm = ConflictType::FormatMismatch;
+        assert_ne!(same, type_mm);
+        assert_ne!(same, format_mm);
+        assert_ne!(type_mm, format_mm);
+        let _ = format!("{:?}", same);
+    }
+
+    #[test]
+    fn test_conflict_check_no_conflict() {
+        let check = ConflictCheck {
+            has_conflict: false,
+            conflict_type: None,
+            existing_repo_key: None,
+            message: "No conflict".to_string(),
+        };
+        assert!(!check.has_conflict);
+        assert!(check.conflict_type.is_none());
+    }
+
+    #[test]
+    fn test_conflict_check_with_conflict() {
+        let check = ConflictCheck {
+            has_conflict: true,
+            conflict_type: Some(ConflictType::SameKey),
+            existing_repo_key: Some("my-repo".to_string()),
+            message: "Repo exists".to_string(),
+        };
+        assert!(check.has_conflict);
+        assert_eq!(check.conflict_type, Some(ConflictType::SameKey));
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationItemData construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_item_data_construction() {
+        let item = MigrationItemData {
+            item_type: MigrationItemType::Artifact,
+            source_path: "libs-release/com/example/lib.jar".to_string(),
+            size_bytes: 1024,
+            checksum: Some("abc123".to_string()),
+            metadata: Some(serde_json::json!({"key": "value"})),
+        };
+        assert_eq!(item.source_path, "libs-release/com/example/lib.jar");
+        assert_eq!(item.size_bytes, 1024);
+        assert_eq!(item.checksum, Some("abc123".to_string()));
+        assert!(item.metadata.is_some());
+    }
+
+    #[test]
+    fn test_migration_item_data_no_checksum() {
+        let item = MigrationItemData {
+            item_type: MigrationItemType::User,
+            source_path: "user:admin".to_string(),
+            size_bytes: 0,
+            checksum: None,
+            metadata: None,
+        };
+        assert!(item.checksum.is_none());
+        assert!(item.metadata.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryAssessment serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_assessment_serialize() {
+        let assessment = RepositoryAssessment {
+            key: "libs-release".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "maven".to_string(),
+            artifact_count: 100,
+            total_size_bytes: 1_000_000,
+            compatibility: "full".to_string(),
+            warnings: vec!["warning1".to_string()],
+        };
+
+        let json = serde_json::to_value(&assessment).unwrap();
+        assert_eq!(json["key"], "libs-release");
+        assert_eq!(json["artifact_count"], 100);
+        assert_eq!(json["warnings"][0], "warning1");
+    }
+
+    #[test]
+    fn test_assessment_result_serialize() {
+        let result = AssessmentResult {
+            repositories: vec![],
+            total_artifacts: 500,
+            total_size_bytes: 5_000_000,
+            users_count: 10,
+            groups_count: 3,
+            permissions_count: 25,
+            estimated_duration_seconds: 510,
+            warnings: vec!["Could not fetch user list".to_string()],
+            blockers: vec![],
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["total_artifacts"], 500);
+        assert_eq!(json["users_count"], 10);
+        assert_eq!(json["estimated_duration_seconds"], 510);
+        assert!(json["blockers"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryMigrationConfig construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_migration_config_clone() {
+        let config = RepositoryMigrationConfig {
+            source_key: "src".to_string(),
+            target_key: "tgt".to_string(),
+            repo_type: RepositoryType::Local,
+            package_type: "npm".to_string(),
+            description: Some("test".to_string()),
+            format_compatibility: FormatCompatibility::Full,
+            upstream_url: Some("https://upstream.example.com".to_string()),
+            members: vec!["member1".to_string(), "member2".to_string()],
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.source_key, "src");
+        assert_eq!(cloned.target_key, "tgt");
+        assert_eq!(
+            cloned.upstream_url,
+            Some("https://upstream.example.com".to_string())
+        );
+        assert_eq!(cloned.members.len(), 2);
+    }
 }

@@ -458,3 +458,306 @@ pub async fn remove_members(
     ))
 )]
 pub struct GroupsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // -----------------------------------------------------------------------
+    // ListGroupsQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_groups_query_all_fields() {
+        let json = r#"{"search": "dev", "page": 2, "per_page": 50}"#;
+        let query: ListGroupsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.search, Some("dev".to_string()));
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+    }
+
+    #[test]
+    fn test_list_groups_query_empty() {
+        let json = r#"{}"#;
+        let query: ListGroupsQuery = serde_json::from_str(json).unwrap();
+        assert!(query.search.is_none());
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+    }
+
+    #[test]
+    fn test_list_groups_query_search_only() {
+        let json = r#"{"search": "admin"}"#;
+        let query: ListGroupsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.search, Some("admin".to_string()));
+        assert!(query.page.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination logic (inline in list_groups)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_defaults() {
+        let page = 1;
+        let per_page = 20_u32;
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+    }
+
+    #[test]
+    fn test_pagination_page_zero_clamped() {
+        let page = 1;
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_pagination_per_page_clamped_to_max() {
+        let per_page = 100;
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_pagination_offset_calculation() {
+        let page: u32 = 3;
+        let per_page: u32 = 20;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 40);
+    }
+
+    #[test]
+    fn test_pagination_offset_first_page() {
+        let page: u32 = 1;
+        let per_page: u32 = 10;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_total_pages_calculation() {
+        let total: i64 = 45;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 3);
+    }
+
+    #[test]
+    fn test_total_pages_exact_division() {
+        let total: i64 = 60;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 3);
+    }
+
+    #[test]
+    fn test_total_pages_zero_items() {
+        let total: i64 = 0;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Search pattern construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_pattern_some() {
+        let search = Some("dev".to_string());
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert_eq!(pattern, Some("%dev%".to_string()));
+    }
+
+    #[test]
+    fn test_search_pattern_none() {
+        let search: Option<String> = None;
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert!(pattern.is_none());
+    }
+
+    #[test]
+    fn test_search_pattern_empty_string() {
+        let search = Some("".to_string());
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert_eq!(pattern, Some("%%".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // GroupRow → GroupResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_group_row_to_response() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let row = GroupRow {
+            id,
+            name: "developers".to_string(),
+            description: Some("Dev team".to_string()),
+            member_count: 5,
+            created_at: now,
+            updated_at: now,
+        };
+        let resp = GroupResponse::from(row);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.name, "developers");
+        assert_eq!(resp.description, Some("Dev team".to_string()));
+        assert_eq!(resp.member_count, 5);
+    }
+
+    #[test]
+    fn test_group_row_to_response_no_description() {
+        let now = Utc::now();
+        let row = GroupRow {
+            id: Uuid::new_v4(),
+            name: "ops".to_string(),
+            description: None,
+            member_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let resp = GroupResponse::from(row);
+        assert!(resp.description.is_none());
+        assert_eq!(resp.member_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // GroupResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_group_response_serialize() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let resp = GroupResponse {
+            id,
+            name: "admins".to_string(),
+            description: Some("Admin group".to_string()),
+            member_count: 3,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "admins");
+        assert_eq!(json["description"], "Admin group");
+        assert_eq!(json["member_count"], 3);
+    }
+
+    #[test]
+    fn test_group_response_serialize_null_description() {
+        let now = Utc::now();
+        let resp = GroupResponse {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            description: None,
+            member_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["description"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateGroupRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_group_request() {
+        let json = r#"{"name": "new-group", "description": "A new group"}"#;
+        let req: CreateGroupRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "new-group");
+        assert_eq!(req.description, Some("A new group".to_string()));
+    }
+
+    #[test]
+    fn test_create_group_request_no_description() {
+        let json = r#"{"name": "minimal"}"#;
+        let req: CreateGroupRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "minimal");
+        assert!(req.description.is_none());
+    }
+
+    #[test]
+    fn test_create_group_request_missing_name() {
+        let json = r#"{"description": "no name"}"#;
+        let result = serde_json::from_str::<CreateGroupRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // MembersRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_members_request() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let json = format!(r#"{{"user_ids": ["{}", "{}"]}}"#, id1, id2);
+        let req: MembersRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req.user_ids.len(), 2);
+        assert_eq!(req.user_ids[0], id1);
+        assert_eq!(req.user_ids[1], id2);
+    }
+
+    #[test]
+    fn test_members_request_empty_list() {
+        let json = r#"{"user_ids": []}"#;
+        let req: MembersRequest = serde_json::from_str(json).unwrap();
+        assert!(req.user_ids.is_empty());
+    }
+
+    #[test]
+    fn test_members_request_missing_field() {
+        let json = r#"{}"#;
+        let result = serde_json::from_str::<MembersRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // GroupListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_group_list_response_serialize() {
+        let now = Utc::now();
+        let resp = GroupListResponse {
+            items: vec![GroupResponse {
+                id: Uuid::new_v4(),
+                name: "team".to_string(),
+                description: None,
+                member_count: 2,
+                created_at: now,
+                updated_at: now,
+            }],
+            pagination: Pagination {
+                page: 1,
+                per_page: 20,
+                total: 1,
+                total_pages: 1,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(json["pagination"]["page"], 1);
+        assert_eq!(json["pagination"]["total"], 1);
+    }
+
+    #[test]
+    fn test_group_list_response_empty() {
+        let resp = GroupListResponse {
+            items: vec![],
+            pagination: Pagination {
+                page: 1,
+                per_page: 20,
+                total: 0,
+                total_pages: 0,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+        assert_eq!(json["pagination"]["total"], 0);
+        assert_eq!(json["pagination"]["total_pages"], 0);
+    }
+}

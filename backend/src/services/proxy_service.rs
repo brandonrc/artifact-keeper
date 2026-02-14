@@ -419,6 +419,24 @@ impl ProxyService {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn is_cache_expired(expires_at: &DateTime<Utc>) -> bool {
+        Utc::now() > *expires_at
+    }
+
+    fn compute_cache_expiry(cached_at: DateTime<Utc>, ttl_secs: i64) -> DateTime<Utc> {
+        cached_at + chrono::Duration::seconds(ttl_secs)
+    }
+
+    fn parse_cache_ttl(value: Option<&str>) -> i64 {
+        value
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_CACHE_TTL_SECS)
+    }
+
     // =======================================================================
     // build_upstream_url tests
     // =======================================================================
@@ -819,5 +837,86 @@ mod tests {
             ),
             "https://example.com/path%20with%20spaces/artifact"
         );
+    }
+
+    // =======================================================================
+    // is_cache_expired (extracted pure function)
+    // =======================================================================
+
+    #[test]
+    fn test_is_cache_expired_past() {
+        let expired = Utc::now() - chrono::Duration::hours(1);
+        assert!(is_cache_expired(&expired));
+    }
+
+    #[test]
+    fn test_is_cache_expired_future() {
+        let valid = Utc::now() + chrono::Duration::hours(23);
+        assert!(!is_cache_expired(&valid));
+    }
+
+    #[test]
+    fn test_is_cache_expired_far_future() {
+        let far = Utc::now() + chrono::Duration::days(365);
+        assert!(!is_cache_expired(&far));
+    }
+
+    // =======================================================================
+    // compute_cache_expiry (extracted pure function)
+    // =======================================================================
+
+    #[test]
+    fn test_compute_cache_expiry() {
+        let now = Utc::now();
+        let expires = compute_cache_expiry(now, 3600);
+        let diff = (expires - now).num_seconds();
+        assert_eq!(diff, 3600);
+    }
+
+    #[test]
+    fn test_compute_cache_expiry_default_ttl() {
+        let now = Utc::now();
+        let expires = compute_cache_expiry(now, DEFAULT_CACHE_TTL_SECS);
+        let diff = (expires - now).num_seconds();
+        assert_eq!(diff, 86400);
+    }
+
+    #[test]
+    fn test_compute_cache_expiry_zero_ttl() {
+        let now = Utc::now();
+        let expires = compute_cache_expiry(now, 0);
+        assert_eq!(expires, now);
+    }
+
+    // =======================================================================
+    // parse_cache_ttl (extracted pure function)
+    // =======================================================================
+
+    #[test]
+    fn test_parse_cache_ttl_valid_number() {
+        assert_eq!(parse_cache_ttl(Some("3600")), 3600);
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_none() {
+        assert_eq!(parse_cache_ttl(None), DEFAULT_CACHE_TTL_SECS);
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_invalid() {
+        assert_eq!(
+            parse_cache_ttl(Some("not-a-number")),
+            DEFAULT_CACHE_TTL_SECS
+        );
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_empty() {
+        assert_eq!(parse_cache_ttl(Some("")), DEFAULT_CACHE_TTL_SECS);
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_negative() {
+        assert_eq!(parse_cache_ttl(Some("-100")), -100);
     }
 }

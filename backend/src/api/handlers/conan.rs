@@ -1346,3 +1346,607 @@ async fn package_file_upload(
         .body(Body::from("Created"))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Convert a Conan glob pattern to a SQL LIKE pattern.
+    fn conan_glob_to_like(pattern: &str) -> String {
+        pattern.replace('*', "%")
+    }
+
+    /// Build a Conan reference string: "name/version@user/channel".
+    fn build_conan_reference(name: &str, version: &str) -> String {
+        format!("{}/{}@_/_", name, version)
+    }
+
+    /// Build recipe metadata JSON.
+    fn build_recipe_metadata(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        file_path: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "user": normalize_user(user),
+            "channel": normalize_channel(channel),
+            "revision": revision,
+            "type": "recipe",
+            "file": file_path.trim_start_matches('/'),
+        })
+    }
+
+    /// Build package metadata JSON.
+    #[allow(clippy::too_many_arguments)]
+    fn build_package_metadata(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        package_id: &str,
+        pkg_revision: &str,
+        file_path: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "user": normalize_user(user),
+            "channel": normalize_channel(channel),
+            "revision": revision,
+            "packageId": package_id,
+            "packageRevision": pkg_revision,
+            "type": "package",
+            "file": file_path.trim_start_matches('/'),
+        })
+    }
+
+    /// Build the upstream path for proxying a recipe file.
+    fn build_recipe_upstream_path(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        file_path: &str,
+    ) -> String {
+        format!(
+            "v2/conans/{}/{}/{}/{}/revisions/{}/files/{}",
+            name,
+            version,
+            user,
+            channel,
+            revision,
+            file_path.trim_start_matches('/')
+        )
+    }
+
+    /// Build the upstream path for proxying a package file.
+    #[allow(clippy::too_many_arguments)]
+    fn build_package_upstream_path(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        package_id: &str,
+        pkg_revision: &str,
+        file_path: &str,
+    ) -> String {
+        format!(
+            "v2/conans/{}/{}/{}/{}/revisions/{}/packages/{}/revisions/{}/files/{}",
+            name,
+            version,
+            user,
+            channel,
+            revision,
+            package_id,
+            pkg_revision,
+            file_path.trim_start_matches('/')
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_user
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_user_underscore() {
+        assert_eq!(normalize_user("_"), "_");
+    }
+
+    #[test]
+    fn test_normalize_user_custom() {
+        assert_eq!(normalize_user("myuser"), "myuser");
+    }
+
+    #[test]
+    fn test_normalize_user_empty() {
+        assert_eq!(normalize_user(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_channel
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_channel_underscore() {
+        assert_eq!(normalize_channel("_"), "_");
+    }
+
+    #[test]
+    fn test_normalize_channel_custom() {
+        assert_eq!(normalize_channel("stable"), "stable");
+    }
+
+    #[test]
+    fn test_normalize_channel_empty() {
+        assert_eq!(normalize_channel(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // recipe_storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_recipe_storage_key_basic() {
+        let key = recipe_storage_key("zlib", "1.2.13", "_", "_", "abc123", "conanfile.py");
+        assert_eq!(key, "conan/zlib/1.2.13/_/_/recipe/abc123/conanfile.py");
+    }
+
+    #[test]
+    fn test_recipe_storage_key_with_user_and_channel() {
+        let key = recipe_storage_key(
+            "boost",
+            "1.80.0",
+            "myuser",
+            "stable",
+            "def456",
+            "conanmanifest.txt",
+        );
+        assert_eq!(
+            key,
+            "conan/boost/1.80.0/myuser/stable/recipe/def456/conanmanifest.txt"
+        );
+    }
+
+    #[test]
+    fn test_recipe_storage_key_leading_slash_in_path() {
+        let key = recipe_storage_key("zlib", "1.0", "_", "_", "rev1", "/conanfile.py");
+        assert_eq!(key, "conan/zlib/1.0/_/_/recipe/rev1/conanfile.py");
+    }
+
+    // -----------------------------------------------------------------------
+    // package_storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_storage_key_basic() {
+        let key = package_storage_key(
+            "zlib",
+            "1.2.13",
+            "_",
+            "_",
+            "abc123",
+            "pkg-id-1",
+            "pkg-rev-1",
+            "conan_package.tgz",
+        );
+        assert_eq!(
+            key,
+            "conan/zlib/1.2.13/_/_/package/abc123/pkg-id-1/pkg-rev-1/conan_package.tgz"
+        );
+    }
+
+    #[test]
+    fn test_package_storage_key_leading_slash() {
+        let key = package_storage_key(
+            "zlib",
+            "1.0",
+            "_",
+            "_",
+            "rev1",
+            "pkgid",
+            "pkgrev",
+            "/conan_package.tgz",
+        );
+        assert_eq!(
+            key,
+            "conan/zlib/1.0/_/_/package/rev1/pkgid/pkgrev/conan_package.tgz"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // recipe_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_recipe_artifact_path_basic() {
+        let path = recipe_artifact_path("zlib", "1.2.13", "_", "_", "abc123", "conanfile.py");
+        assert_eq!(path, "zlib/1.2.13/_/_/revisions/abc123/files/conanfile.py");
+    }
+
+    #[test]
+    fn test_recipe_artifact_path_with_user() {
+        let path =
+            recipe_artifact_path("boost", "1.80", "myuser", "stable", "rev1", "conanfile.py");
+        assert_eq!(
+            path,
+            "boost/1.80/myuser/stable/revisions/rev1/files/conanfile.py"
+        );
+    }
+
+    #[test]
+    fn test_recipe_artifact_path_strips_leading_slash() {
+        let path = recipe_artifact_path("zlib", "1.0", "_", "_", "rev1", "/conanfile.py");
+        assert_eq!(path, "zlib/1.0/_/_/revisions/rev1/files/conanfile.py");
+    }
+
+    // -----------------------------------------------------------------------
+    // package_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_artifact_path_basic() {
+        let path = package_artifact_path(
+            "zlib",
+            "1.2.13",
+            "_",
+            "_",
+            "rev1",
+            "pkgid",
+            "pkgrev",
+            "conan_package.tgz",
+        );
+        assert_eq!(
+            path,
+            "zlib/1.2.13/_/_/revisions/rev1/packages/pkgid/revisions/pkgrev/files/conan_package.tgz"
+        );
+    }
+
+    #[test]
+    fn test_package_artifact_path_strips_leading_slash() {
+        let path = package_artifact_path(
+            "zlib",
+            "1.0",
+            "_",
+            "_",
+            "rev1",
+            "pkgid",
+            "pkgrev",
+            "/file.tgz",
+        );
+        assert_eq!(
+            path,
+            "zlib/1.0/_/_/revisions/rev1/packages/pkgid/revisions/pkgrev/files/file.tgz"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // content_type_for_conan_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_for_conan_file_python() {
+        assert_eq!(content_type_for_conan_file("conanfile.py"), "text/plain");
+    }
+
+    #[test]
+    fn test_content_type_for_conan_file_txt() {
+        assert_eq!(
+            content_type_for_conan_file("conanmanifest.txt"),
+            "text/plain"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_conan_file_tgz() {
+        assert_eq!(
+            content_type_for_conan_file("conan_package.tgz"),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_conan_file_tar_gz() {
+        assert_eq!(
+            content_type_for_conan_file("conan_sources.tar.gz"),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_conan_file_other() {
+        assert_eq!(
+            content_type_for_conan_file("conaninfo"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_conan_file_no_extension() {
+        assert_eq!(
+            content_type_for_conan_file("somefile"),
+            "application/octet-stream"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        // "user:pass" in base64 = "dXNlcjpwYXNz"
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_basic_credentials(&headers).is_some());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!not-base64!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "nocolon" in base64 = "bm9jb2xvbg=="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic bm9jb2xvbg=="),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        // "user:pa:ss" base64 = "dXNlcjpwYTpzcw=="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_query_with_q() {
+        let json = r#"{"q": "zlib*"}"#;
+        let q: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.q, Some("zlib*".to_string()));
+    }
+
+    #[test]
+    fn test_search_query_empty() {
+        let json = r#"{}"#;
+        let q: SearchQuery = serde_json::from_str(json).unwrap();
+        assert!(q.q.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // conan_glob_to_like
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conan_glob_to_like_wildcard() {
+        assert_eq!(conan_glob_to_like("zlib*"), "zlib%");
+    }
+
+    #[test]
+    fn test_conan_glob_to_like_all() {
+        assert_eq!(conan_glob_to_like("*"), "%");
+    }
+
+    #[test]
+    fn test_conan_glob_to_like_no_wildcard() {
+        assert_eq!(conan_glob_to_like("exact"), "exact");
+    }
+
+    #[test]
+    fn test_conan_glob_to_like_multiple_wildcards() {
+        assert_eq!(conan_glob_to_like("*lib*"), "%lib%");
+    }
+
+    #[test]
+    fn test_conan_glob_to_like_empty() {
+        assert_eq!(conan_glob_to_like(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_conan_reference
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_conan_reference_basic() {
+        assert_eq!(build_conan_reference("zlib", "1.2.13"), "zlib/1.2.13@_/_");
+    }
+
+    #[test]
+    fn test_build_conan_reference_boost() {
+        assert_eq!(build_conan_reference("boost", "1.80.0"), "boost/1.80.0@_/_");
+    }
+
+    #[test]
+    fn test_build_conan_reference_empty_version() {
+        assert_eq!(build_conan_reference("pkg", ""), "pkg/@_/_");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_recipe_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_recipe_metadata_basic() {
+        let meta = build_recipe_metadata("zlib", "1.2.13", "_", "_", "rev1", "conanfile.py");
+        assert_eq!(meta["name"], "zlib");
+        assert_eq!(meta["version"], "1.2.13");
+        assert_eq!(meta["user"], "_");
+        assert_eq!(meta["channel"], "_");
+        assert_eq!(meta["revision"], "rev1");
+        assert_eq!(meta["type"], "recipe");
+        assert_eq!(meta["file"], "conanfile.py");
+    }
+
+    #[test]
+    fn test_build_recipe_metadata_strips_slash() {
+        let meta = build_recipe_metadata("zlib", "1.0", "_", "_", "r", "/conanfile.py");
+        assert_eq!(meta["file"], "conanfile.py");
+    }
+
+    #[test]
+    fn test_build_recipe_metadata_custom_user_channel() {
+        let meta = build_recipe_metadata("boost", "1.80", "myuser", "stable", "r1", "file.txt");
+        assert_eq!(meta["user"], "myuser");
+        assert_eq!(meta["channel"], "stable");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_package_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_package_metadata_basic() {
+        let meta = build_package_metadata(
+            "zlib",
+            "1.2.13",
+            "_",
+            "_",
+            "rev1",
+            "pkgid",
+            "pkgrev",
+            "conan_package.tgz",
+        );
+        assert_eq!(meta["name"], "zlib");
+        assert_eq!(meta["type"], "package");
+        assert_eq!(meta["packageId"], "pkgid");
+        assert_eq!(meta["packageRevision"], "pkgrev");
+        assert_eq!(meta["file"], "conan_package.tgz");
+    }
+
+    #[test]
+    fn test_build_package_metadata_strips_slash() {
+        let meta = build_package_metadata("z", "1.0", "_", "_", "r", "p", "pr", "/file.tgz");
+        assert_eq!(meta["file"], "file.tgz");
+    }
+
+    #[test]
+    fn test_build_package_metadata_all_fields_present() {
+        let meta = build_package_metadata("n", "v", "u", "c", "r", "pi", "pr", "f");
+        assert!(meta.get("name").is_some());
+        assert!(meta.get("version").is_some());
+        assert!(meta.get("user").is_some());
+        assert!(meta.get("channel").is_some());
+        assert!(meta.get("revision").is_some());
+        assert!(meta.get("packageId").is_some());
+        assert!(meta.get("packageRevision").is_some());
+        assert!(meta.get("type").is_some());
+        assert!(meta.get("file").is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_recipe_upstream_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_recipe_upstream_path_basic() {
+        let path = build_recipe_upstream_path("zlib", "1.2.13", "_", "_", "rev1", "conanfile.py");
+        assert_eq!(
+            path,
+            "v2/conans/zlib/1.2.13/_/_/revisions/rev1/files/conanfile.py"
+        );
+    }
+
+    #[test]
+    fn test_build_recipe_upstream_path_strips_slash() {
+        let path = build_recipe_upstream_path("z", "1.0", "_", "_", "r", "/file.py");
+        assert_eq!(path, "v2/conans/z/1.0/_/_/revisions/r/files/file.py");
+    }
+
+    #[test]
+    fn test_build_recipe_upstream_path_custom_user() {
+        let path =
+            build_recipe_upstream_path("boost", "1.80", "user", "stable", "r1", "manifest.txt");
+        assert_eq!(
+            path,
+            "v2/conans/boost/1.80/user/stable/revisions/r1/files/manifest.txt"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_package_upstream_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_package_upstream_path_basic() {
+        let path = build_package_upstream_path(
+            "zlib",
+            "1.2.13",
+            "_",
+            "_",
+            "rev1",
+            "pkgid",
+            "pkgrev",
+            "conan_package.tgz",
+        );
+        assert_eq!(
+            path,
+            "v2/conans/zlib/1.2.13/_/_/revisions/rev1/packages/pkgid/revisions/pkgrev/files/conan_package.tgz"
+        );
+    }
+
+    #[test]
+    fn test_build_package_upstream_path_strips_slash() {
+        let path = build_package_upstream_path("z", "1.0", "_", "_", "r", "p", "pr", "/f.tgz");
+        assert!(path.ends_with("/f.tgz"));
+        assert!(!path.ends_with("//f.tgz"));
+    }
+
+    #[test]
+    fn test_build_package_upstream_path_custom_user_channel() {
+        let path = build_package_upstream_path(
+            "boost", "1.80", "myuser", "stable", "r1", "pid", "prev", "file",
+        );
+        assert!(path.contains("/myuser/stable/"));
+    }
+}

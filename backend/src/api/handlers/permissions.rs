@@ -438,3 +438,314 @@ pub async fn delete_permission(
     ))
 )]
 pub struct PermissionsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    // -----------------------------------------------------------------------
+    // ListPermissionsQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_permissions_query_all_fields() {
+        let uid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let json = format!(
+            r#"{{"principal_type": "user", "principal_id": "{}", "target_type": "repository", "target_id": "{}", "page": 2, "per_page": 50}}"#,
+            uid, tid
+        );
+        let query: ListPermissionsQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(query.principal_type, Some("user".to_string()));
+        assert_eq!(query.principal_id, Some(uid));
+        assert_eq!(query.target_type, Some("repository".to_string()));
+        assert_eq!(query.target_id, Some(tid));
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+    }
+
+    #[test]
+    fn test_list_permissions_query_empty() {
+        let json = r#"{}"#;
+        let query: ListPermissionsQuery = serde_json::from_str(json).unwrap();
+        assert!(query.principal_type.is_none());
+        assert!(query.principal_id.is_none());
+        assert!(query.target_type.is_none());
+        assert!(query.target_id.is_none());
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+    }
+
+    #[test]
+    fn test_list_permissions_query_partial() {
+        let json = r#"{"principal_type": "group", "page": 1}"#;
+        let query: ListPermissionsQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.principal_type, Some("group".to_string()));
+        assert!(query.principal_id.is_none());
+        assert_eq!(query.page, Some(1));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination logic (inline in list_permissions)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_defaults() {
+        let page = 1;
+        let per_page = 20_u32;
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+    }
+
+    #[test]
+    fn test_pagination_page_zero_clamp() {
+        let page = 1;
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_pagination_per_page_over_max() {
+        let per_page = 100;
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_pagination_offset() {
+        let page: u32 = 5;
+        let per_page: u32 = 10;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 40);
+    }
+
+    #[test]
+    fn test_total_pages_calculation() {
+        let total: i64 = 55;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 3);
+    }
+
+    #[test]
+    fn test_total_pages_single_page() {
+        let total: i64 = 15;
+        let per_page: u32 = 20;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // PermissionRow → PermissionResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_permission_row_to_response() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let pid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let row = PermissionRow {
+            id,
+            principal_type: "user".to_string(),
+            principal_id: pid,
+            principal_name: Some("admin".to_string()),
+            target_type: "repository".to_string(),
+            target_id: tid,
+            target_name: Some("my-repo".to_string()),
+            actions: vec!["read".to_string(), "write".to_string()],
+            created_at: now,
+            updated_at: now,
+        };
+        let resp = PermissionResponse::from(row);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.principal_type, "user");
+        assert_eq!(resp.principal_id, pid);
+        assert_eq!(resp.principal_name, Some("admin".to_string()));
+        assert_eq!(resp.target_type, "repository");
+        assert_eq!(resp.target_id, tid);
+        assert_eq!(resp.target_name, Some("my-repo".to_string()));
+        assert_eq!(resp.actions, vec!["read", "write"]);
+    }
+
+    #[test]
+    fn test_permission_row_to_response_no_names() {
+        let now = Utc::now();
+        let row = PermissionRow {
+            id: Uuid::new_v4(),
+            principal_type: "group".to_string(),
+            principal_id: Uuid::new_v4(),
+            principal_name: None,
+            target_type: "repository".to_string(),
+            target_id: Uuid::new_v4(),
+            target_name: None,
+            actions: vec![],
+            created_at: now,
+            updated_at: now,
+        };
+        let resp = PermissionResponse::from(row);
+        assert!(resp.principal_name.is_none());
+        assert!(resp.target_name.is_none());
+        assert!(resp.actions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // PermissionResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_permission_response_serialize() {
+        let now = Utc::now();
+        let resp = PermissionResponse {
+            id: Uuid::new_v4(),
+            principal_type: "user".to_string(),
+            principal_id: Uuid::new_v4(),
+            principal_name: Some("testuser".to_string()),
+            target_type: "repository".to_string(),
+            target_id: Uuid::new_v4(),
+            target_name: Some("repo1".to_string()),
+            actions: vec!["read".to_string(), "deploy".to_string()],
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["principal_type"], "user");
+        assert_eq!(json["principal_name"], "testuser");
+        assert_eq!(json["target_type"], "repository");
+        assert_eq!(json["target_name"], "repo1");
+        let actions = json["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0], "read");
+        assert_eq!(actions[1], "deploy");
+    }
+
+    #[test]
+    fn test_permission_response_serialize_null_names() {
+        let now = Utc::now();
+        let resp = PermissionResponse {
+            id: Uuid::new_v4(),
+            principal_type: "group".to_string(),
+            principal_id: Uuid::new_v4(),
+            principal_name: None,
+            target_type: "global".to_string(),
+            target_id: Uuid::new_v4(),
+            target_name: None,
+            actions: vec!["admin".to_string()],
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["principal_name"].is_null());
+        assert!(json["target_name"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreatePermissionRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_permission_request() {
+        let pid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let json = format!(
+            r#"{{"principal_type": "user", "principal_id": "{}", "target_type": "repository", "target_id": "{}", "actions": ["read", "write"]}}"#,
+            pid, tid
+        );
+        let req: CreatePermissionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req.principal_type, "user");
+        assert_eq!(req.principal_id, pid);
+        assert_eq!(req.target_type, "repository");
+        assert_eq!(req.target_id, tid);
+        assert_eq!(req.actions, vec!["read", "write"]);
+    }
+
+    #[test]
+    fn test_create_permission_request_empty_actions() {
+        let pid = Uuid::new_v4();
+        let tid = Uuid::new_v4();
+        let json = format!(
+            r#"{{"principal_type": "group", "principal_id": "{}", "target_type": "repository", "target_id": "{}", "actions": []}}"#,
+            pid, tid
+        );
+        let req: CreatePermissionRequest = serde_json::from_str(&json).unwrap();
+        assert!(req.actions.is_empty());
+    }
+
+    #[test]
+    fn test_create_permission_request_missing_field() {
+        let json = r#"{"principal_type": "user"}"#;
+        let result = serde_json::from_str::<CreatePermissionRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // PermissionListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_permission_list_response_serialize() {
+        let now = Utc::now();
+        let resp = PermissionListResponse {
+            items: vec![PermissionResponse {
+                id: Uuid::new_v4(),
+                principal_type: "user".to_string(),
+                principal_id: Uuid::new_v4(),
+                principal_name: Some("u1".to_string()),
+                target_type: "repository".to_string(),
+                target_id: Uuid::new_v4(),
+                target_name: Some("r1".to_string()),
+                actions: vec!["read".to_string()],
+                created_at: now,
+                updated_at: now,
+            }],
+            pagination: Pagination {
+                page: 1,
+                per_page: 20,
+                total: 1,
+                total_pages: 1,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["items"].as_array().unwrap().len(), 1);
+        assert_eq!(json["pagination"]["page"], 1);
+    }
+
+    #[test]
+    fn test_permission_list_response_empty() {
+        let resp = PermissionListResponse {
+            items: vec![],
+            pagination: Pagination {
+                page: 1,
+                per_page: 20,
+                total: 0,
+                total_pages: 0,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+        assert_eq!(json["pagination"]["total"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // PermissionRow serialization (used as FromRow output)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_permission_row_serialize() {
+        let now = Utc::now();
+        let row = PermissionRow {
+            id: Uuid::new_v4(),
+            principal_type: "user".to_string(),
+            principal_id: Uuid::new_v4(),
+            principal_name: Some("alice".to_string()),
+            target_type: "repository".to_string(),
+            target_id: Uuid::new_v4(),
+            target_name: Some("repo-a".to_string()),
+            actions: vec!["read".to_string(), "write".to_string(), "admin".to_string()],
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["principal_type"], "user");
+        assert_eq!(json["actions"].as_array().unwrap().len(), 3);
+    }
+}

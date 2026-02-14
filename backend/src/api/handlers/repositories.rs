@@ -1364,3 +1364,892 @@ pub async fn update_virtual_members(
     ))
 )]
 pub struct RepositoriesApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::AppError;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions for testability
+    // -----------------------------------------------------------------------
+
+    /// Compute pagination offset from page number and per_page size.
+    fn compute_pagination(page: Option<u32>, per_page: Option<u32>) -> (u32, u32, i64) {
+        let page = page.unwrap_or(1).max(1);
+        let per_page = per_page.unwrap_or(20).min(100);
+        let offset = ((page - 1) * per_page) as i64;
+        (page, per_page, offset)
+    }
+
+    /// Compute total number of pages given total items and per_page size.
+    fn compute_total_pages(total: i64, per_page: u32) -> u32 {
+        ((total as f64) / (per_page as f64)).ceil() as u32
+    }
+
+    /// Extract the filename from a slash-delimited path.
+    fn extract_name_from_path(path: &str) -> String {
+        path.split('/').next_back().unwrap_or(path).to_string()
+    }
+
+    /// Build a storage path from a base dir and repository key.
+    fn build_storage_path(storage_base: &str, repo_key: &str) -> String {
+        format!("{}/{}", storage_base, repo_key)
+    }
+
+    /// Build a Content-Disposition attachment header value.
+    fn content_disposition_attachment(filename: &str) -> String {
+        format!("attachment; filename=\"{}\"", filename)
+    }
+
+    /// Extract the download filename from an artifact path.
+    fn extract_download_filename(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
+    /// Parse a client IP address from an X-Forwarded-For header value.
+    fn parse_client_ip(xff_value: Option<&str>) -> std::net::IpAddr {
+        xff_value
+            .and_then(|s| s.split(',').next())
+            .unwrap_or("127.0.0.1")
+            .trim()
+            .parse()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_repository_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_repository_key_valid_simple() {
+        assert!(validate_repository_key("my-repo").is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_valid_with_dots() {
+        assert!(validate_repository_key("my.repo.name").is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_valid_with_underscores() {
+        assert!(validate_repository_key("my_repo_name").is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_valid_alphanumeric() {
+        assert!(validate_repository_key("myRepo123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_empty() {
+        let result = validate_repository_key("");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("between 1 and 128")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_repository_key_too_long() {
+        let long_key = "a".repeat(129);
+        let result = validate_repository_key(&long_key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repository_key_max_length() {
+        let key = "a".repeat(128);
+        assert!(validate_repository_key(&key).is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_starts_with_dot() {
+        let result = validate_repository_key(".hidden");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("must not start with")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_repository_key_starts_with_hyphen() {
+        let result = validate_repository_key("-bad");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("must not start with")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_repository_key_consecutive_dots() {
+        let result = validate_repository_key("bad..key");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("consecutive dots")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_repository_key_special_chars() {
+        let result = validate_repository_key("bad/key");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("alphanumeric")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_validate_repository_key_spaces() {
+        let result = validate_repository_key("bad key");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repository_key_at_sign() {
+        let result = validate_repository_key("bad@key");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repository_key_single_char() {
+        assert!(validate_repository_key("a").is_ok());
+    }
+
+    #[test]
+    fn test_validate_repository_key_underscore_start() {
+        assert!(validate_repository_key("_repo").is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_format_maven() {
+        assert_eq!(parse_format("maven").unwrap(), RepositoryFormat::Maven);
+    }
+
+    #[test]
+    fn test_parse_format_npm() {
+        assert_eq!(parse_format("npm").unwrap(), RepositoryFormat::Npm);
+    }
+
+    #[test]
+    fn test_parse_format_pypi() {
+        assert_eq!(parse_format("pypi").unwrap(), RepositoryFormat::Pypi);
+    }
+
+    #[test]
+    fn test_parse_format_docker() {
+        assert_eq!(parse_format("docker").unwrap(), RepositoryFormat::Docker);
+    }
+
+    #[test]
+    fn test_parse_format_cargo() {
+        assert_eq!(parse_format("cargo").unwrap(), RepositoryFormat::Cargo);
+    }
+
+    #[test]
+    fn test_parse_format_conan() {
+        assert_eq!(parse_format("conan").unwrap(), RepositoryFormat::Conan);
+    }
+
+    #[test]
+    fn test_parse_format_debian() {
+        assert_eq!(parse_format("debian").unwrap(), RepositoryFormat::Debian);
+    }
+
+    #[test]
+    fn test_parse_format_generic() {
+        assert_eq!(parse_format("generic").unwrap(), RepositoryFormat::Generic);
+    }
+
+    #[test]
+    fn test_parse_format_helm() {
+        assert_eq!(parse_format("helm").unwrap(), RepositoryFormat::Helm);
+    }
+
+    #[test]
+    fn test_parse_format_nuget() {
+        assert_eq!(parse_format("nuget").unwrap(), RepositoryFormat::Nuget);
+    }
+
+    #[test]
+    fn test_parse_format_go() {
+        assert_eq!(parse_format("go").unwrap(), RepositoryFormat::Go);
+    }
+
+    #[test]
+    fn test_parse_format_rubygems() {
+        assert_eq!(
+            parse_format("rubygems").unwrap(),
+            RepositoryFormat::Rubygems
+        );
+    }
+
+    #[test]
+    fn test_parse_format_rpm() {
+        assert_eq!(parse_format("rpm").unwrap(), RepositoryFormat::Rpm);
+    }
+
+    #[test]
+    fn test_parse_format_protobuf() {
+        assert_eq!(
+            parse_format("protobuf").unwrap(),
+            RepositoryFormat::Protobuf
+        );
+    }
+
+    #[test]
+    fn test_parse_format_case_insensitive() {
+        assert_eq!(parse_format("Maven").unwrap(), RepositoryFormat::Maven);
+        assert_eq!(parse_format("NPM").unwrap(), RepositoryFormat::Npm);
+        assert_eq!(parse_format("DOCKER").unwrap(), RepositoryFormat::Docker);
+    }
+
+    #[test]
+    fn test_parse_format_invalid() {
+        let result = parse_format("invalid_format");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("Invalid format")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_format_all_formats() {
+        // Ensure all 45+ formats parse correctly
+        let formats = vec![
+            "maven",
+            "gradle",
+            "npm",
+            "pypi",
+            "nuget",
+            "go",
+            "rubygems",
+            "docker",
+            "helm",
+            "rpm",
+            "debian",
+            "conan",
+            "cargo",
+            "generic",
+            "podman",
+            "buildx",
+            "oras",
+            "wasm_oci",
+            "helm_oci",
+            "poetry",
+            "conda",
+            "yarn",
+            "bower",
+            "pnpm",
+            "chocolatey",
+            "powershell",
+            "terraform",
+            "opentofu",
+            "alpine",
+            "conda_native",
+            "composer",
+            "hex",
+            "cocoapods",
+            "swift",
+            "pub",
+            "sbt",
+            "chef",
+            "puppet",
+            "ansible",
+            "gitlfs",
+            "vscode",
+            "jetbrains",
+            "huggingface",
+            "mlmodel",
+            "cran",
+            "vagrant",
+            "opkg",
+            "p2",
+            "bazel",
+            "protobuf",
+        ];
+        for f in formats {
+            assert!(parse_format(f).is_ok(), "parse_format failed for: {}", f);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_repo_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_repo_type_local() {
+        assert_eq!(parse_repo_type("local").unwrap(), RepositoryType::Local);
+    }
+
+    #[test]
+    fn test_parse_repo_type_remote() {
+        assert_eq!(parse_repo_type("remote").unwrap(), RepositoryType::Remote);
+    }
+
+    #[test]
+    fn test_parse_repo_type_virtual() {
+        assert_eq!(parse_repo_type("virtual").unwrap(), RepositoryType::Virtual);
+    }
+
+    #[test]
+    fn test_parse_repo_type_staging() {
+        assert_eq!(parse_repo_type("staging").unwrap(), RepositoryType::Staging);
+    }
+
+    #[test]
+    fn test_parse_repo_type_case_insensitive() {
+        assert_eq!(parse_repo_type("Local").unwrap(), RepositoryType::Local);
+        assert_eq!(parse_repo_type("REMOTE").unwrap(), RepositoryType::Remote);
+        assert_eq!(parse_repo_type("Virtual").unwrap(), RepositoryType::Virtual);
+    }
+
+    #[test]
+    fn test_parse_repo_type_invalid() {
+        let result = parse_repo_type("nonexistent");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Validation(msg) => assert!(msg.contains("Invalid repo type")),
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // require_auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_auth_some() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "test".to_string(),
+            email: "test@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            scopes: None,
+        };
+        assert!(require_auth(Some(auth)).is_ok());
+    }
+
+    #[test]
+    fn test_require_auth_none() {
+        let result = require_auth(None);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Authentication(msg) => assert!(msg.contains("Authentication required")),
+            other => panic!("Expected Authentication error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DTO serialization / deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_repository_request_deserialization() {
+        let json = r#"{
+            "key": "my-repo",
+            "name": "My Repo",
+            "description": "A test repo",
+            "format": "maven",
+            "repo_type": "local",
+            "is_public": true,
+            "upstream_url": null,
+            "quota_bytes": 1073741824
+        }"#;
+        let req: CreateRepositoryRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.key, "my-repo");
+        assert_eq!(req.name, "My Repo");
+        assert_eq!(req.description, Some("A test repo".to_string()));
+        assert_eq!(req.format, "maven");
+        assert_eq!(req.repo_type, "local");
+        assert_eq!(req.is_public, Some(true));
+        assert!(req.upstream_url.is_none());
+        assert_eq!(req.quota_bytes, Some(1073741824));
+    }
+
+    #[test]
+    fn test_create_repository_request_minimal() {
+        let json = r#"{
+            "key": "k",
+            "name": "n",
+            "format": "npm",
+            "repo_type": "local"
+        }"#;
+        let req: CreateRepositoryRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.key, "k");
+        assert!(req.description.is_none());
+        assert!(req.is_public.is_none());
+        assert!(req.upstream_url.is_none());
+        assert!(req.quota_bytes.is_none());
+    }
+
+    #[test]
+    fn test_update_repository_request_all_none() {
+        let json = r#"{}"#;
+        let req: UpdateRepositoryRequest = serde_json::from_str(json).unwrap();
+        assert!(req.key.is_none());
+        assert!(req.name.is_none());
+        assert!(req.description.is_none());
+        assert!(req.is_public.is_none());
+        assert!(req.quota_bytes.is_none());
+    }
+
+    #[test]
+    fn test_repository_response_serialization() {
+        let resp = RepositoryResponse {
+            id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            key: "my-repo".to_string(),
+            name: "My Repo".to_string(),
+            description: Some("desc".to_string()),
+            format: "maven".to_string(),
+            repo_type: "local".to_string(),
+            is_public: true,
+            storage_used_bytes: 1024,
+            quota_bytes: Some(1048576),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"key\":\"my-repo\""));
+        assert!(json.contains("\"storage_used_bytes\":1024"));
+        assert!(json.contains("\"quota_bytes\":1048576"));
+    }
+
+    #[test]
+    fn test_list_repositories_query_deserialization() {
+        let json = r#"{
+            "page": 2,
+            "per_page": 50,
+            "format": "npm",
+            "type": "local",
+            "q": "test"
+        }"#;
+        let query: ListRepositoriesQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+        assert_eq!(query.format, Some("npm".to_string()));
+        assert_eq!(query.repo_type, Some("local".to_string()));
+        assert_eq!(query.q, Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_list_artifacts_query_defaults() {
+        let json = r#"{}"#;
+        let query: ListArtifactsQuery = serde_json::from_str(json).unwrap();
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+        assert!(query.q.is_none());
+        assert!(query.path_prefix.is_none());
+    }
+
+    #[test]
+    fn test_artifact_response_serialization() {
+        let resp = ArtifactResponse {
+            id: Uuid::new_v4(),
+            repository_key: "my-repo".to_string(),
+            path: "org/example/1.0/example-1.0.jar".to_string(),
+            name: "example".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 1024,
+            checksum_sha256: "abc123".to_string(),
+            content_type: "application/java-archive".to_string(),
+            download_count: 42,
+            created_at: chrono::Utc::now(),
+            metadata: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"download_count\":42"));
+        assert!(json.contains("\"size_bytes\":1024"));
+    }
+
+    #[test]
+    fn test_add_virtual_member_request_deserialization() {
+        let json = r#"{"member_key": "upstream-repo", "priority": 10}"#;
+        let req: AddVirtualMemberRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.member_key, "upstream-repo");
+        assert_eq!(req.priority, Some(10));
+    }
+
+    #[test]
+    fn test_add_virtual_member_request_no_priority() {
+        let json = r#"{"member_key": "upstream-repo"}"#;
+        let req: AddVirtualMemberRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.member_key, "upstream-repo");
+        assert!(req.priority.is_none());
+    }
+
+    #[test]
+    fn test_update_virtual_members_request_deserialization() {
+        let json = r#"{
+            "members": [
+                {"member_key": "repo-a", "priority": 1},
+                {"member_key": "repo-b", "priority": 2}
+            ]
+        }"#;
+        let req: UpdateVirtualMembersRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.members.len(), 2);
+        assert_eq!(req.members[0].member_key, "repo-a");
+        assert_eq!(req.members[0].priority, 1);
+        assert_eq!(req.members[1].member_key, "repo-b");
+        assert_eq!(req.members[1].priority, 2);
+    }
+
+    #[test]
+    fn test_virtual_member_response_serialization() {
+        let resp = VirtualMemberResponse {
+            id: Uuid::new_v4(),
+            member_repo_id: Uuid::new_v4(),
+            member_repo_key: "upstream".to_string(),
+            member_repo_name: "Upstream Repo".to_string(),
+            member_repo_type: "remote".to_string(),
+            priority: 1,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"member_repo_key\":\"upstream\""));
+        assert!(json.contains("\"priority\":1"));
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_pagination
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_pagination_defaults() {
+        let (page, per_page, offset) = compute_pagination(None, None);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_compute_pagination_custom_values() {
+        let (page, per_page, offset) = compute_pagination(Some(3), Some(50));
+        assert_eq!(page, 3);
+        assert_eq!(per_page, 50);
+        assert_eq!(offset, 100);
+    }
+
+    #[test]
+    fn test_compute_pagination_page_zero_becomes_one() {
+        let (page, _, offset) = compute_pagination(Some(0), Some(10));
+        assert_eq!(page, 1);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_compute_pagination_per_page_capped_at_100() {
+        let (_, per_page, _) = compute_pagination(Some(1), Some(200));
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_compute_pagination_large_page() {
+        let (page, per_page, offset) = compute_pagination(Some(100), Some(25));
+        assert_eq!(page, 100);
+        assert_eq!(per_page, 25);
+        assert_eq!(offset, 2475);
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_total_pages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_total_pages_exact() {
+        assert_eq!(compute_total_pages(100, 20), 5);
+    }
+
+    #[test]
+    fn test_compute_total_pages_remainder() {
+        assert_eq!(compute_total_pages(101, 20), 6);
+    }
+
+    #[test]
+    fn test_compute_total_pages_zero_total() {
+        assert_eq!(compute_total_pages(0, 20), 0);
+    }
+
+    #[test]
+    fn test_compute_total_pages_single_item() {
+        assert_eq!(compute_total_pages(1, 20), 1);
+    }
+
+    #[test]
+    fn test_compute_total_pages_one_per_page() {
+        assert_eq!(compute_total_pages(5, 1), 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_name_from_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_name_from_path_nested() {
+        assert_eq!(
+            extract_name_from_path("org/example/1.0/example-1.0.jar"),
+            "example-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_path_simple() {
+        assert_eq!(extract_name_from_path("myfile.txt"), "myfile.txt");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_trailing_slash() {
+        // rsplit next_back gives empty string after trailing slash
+        assert_eq!(extract_name_from_path("some/path/"), "");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_deep() {
+        assert_eq!(extract_name_from_path("a/b/c/d/e/file.bin"), "file.bin");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_storage_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_storage_path_basic() {
+        assert_eq!(
+            build_storage_path("/var/data", "my-repo"),
+            "/var/data/my-repo"
+        );
+    }
+
+    #[test]
+    fn test_build_storage_path_relative() {
+        assert_eq!(
+            build_storage_path("./storage", "repo-1"),
+            "./storage/repo-1"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // content_disposition_attachment
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_disposition_attachment_simple() {
+        assert_eq!(
+            content_disposition_attachment("file.jar"),
+            "attachment; filename=\"file.jar\""
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_attachment_spaces() {
+        assert_eq!(
+            content_disposition_attachment("my file.zip"),
+            "attachment; filename=\"my file.zip\""
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_download_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_download_filename_path() {
+        assert_eq!(
+            extract_download_filename("org/example/1.0/example.jar"),
+            "example.jar"
+        );
+    }
+
+    #[test]
+    fn test_extract_download_filename_no_slash() {
+        assert_eq!(
+            extract_download_filename("single-file.txt"),
+            "single-file.txt"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_client_ip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_client_ip_single() {
+        let ip = parse_client_ip(Some("10.0.0.1"));
+        assert_eq!(ip.to_string(), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_client_ip_chain() {
+        let ip = parse_client_ip(Some("10.0.0.1, 192.168.1.1, 172.16.0.1"));
+        assert_eq!(ip.to_string(), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_client_ip_none() {
+        let ip = parse_client_ip(None);
+        assert_eq!(ip.to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_client_ip_invalid() {
+        let ip = parse_client_ip(Some("not-an-ip"));
+        assert_eq!(ip.to_string(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_parse_client_ip_ipv6() {
+        let ip = parse_client_ip(Some("::1"));
+        assert_eq!(ip.to_string(), "::1");
+    }
+
+    #[test]
+    fn test_parse_client_ip_empty() {
+        let ip = parse_client_ip(Some(""));
+        assert_eq!(ip.to_string(), "127.0.0.1");
+    }
+
+    // -----------------------------------------------------------------------
+    // repo_to_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_to_response_basic() {
+        use crate::models::repository::{ReplicationPriority, Repository};
+
+        let now = chrono::Utc::now();
+        let repo = Repository {
+            id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            key: "maven-central".to_string(),
+            name: "Maven Central".to_string(),
+            description: Some("Central Maven repo".to_string()),
+            format: RepositoryFormat::Maven,
+            repo_type: RepositoryType::Local,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/maven".to_string(),
+            upstream_url: None,
+            is_public: true,
+            quota_bytes: Some(1073741824),
+            replication_priority: ReplicationPriority::Immediate,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response = repo_to_response(repo, 5000);
+        assert_eq!(response.key, "maven-central");
+        assert_eq!(response.name, "Maven Central");
+        assert_eq!(response.format, "maven");
+        assert_eq!(response.repo_type, "local");
+        assert!(response.is_public);
+        assert_eq!(response.storage_used_bytes, 5000);
+        assert_eq!(response.quota_bytes, Some(1073741824));
+    }
+
+    #[test]
+    fn test_repo_to_response_zero_storage() {
+        use crate::models::repository::{ReplicationPriority, Repository};
+
+        let now = chrono::Utc::now();
+        let repo = Repository {
+            id: Uuid::new_v4(),
+            key: "npm-hosted".to_string(),
+            name: "NPM Local".to_string(),
+            description: None,
+            format: RepositoryFormat::Npm,
+            repo_type: RepositoryType::Remote,
+            storage_backend: "s3".to_string(),
+            storage_path: "/data/npm".to_string(),
+            upstream_url: Some("https://registry.npmjs.org".to_string()),
+            is_public: false,
+            quota_bytes: None,
+            replication_priority: ReplicationPriority::OnDemand,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response = repo_to_response(repo, 0);
+        assert_eq!(response.format, "npm");
+        assert_eq!(response.repo_type, "remote");
+        assert!(!response.is_public);
+        assert_eq!(response.storage_used_bytes, 0);
+        assert!(response.quota_bytes.is_none());
+        assert!(response.description.is_none());
+    }
+
+    #[test]
+    fn test_repo_to_response_virtual() {
+        use crate::models::repository::{ReplicationPriority, Repository};
+
+        let now = chrono::Utc::now();
+        let repo = Repository {
+            id: Uuid::new_v4(),
+            key: "docker-all".to_string(),
+            name: "Docker Virtual".to_string(),
+            description: Some("Aggregated Docker".to_string()),
+            format: RepositoryFormat::Docker,
+            repo_type: RepositoryType::Virtual,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/docker".to_string(),
+            upstream_url: None,
+            is_public: true,
+            quota_bytes: None,
+            replication_priority: ReplicationPriority::LocalOnly,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response = repo_to_response(repo, 1024 * 1024);
+        assert_eq!(response.format, "docker");
+        assert_eq!(response.repo_type, "virtual");
+        assert_eq!(response.storage_used_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_repo_to_response_staging_with_promotion() {
+        use crate::models::repository::{ReplicationPriority, Repository};
+
+        let now = chrono::Utc::now();
+        let target_id = Uuid::new_v4();
+        let policy_id = Uuid::new_v4();
+        let repo = Repository {
+            id: Uuid::new_v4(),
+            key: "cargo-staging".to_string(),
+            name: "Cargo Staging".to_string(),
+            description: None,
+            format: RepositoryFormat::Cargo,
+            repo_type: RepositoryType::Staging,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/cargo-staging".to_string(),
+            upstream_url: None,
+            is_public: false,
+            quota_bytes: Some(5_000_000_000),
+            replication_priority: ReplicationPriority::Scheduled,
+            promotion_target_id: Some(target_id),
+            promotion_policy_id: Some(policy_id),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let response = repo_to_response(repo, 42);
+        assert_eq!(response.format, "cargo");
+        assert_eq!(response.repo_type, "staging");
+        assert_eq!(response.storage_used_bytes, 42);
+        assert_eq!(response.quota_bytes, Some(5_000_000_000));
+    }
+}

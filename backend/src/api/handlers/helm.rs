@@ -643,3 +643,171 @@ async fn delete_chart(
         ))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("helm-user:helm-pass");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("helm-user".to_string(), "helm-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pw");
+        let value = format!("basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pw".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_with_colon_in_password() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:p@ss:word");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "p@ss:word".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_not_matched() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic: filename, artifact_path, storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_helm_chart_filename() {
+        let name = "nginx";
+        let version = "1.24.0";
+        let filename = format!("{}-{}.tgz", name, version);
+        assert_eq!(filename, "nginx-1.24.0.tgz");
+    }
+
+    #[test]
+    fn test_helm_artifact_path() {
+        let name = "prometheus";
+        let version = "25.0.0";
+        let filename = format!("{}-{}.tgz", name, version);
+        let path = format!("{}/{}/{}", name, version, filename);
+        assert_eq!(path, "prometheus/25.0.0/prometheus-25.0.0.tgz");
+    }
+
+    #[test]
+    fn test_helm_storage_key() {
+        let name = "grafana";
+        let version = "7.0.0";
+        let filename = format!("{}-{}.tgz", name, version);
+        let key = format!("helm/{}/{}/{}", name, version, filename);
+        assert_eq!(key, "helm/grafana/7.0.0/grafana-7.0.0.tgz");
+    }
+
+    #[test]
+    fn test_helm_chart_url() {
+        let repo_key = "helm-local";
+        let filename = "ingress-nginx-4.8.0.tgz";
+        let url = format!("/helm/{}/charts/{}", repo_key, filename);
+        assert_eq!(url, "/helm/helm-local/charts/ingress-nginx-4.8.0.tgz");
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"chart content");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/helm".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache/helm".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://charts.helm.sh/stable".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://charts.helm.sh/stable")
+        );
+    }
+}

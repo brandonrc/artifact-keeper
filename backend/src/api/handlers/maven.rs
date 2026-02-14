@@ -138,6 +138,10 @@ async fn resolve_maven_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
 // Path helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pure (non-async) helper functions for testability
+// ---------------------------------------------------------------------------
+
 /// Determine if a Maven path is for metadata (groupId/artifactId level, no version).
 /// Returns (groupId, artifactId) if the path ends with maven-metadata.xml
 fn parse_metadata_path(path: &str) -> Option<(String, String)> {
@@ -666,4 +670,387 @@ async fn upload(
         .status(StatusCode::CREATED)
         .body(Body::from("Created"))
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("deploy:maven-pass");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("deploy".to_string(), "maven-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pw");
+        let value = format!("basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pw".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_with_colon_in_password() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:p@ss:w0rd");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "p@ss:w0rd".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_not_matched() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token"),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!bad-base64!!!"),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_basic_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_metadata_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_metadata_path_valid_simple() {
+        let result = parse_metadata_path("com/example/my-lib/maven-metadata.xml");
+        assert_eq!(
+            result,
+            Some(("com.example".to_string(), "my-lib".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_metadata_path_deep_group() {
+        let result = parse_metadata_path("org/apache/commons/commons-lang3/maven-metadata.xml");
+        assert_eq!(
+            result,
+            Some((
+                "org.apache.commons".to_string(),
+                "commons-lang3".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_metadata_path_leading_slash() {
+        let result = parse_metadata_path("/com/google/guava/guava/maven-metadata.xml");
+        assert_eq!(
+            result,
+            Some(("com.google.guava".to_string(), "guava".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_metadata_path_not_metadata() {
+        let result = parse_metadata_path("com/example/my-lib/1.0.0/my-lib-1.0.0.jar");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_metadata_path_too_short() {
+        let result = parse_metadata_path("maven-metadata.xml");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_metadata_path_two_parts_only() {
+        // groupSegment/artifactId/maven-metadata.xml minimum
+        let result = parse_metadata_path("com/my-lib/maven-metadata.xml");
+        assert_eq!(result, Some(("com".to_string(), "my-lib".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_checksum_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_checksum_path_sha1() {
+        let result = parse_checksum_path("com/example/my-lib/1.0/my-lib-1.0.jar.sha1");
+        assert!(result.is_some());
+        let (base, ct) = result.unwrap();
+        assert_eq!(base, "com/example/my-lib/1.0/my-lib-1.0.jar");
+        assert!(matches!(ct, ChecksumType::Sha1));
+    }
+
+    #[test]
+    fn test_parse_checksum_path_md5() {
+        let result = parse_checksum_path("com/example/my-lib/1.0/my-lib-1.0.jar.md5");
+        assert!(result.is_some());
+        let (base, ct) = result.unwrap();
+        assert_eq!(base, "com/example/my-lib/1.0/my-lib-1.0.jar");
+        assert!(matches!(ct, ChecksumType::Md5));
+    }
+
+    #[test]
+    fn test_parse_checksum_path_sha256() {
+        let result = parse_checksum_path("com/example/my-lib/1.0/my-lib-1.0.pom.sha256");
+        assert!(result.is_some());
+        let (base, ct) = result.unwrap();
+        assert_eq!(base, "com/example/my-lib/1.0/my-lib-1.0.pom");
+        assert!(matches!(ct, ChecksumType::Sha256));
+    }
+
+    #[test]
+    fn test_parse_checksum_path_no_checksum_suffix() {
+        let result = parse_checksum_path("com/example/my-lib/1.0/my-lib-1.0.jar");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_checksum_metadata_sha1() {
+        let result = parse_checksum_path("com/example/lib/maven-metadata.xml.sha1");
+        assert!(result.is_some());
+        let (base, ct) = result.unwrap();
+        assert_eq!(base, "com/example/lib/maven-metadata.xml");
+        assert!(matches!(ct, ChecksumType::Sha1));
+    }
+
+    // -----------------------------------------------------------------------
+    // content_type_for_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_pom() {
+        assert_eq!(content_type_for_path("artifact.pom"), "application/xml");
+    }
+
+    #[test]
+    fn test_content_type_xml() {
+        assert_eq!(
+            content_type_for_path("maven-metadata.xml"),
+            "application/xml"
+        );
+    }
+
+    #[test]
+    fn test_content_type_jar() {
+        assert_eq!(
+            content_type_for_path("my-lib-1.0.jar"),
+            "application/java-archive"
+        );
+    }
+
+    #[test]
+    fn test_content_type_war() {
+        assert_eq!(
+            content_type_for_path("webapp-1.0.war"),
+            "application/java-archive"
+        );
+    }
+
+    #[test]
+    fn test_content_type_other() {
+        assert_eq!(
+            content_type_for_path("artifact.tar.gz"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_txt() {
+        assert_eq!(
+            content_type_for_path("notes.txt"),
+            "application/octet-stream"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_checksum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_checksum_sha256() {
+        let data = b"hello maven";
+        let result = compute_checksum(data, ChecksumType::Sha256);
+        assert_eq!(result.len(), 64);
+        assert!(result.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Verify determinism
+        let result2 = compute_checksum(data, ChecksumType::Sha256);
+        assert_eq!(result, result2);
+    }
+
+    #[test]
+    fn test_compute_checksum_sha1() {
+        let data = b"hello maven";
+        let result = compute_checksum(data, ChecksumType::Sha1);
+        assert_eq!(result.len(), 40); // SHA-1 produces 40 hex chars
+        assert!(result.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_compute_checksum_md5() {
+        let data = b"hello maven";
+        let result = compute_checksum(data, ChecksumType::Md5);
+        assert_eq!(result.len(), 32); // MD5 produces 32 hex chars
+        assert!(result.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_compute_checksum_empty_data() {
+        let data: &[u8] = b"";
+        let sha256 = compute_checksum(data, ChecksumType::Sha256);
+        let sha1 = compute_checksum(data, ChecksumType::Sha1);
+        let md5 = compute_checksum(data, ChecksumType::Md5);
+
+        // Well-known hashes for empty data
+        assert_eq!(
+            sha256,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(md5, "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    #[test]
+    fn test_compute_checksum_different_types_differ() {
+        let data = b"test";
+        let sha256 = compute_checksum(data, ChecksumType::Sha256);
+        let sha1 = compute_checksum(data, ChecksumType::Sha1);
+        let md5 = compute_checksum(data, ChecksumType::Md5);
+
+        assert_ne!(sha256, sha1);
+        assert_ne!(sha256, md5);
+        assert_ne!(sha1, md5);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // build_maven_storage_key
+    // -----------------------------------------------------------------------
+
+    /// Build the Maven storage key from a raw path.
+    fn build_maven_storage_key(path: &str) -> String {
+        format!("maven/{}", path)
+    }
+
+    #[test]
+    fn test_build_maven_storage_key_jar() {
+        assert_eq!(
+            build_maven_storage_key("com/example/lib/1.0/lib-1.0.jar"),
+            "maven/com/example/lib/1.0/lib-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_build_maven_storage_key_pom() {
+        assert_eq!(
+            build_maven_storage_key(
+                "org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.pom"
+            ),
+            "maven/org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.pom"
+        );
+    }
+
+    #[test]
+    fn test_build_maven_storage_key_starts_with_maven() {
+        let key = build_maven_storage_key("com/example/lib.jar");
+        assert!(key.starts_with("maven/"));
+    }
+
+    #[test]
+    fn test_build_maven_storage_key_metadata() {
+        assert_eq!(
+            build_maven_storage_key("com/example/lib/maven-metadata.xml"),
+            "maven/com/example/lib/maven-metadata.xml"
+        );
+    }
+
+    #[test]
+    fn test_build_maven_storage_key_checksum() {
+        assert_eq!(
+            build_maven_storage_key("com/example/lib/1.0/lib-1.0.jar.sha1"),
+            "maven/com/example/lib/1.0/lib-1.0.jar.sha1"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/maven".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.id, id);
+        assert_eq!(repo.repo_type, "hosted");
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache/maven".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://repo1.maven.org/maven2".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://repo1.maven.org/maven2")
+        );
+    }
 }

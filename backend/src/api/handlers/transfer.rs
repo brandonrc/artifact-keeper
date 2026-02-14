@@ -344,3 +344,311 @@ async fn fail_session(
     ))
 )]
 pub struct TransferApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    // -----------------------------------------------------------------------
+    // InitTransferBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_init_transfer_body_minimal() {
+        let artifact_id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "artifact_id": artifact_id
+        });
+        let body: InitTransferBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.artifact_id, artifact_id);
+        assert!(body.chunk_size.is_none());
+    }
+
+    #[test]
+    fn test_init_transfer_body_with_chunk_size() {
+        let artifact_id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "artifact_id": artifact_id,
+            "chunk_size": 65536
+        });
+        let body: InitTransferBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.artifact_id, artifact_id);
+        assert_eq!(body.chunk_size, Some(65536));
+    }
+
+    #[test]
+    fn test_init_transfer_body_missing_artifact_id_fails() {
+        let json = serde_json::json!({
+            "chunk_size": 1024
+        });
+        let result: std::result::Result<InitTransferBody, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_init_transfer_body_invalid_artifact_id_fails() {
+        let json = serde_json::json!({
+            "artifact_id": "not-a-uuid"
+        });
+        let result: std::result::Result<InitTransferBody, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // TransferSessionResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_transfer_session_response_serialize() {
+        let id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let peer_id = Uuid::new_v4();
+        let resp = TransferSessionResponse {
+            id,
+            artifact_id,
+            requesting_peer_id: peer_id,
+            total_size: 1_000_000,
+            chunk_size: 65536,
+            total_chunks: 16,
+            completed_chunks: 5,
+            checksum_algo: "sha256".to_string(),
+            artifact_checksum: "abcdef1234567890".to_string(),
+            status: "pending".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["id"], id.to_string());
+        assert_eq!(json["artifact_id"], artifact_id.to_string());
+        assert_eq!(json["requesting_peer_id"], peer_id.to_string());
+        assert_eq!(json["total_size"], 1_000_000);
+        assert_eq!(json["chunk_size"], 65536);
+        assert_eq!(json["total_chunks"], 16);
+        assert_eq!(json["completed_chunks"], 5);
+        assert_eq!(json["checksum_algo"], "sha256");
+        assert_eq!(json["artifact_checksum"], "abcdef1234567890");
+        assert_eq!(json["status"], "pending");
+    }
+
+    #[test]
+    fn test_transfer_session_response_all_fields_present() {
+        let resp = TransferSessionResponse {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            requesting_peer_id: Uuid::new_v4(),
+            total_size: 0,
+            chunk_size: 0,
+            total_chunks: 0,
+            completed_chunks: 0,
+            checksum_algo: String::new(),
+            artifact_checksum: String::new(),
+            status: String::new(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("id"));
+        assert!(obj.contains_key("artifact_id"));
+        assert!(obj.contains_key("requesting_peer_id"));
+        assert!(obj.contains_key("total_size"));
+        assert!(obj.contains_key("chunk_size"));
+        assert!(obj.contains_key("total_chunks"));
+        assert!(obj.contains_key("completed_chunks"));
+        assert!(obj.contains_key("checksum_algo"));
+        assert!(obj.contains_key("artifact_checksum"));
+        assert!(obj.contains_key("status"));
+        assert_eq!(obj.len(), 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // ChunkEntry serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_entry_serialize_with_source_peer() {
+        let peer_id = Uuid::new_v4();
+        let entry = ChunkEntry {
+            chunk_index: 3,
+            byte_offset: 196608,
+            byte_length: 65536,
+            checksum: "deadbeef".to_string(),
+            status: "completed".to_string(),
+            source_peer_id: Some(peer_id),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["chunk_index"], 3);
+        assert_eq!(json["byte_offset"], 196608);
+        assert_eq!(json["byte_length"], 65536);
+        assert_eq!(json["checksum"], "deadbeef");
+        assert_eq!(json["status"], "completed");
+        assert_eq!(json["source_peer_id"], peer_id.to_string());
+    }
+
+    #[test]
+    fn test_chunk_entry_serialize_without_source_peer() {
+        let entry = ChunkEntry {
+            chunk_index: 0,
+            byte_offset: 0,
+            byte_length: 1024,
+            checksum: "aabbccdd".to_string(),
+            status: "pending".to_string(),
+            source_peer_id: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["chunk_index"], 0);
+        assert!(json["source_peer_id"].is_null());
+    }
+
+    #[test]
+    fn test_chunk_entry_zero_offset() {
+        let entry = ChunkEntry {
+            chunk_index: 0,
+            byte_offset: 0,
+            byte_length: 65536,
+            checksum: "first-chunk".to_string(),
+            status: "pending".to_string(),
+            source_peer_id: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["byte_offset"], 0);
+        assert_eq!(json["chunk_index"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ChunkManifestResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_manifest_response_serialize_empty() {
+        let session_id = Uuid::new_v4();
+        let resp = ChunkManifestResponse {
+            session_id,
+            chunks: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["session_id"], session_id.to_string());
+        assert!(json["chunks"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_chunk_manifest_response_serialize_multiple_chunks() {
+        let session_id = Uuid::new_v4();
+        let chunks = vec![
+            ChunkEntry {
+                chunk_index: 0,
+                byte_offset: 0,
+                byte_length: 1000,
+                checksum: "c0".to_string(),
+                status: "completed".to_string(),
+                source_peer_id: None,
+            },
+            ChunkEntry {
+                chunk_index: 1,
+                byte_offset: 1000,
+                byte_length: 1000,
+                checksum: "c1".to_string(),
+                status: "pending".to_string(),
+                source_peer_id: None,
+            },
+        ];
+        let resp = ChunkManifestResponse { session_id, chunks };
+        let json = serde_json::to_value(&resp).unwrap();
+        let arr = json["chunks"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["chunk_index"], 0);
+        assert_eq!(arr[1]["chunk_index"], 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // CompleteChunkBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_complete_chunk_body_minimal() {
+        let json = serde_json::json!({
+            "checksum": "sha256:abcdef"
+        });
+        let body: CompleteChunkBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.checksum, "sha256:abcdef");
+        assert!(body.source_peer_id.is_none());
+    }
+
+    #[test]
+    fn test_complete_chunk_body_with_peer() {
+        let peer_id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "checksum": "sha256:123456",
+            "source_peer_id": peer_id
+        });
+        let body: CompleteChunkBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.checksum, "sha256:123456");
+        assert_eq!(body.source_peer_id, Some(peer_id));
+    }
+
+    #[test]
+    fn test_complete_chunk_body_missing_checksum_fails() {
+        let json = serde_json::json!({
+            "source_peer_id": Uuid::new_v4()
+        });
+        let result: std::result::Result<CompleteChunkBody, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // FailBody deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fail_body_deserialize() {
+        let json = serde_json::json!({
+            "error": "connection timeout"
+        });
+        let body: FailBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.error, "connection timeout");
+    }
+
+    #[test]
+    fn test_fail_body_missing_error_fails() {
+        let json = serde_json::json!({});
+        let result: std::result::Result<FailBody, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fail_body_empty_error() {
+        let json = serde_json::json!({"error": ""});
+        let body: FailBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.error, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Status formatting (simulating handler pattern)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_status_format_debug_lowercase() {
+        // The handler uses: format!("{:?}", session.status).to_lowercase()
+        // Simulate with a simple enum-like string
+        #[derive(Debug)]
+        enum TransferStatus {
+            Pending,
+            InProgress,
+            Completed,
+            Failed,
+        }
+        assert_eq!(
+            format!("{:?}", TransferStatus::Pending).to_lowercase(),
+            "pending"
+        );
+        assert_eq!(
+            format!("{:?}", TransferStatus::InProgress).to_lowercase(),
+            "inprogress"
+        );
+        assert_eq!(
+            format!("{:?}", TransferStatus::Completed).to_lowercase(),
+            "completed"
+        );
+        assert_eq!(
+            format!("{:?}", TransferStatus::Failed).to_lowercase(),
+            "failed"
+        );
+    }
+}

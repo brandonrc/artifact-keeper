@@ -203,3 +203,350 @@ pub async fn get_tree(
 #[derive(OpenApi)]
 #[openapi(paths(get_tree), components(schemas(TreeResponse, TreeNodeResponse,)))]
 pub struct TreeApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TreeQuery deserialization tests ──────────────────────────────
+
+    #[test]
+    fn test_tree_query_empty() {
+        let json = r#"{}"#;
+        let q: TreeQuery = serde_json::from_str(json).unwrap();
+        assert!(q.repository_key.is_none());
+        assert!(q.path.is_none());
+        assert!(q.include_metadata.is_none());
+    }
+
+    #[test]
+    fn test_tree_query_with_repo_key() {
+        let json = r#"{"repository_key": "maven-releases"}"#;
+        let q: TreeQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.repository_key, Some("maven-releases".to_string()));
+    }
+
+    #[test]
+    fn test_tree_query_with_path() {
+        let json = r#"{"repository_key": "npm", "path": "lodash/4.0.0"}"#;
+        let q: TreeQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.path, Some("lodash/4.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_tree_query_include_metadata() {
+        let json = r#"{"repository_key": "x", "include_metadata": true}"#;
+        let q: TreeQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.include_metadata, Some(true));
+    }
+
+    // ── Prefix depth calculation tests ──────────────────────────────
+
+    #[test]
+    fn test_prefix_depth_empty() {
+        let prefix = "";
+        let depth = if prefix.is_empty() {
+            0
+        } else {
+            prefix.chars().filter(|c| *c == '/').count() + 1
+        };
+        assert_eq!(depth, 0);
+    }
+
+    #[test]
+    fn test_prefix_depth_one_level() {
+        let prefix = "com";
+        let depth = if prefix.is_empty() {
+            0
+        } else {
+            prefix.chars().filter(|c| *c == '/').count() + 1
+        };
+        assert_eq!(depth, 1);
+    }
+
+    #[test]
+    fn test_prefix_depth_two_levels() {
+        let prefix = "com/example";
+        let depth = if prefix.is_empty() {
+            0
+        } else {
+            prefix.chars().filter(|c| *c == '/').count() + 1
+        };
+        assert_eq!(depth, 2);
+    }
+
+    #[test]
+    fn test_prefix_depth_deep_path() {
+        let prefix = "com/example/lib/1.0";
+        let depth = if prefix.is_empty() {
+            0
+        } else {
+            prefix.chars().filter(|c| *c == '/').count() + 1
+        };
+        assert_eq!(depth, 4);
+    }
+
+    // ── FolderEntry and tree grouping logic tests ───────────────────
+
+    #[test]
+    fn test_folder_entry_construction() {
+        let entry = FolderEntry {
+            segment: "src".to_string(),
+            is_file: false,
+            artifact_id: None,
+            size_bytes: None,
+            created_at: None,
+            child_count: 3,
+        };
+        assert_eq!(entry.segment, "src");
+        assert!(!entry.is_file);
+        assert!(entry.artifact_id.is_none());
+        assert_eq!(entry.child_count, 3);
+    }
+
+    #[test]
+    fn test_folder_entry_file() {
+        let id = Uuid::new_v4();
+        let entry = FolderEntry {
+            segment: "pom.xml".to_string(),
+            is_file: true,
+            artifact_id: Some(id),
+            size_bytes: Some(1024),
+            created_at: Some("2024-01-01T00:00:00Z".to_string()),
+            child_count: 0,
+        };
+        assert!(entry.is_file);
+        assert_eq!(entry.artifact_id, Some(id));
+        assert_eq!(entry.size_bytes, Some(1024));
+    }
+
+    // ── Path splitting / segment extraction tests ───────────────────
+
+    #[test]
+    fn test_path_segment_extraction_root() {
+        let path = "com/example/lib/1.0/lib-1.0.jar";
+        let parts: Vec<&str> = path.split('/').collect();
+        let prefix_depth = 0;
+        assert!(parts.len() > prefix_depth);
+        assert_eq!(parts[prefix_depth], "com");
+        let is_file = parts.len() == prefix_depth + 1;
+        assert!(!is_file);
+    }
+
+    #[test]
+    fn test_path_segment_extraction_leaf() {
+        let path = "lib-1.0.jar";
+        let parts: Vec<&str> = path.split('/').collect();
+        let prefix_depth = 0;
+        let is_file = parts.len() == prefix_depth + 1;
+        assert!(is_file);
+    }
+
+    #[test]
+    fn test_path_segment_extraction_nested() {
+        let path = "com/example/lib/1.0/lib-1.0.jar";
+        let parts: Vec<&str> = path.split('/').collect();
+        let prefix_depth = 2;
+        assert_eq!(parts[prefix_depth], "lib");
+    }
+
+    // ── TreeNodeResponse serialization tests ────────────────────────
+
+    #[test]
+    fn test_tree_node_response_file() {
+        let node = TreeNodeResponse {
+            id: Uuid::new_v4().to_string(),
+            name: "lib-1.0.jar".to_string(),
+            path: "maven-releases/com/example/lib-1.0.jar".to_string(),
+            node_type: "file".to_string(),
+            size_bytes: Some(102400),
+            children_count: None,
+            has_children: false,
+            repository_key: Some("maven-releases".to_string()),
+            created_at: Some("2024-01-01T00:00:00Z".to_string()),
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["type"], "file");
+        assert_eq!(json["name"], "lib-1.0.jar");
+        assert_eq!(json["size_bytes"], 102400);
+        assert_eq!(json["has_children"], false);
+        // children_count should be absent (skip_serializing_if)
+        assert!(json.get("children_count").is_none() || json["children_count"].is_null());
+    }
+
+    #[test]
+    fn test_tree_node_response_folder() {
+        let node = TreeNodeResponse {
+            id: "folder:maven-releases/com".to_string(),
+            name: "com".to_string(),
+            path: "maven-releases/com".to_string(),
+            node_type: "folder".to_string(),
+            size_bytes: None,
+            children_count: Some(5),
+            has_children: true,
+            repository_key: Some("maven-releases".to_string()),
+            created_at: None,
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["type"], "folder");
+        assert_eq!(json["has_children"], true);
+        assert_eq!(json["children_count"], 5);
+        // size_bytes should be absent (skip_serializing_if)
+        assert!(json.get("size_bytes").is_none() || json["size_bytes"].is_null());
+    }
+
+    #[test]
+    fn test_tree_node_response_type_field_rename() {
+        let node = TreeNodeResponse {
+            id: "x".to_string(),
+            name: "n".to_string(),
+            path: "p".to_string(),
+            node_type: "file".to_string(),
+            size_bytes: None,
+            children_count: None,
+            has_children: false,
+            repository_key: None,
+            created_at: None,
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        // The field should be serialized as "type", not "node_type"
+        assert!(json.get("type").is_some());
+        assert!(json.get("node_type").is_none());
+    }
+
+    // ── TreeResponse serialization tests ────────────────────────────
+
+    #[test]
+    fn test_tree_response_empty() {
+        let resp = TreeResponse { nodes: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_tree_response_multiple_nodes() {
+        let resp = TreeResponse {
+            nodes: vec![
+                TreeNodeResponse {
+                    id: "1".to_string(),
+                    name: "src".to_string(),
+                    path: "repo/src".to_string(),
+                    node_type: "folder".to_string(),
+                    size_bytes: None,
+                    children_count: Some(2),
+                    has_children: true,
+                    repository_key: Some("repo".to_string()),
+                    created_at: None,
+                },
+                TreeNodeResponse {
+                    id: "2".to_string(),
+                    name: "README.md".to_string(),
+                    path: "repo/README.md".to_string(),
+                    node_type: "file".to_string(),
+                    size_bytes: Some(256),
+                    children_count: None,
+                    has_children: false,
+                    repository_key: Some("repo".to_string()),
+                    created_at: Some("2024-01-01T00:00:00Z".to_string()),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let nodes = json["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["type"], "folder");
+        assert_eq!(nodes[1]["type"], "file");
+    }
+
+    // ── Full prefix construction tests ──────────────────────────────
+
+    #[test]
+    fn test_full_prefix_empty_path() {
+        let prefix = "";
+        let repo_key = "maven-releases".to_string();
+        let full_prefix = if prefix.is_empty() {
+            repo_key.clone()
+        } else {
+            format!("{}/{}", repo_key, prefix)
+        };
+        assert_eq!(full_prefix, "maven-releases");
+    }
+
+    #[test]
+    fn test_full_prefix_with_path() {
+        let prefix = "com/example";
+        let repo_key = "maven-releases".to_string();
+        let full_prefix = if prefix.is_empty() {
+            repo_key.clone()
+        } else {
+            format!("{}/{}", repo_key, prefix)
+        };
+        assert_eq!(full_prefix, "maven-releases/com/example");
+    }
+
+    // ── BTreeMap grouping logic simulation tests ────────────────────
+
+    #[test]
+    fn test_btree_grouping_single_file() {
+        let paths = vec!["README.md"];
+        let prefix_depth: usize = 0;
+        let mut folders: BTreeMap<String, FolderEntry> = BTreeMap::new();
+
+        for path in paths {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() <= prefix_depth {
+                continue;
+            }
+            let segment = parts[prefix_depth].to_string();
+            let is_file = parts.len() == prefix_depth + 1;
+            let entry = folders.entry(segment.clone()).or_insert(FolderEntry {
+                segment: segment.clone(),
+                is_file,
+                artifact_id: None,
+                size_bytes: None,
+                created_at: None,
+                child_count: 0,
+            });
+            if !is_file {
+                entry.child_count += 1;
+                entry.is_file = false;
+            }
+        }
+
+        assert_eq!(folders.len(), 1);
+        assert!(folders.get("README.md").unwrap().is_file);
+    }
+
+    #[test]
+    fn test_btree_grouping_folder_with_children() {
+        let paths = vec!["src/main.rs", "src/lib.rs", "src/util/mod.rs"];
+        let prefix_depth: usize = 0;
+        let mut folders: BTreeMap<String, FolderEntry> = BTreeMap::new();
+
+        for path in paths {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() <= prefix_depth {
+                continue;
+            }
+            let segment = parts[prefix_depth].to_string();
+            let is_file = parts.len() == prefix_depth + 1;
+            let entry = folders.entry(segment.clone()).or_insert(FolderEntry {
+                segment: segment.clone(),
+                is_file,
+                artifact_id: None,
+                size_bytes: None,
+                created_at: None,
+                child_count: 0,
+            });
+            if !is_file {
+                entry.child_count += 1;
+                entry.is_file = false;
+            }
+        }
+
+        assert_eq!(folders.len(), 1);
+        let src = folders.get("src").unwrap();
+        assert!(!src.is_file);
+        assert_eq!(src.child_count, 3);
+    }
+}

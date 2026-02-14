@@ -726,4 +726,329 @@ zlib*:shared=True
         assert_eq!(conanfile.generators.len(), 2);
         assert!(conanfile.options.contains_key("zlib*:shared"));
     }
+
+    #[test]
+    fn test_parse_path_authenticate() {
+        let info = ConanHandler::parse_path("v2/users/authenticate").unwrap();
+        assert!(matches!(info.operation, ConanOperation::Authenticate));
+    }
+
+    #[test]
+    fn test_parse_path_check_credentials() {
+        let info = ConanHandler::parse_path("v2/users/check_credentials").unwrap();
+        assert!(matches!(info.operation, ConanOperation::CheckCredentials));
+    }
+
+    #[test]
+    fn test_parse_path_with_user_channel() {
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/myuser/stable/revisions/abc123")
+            .unwrap();
+        assert_eq!(info.name, Some("zlib".to_string()));
+        assert_eq!(info.version, Some("1.2.13".to_string()));
+        assert_eq!(info.user, Some("myuser".to_string()));
+        assert_eq!(info.channel, Some("stable".to_string()));
+        assert_eq!(info.revision, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_download_urls() {
+        let info =
+            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/download_urls")
+                .unwrap();
+        assert!(matches!(info.operation, ConanOperation::DownloadUrls));
+    }
+
+    #[test]
+    fn test_parse_path_packages_list() {
+        let info =
+            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/packages").unwrap();
+        assert!(matches!(info.operation, ConanOperation::Packages));
+    }
+
+    #[test]
+    fn test_parse_path_recipe_revisions() {
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions").unwrap();
+        assert!(matches!(info.operation, ConanOperation::RecipeRevisions));
+    }
+
+    #[test]
+    fn test_parse_path_latest() {
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/latest").unwrap();
+        assert!(matches!(info.operation, ConanOperation::RecipeLatest));
+    }
+
+    #[test]
+    fn test_parse_path_package_latest() {
+        let info = ConanHandler::parse_path(
+            "v2/conans/zlib/1.2.13/_/_/revisions/abc/packages/pkg123/latest",
+        )
+        .unwrap();
+        assert!(matches!(info.operation, ConanOperation::PackageLatest));
+        assert_eq!(info.package_id, Some("pkg123".to_string()));
+    }
+
+    #[test]
+    fn test_parse_path_invalid() {
+        let result = ConanHandler::parse_path("invalid/path");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_conans_too_short() {
+        let result = ConanHandler::parse_path("v2/conans/zlib");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_artifact_conanfile() {
+        let info = ConanHandler::parse_path("some/path/conanfile.py").unwrap();
+        assert!(matches!(info.operation, ConanOperation::File(ref f) if f == "conanfile.py"));
+    }
+
+    #[test]
+    fn test_parse_path_artifact_conanmanifest() {
+        let info = ConanHandler::parse_path("path/conanmanifest.txt").unwrap();
+        assert!(matches!(info.operation, ConanOperation::File(ref f) if f == "conanmanifest.txt"));
+    }
+
+    #[test]
+    fn test_parse_path_artifact_conan_export() {
+        let info = ConanHandler::parse_path("path/conan_export.tgz").unwrap();
+        assert!(matches!(info.operation, ConanOperation::File(ref f) if f == "conan_export.tgz"));
+    }
+
+    #[test]
+    fn test_parse_reference_with_user_no_channel() {
+        // name/version@user (no channel)
+        let reference = ConanHandler::parse_reference("zlib/1.2.13@user").unwrap();
+        assert_eq!(reference.name, "zlib");
+        assert_eq!(reference.version, "1.2.13");
+        assert_eq!(reference.user, Some("user".to_string()));
+        assert_eq!(reference.channel, None);
+    }
+
+    #[test]
+    fn test_parse_reference_invalid() {
+        let result = ConanHandler::parse_reference("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reference_to_string() {
+        let reference = ConanReference {
+            name: "zlib".to_string(),
+            version: "1.2.13".to_string(),
+            user: Some("user".to_string()),
+            channel: Some("stable".to_string()),
+            revision: Some("abc123".to_string()),
+        };
+        assert_eq!(
+            reference.to_reference_string(),
+            "zlib/1.2.13@user/stable#abc123"
+        );
+    }
+
+    #[test]
+    fn test_reference_to_string_simple() {
+        let reference = ConanReference {
+            name: "boost".to_string(),
+            version: "1.80.0".to_string(),
+            user: None,
+            channel: None,
+            revision: None,
+        };
+        assert_eq!(reference.to_reference_string(), "boost/1.80.0");
+    }
+
+    #[test]
+    fn test_reference_to_path() {
+        let reference = ConanReference {
+            name: "zlib".to_string(),
+            version: "1.2.13".to_string(),
+            user: Some("user".to_string()),
+            channel: Some("stable".to_string()),
+            revision: None,
+        };
+        assert_eq!(reference.to_path(), "zlib/1.2.13/user/stable");
+    }
+
+    #[test]
+    fn test_reference_to_path_no_user_channel() {
+        let reference = ConanReference {
+            name: "zlib".to_string(),
+            version: "1.2.13".to_string(),
+            user: None,
+            channel: None,
+            revision: None,
+        };
+        assert_eq!(reference.to_path(), "zlib/1.2.13/_/_");
+    }
+
+    #[test]
+    fn test_extract_string_value() {
+        assert_eq!(
+            ConanHandler::extract_string_value(r#"name = "zlib""#),
+            Some("zlib".to_string())
+        );
+        assert_eq!(
+            ConanHandler::extract_string_value("name = 'zlib'"),
+            Some("zlib".to_string())
+        );
+        assert_eq!(ConanHandler::extract_string_value(r#"name = """#), None);
+    }
+
+    #[test]
+    fn test_extract_tuple_values_parens() {
+        let result = ConanHandler::extract_tuple_values(r#"topics = ("compression", "zlib")"#);
+        assert_eq!(
+            result,
+            Some(vec!["compression".to_string(), "zlib".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_extract_tuple_values_brackets() {
+        let result = ConanHandler::extract_tuple_values(r#"settings = ["os", "compiler"]"#);
+        assert_eq!(result, Some(vec!["os".to_string(), "compiler".to_string()]));
+    }
+
+    #[test]
+    fn test_extract_tuple_values_no_container() {
+        let result = ConanHandler::extract_tuple_values(r#"settings = "os""#);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_conanfile_py_with_options() {
+        let content = r#"
+class MyConan(ConanFile):
+    name = "mylib"
+    options = {"shared": [True, False]}
+    requires = ("zlib/1.2.13", "openssl/3.0")
+"#;
+        let metadata = ConanHandler::parse_conanfile_py(content).unwrap();
+        assert_eq!(metadata.name, Some("mylib".to_string()));
+        assert!(metadata.has_options);
+        assert!(metadata.requires.is_some());
+        assert_eq!(metadata.requires.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_conanfile_txt_with_tool_requires() {
+        let content = r#"
+[requires]
+zlib/1.2.13
+
+[tool_requires]
+cmake/3.22.0
+
+[build_requires]
+ninja/1.10.2
+"#;
+        let conanfile = ConanHandler::parse_conanfile_txt(content).unwrap();
+        assert_eq!(conanfile.requires.len(), 1);
+        assert_eq!(conanfile.tool_requires.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_conanfile_txt_empty() {
+        let content = "";
+        let conanfile = ConanHandler::parse_conanfile_txt(content).unwrap();
+        assert!(conanfile.requires.is_empty());
+        assert!(conanfile.generators.is_empty());
+        assert!(conanfile.options.is_empty());
+    }
+
+    #[test]
+    fn test_parse_conanfile_txt_with_comments() {
+        let content = r#"
+# This is a comment
+[requires]
+zlib/1.2.13
+
+# Another comment
+[generators]
+CMakeDeps
+"#;
+        let conanfile = ConanHandler::parse_conanfile_txt(content).unwrap();
+        assert_eq!(conanfile.requires.len(), 1);
+        assert_eq!(conanfile.generators.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_revisions_response() {
+        let revisions = vec![RecipeRevision {
+            revision: "abc123".to_string(),
+            time: "2024-01-01T00:00:00Z".to_string(),
+        }];
+        let response = generate_revisions_response(revisions);
+        let revs = response["revisions"].as_array().unwrap();
+        assert_eq!(revs.len(), 1);
+        assert_eq!(revs[0]["revision"], "abc123");
+    }
+
+    #[test]
+    fn test_generate_packages_response() {
+        let packages = vec![PackageInfo {
+            package_id: "pkg123".to_string(),
+            settings: HashMap::from([("os".to_string(), "Linux".to_string())]),
+            options: HashMap::new(),
+            requires: vec![],
+        }];
+        let response = generate_packages_response(packages);
+        let pkgs = response["packages"].as_array().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0]["package_id"], "pkg123");
+    }
+
+    #[test]
+    fn test_conan_handler_format() {
+        let handler = ConanHandler::new();
+        assert_eq!(handler.format(), RepositoryFormat::Conan);
+    }
+
+    #[test]
+    fn test_conan_handler_default() {
+        let handler = ConanHandler;
+        assert_eq!(handler.format(), RepositoryFormat::Conan);
+    }
+
+    #[test]
+    fn test_conan_handler_format_key() {
+        let handler = ConanHandler::new();
+        assert_eq!(handler.format_key(), "conan");
+    }
+
+    #[test]
+    fn test_parse_path_file_in_conans() {
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/conanfile.py")
+            .unwrap();
+        assert!(matches!(info.operation, ConanOperation::File(ref f) if f == "conanfile.py"));
+        assert_eq!(info.name, Some("zlib".to_string()));
+    }
+
+    #[test]
+    fn test_conan_reference_serialization() {
+        let reference = ConanReference {
+            name: "zlib".to_string(),
+            version: "1.2.13".to_string(),
+            user: None,
+            channel: None,
+            revision: None,
+        };
+        let json = serde_json::to_string(&reference).unwrap();
+        let deserialized: ConanReference = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "zlib");
+        assert_eq!(deserialized.version, "1.2.13");
+    }
+
+    #[test]
+    fn test_parse_path_package_revisions_list() {
+        let info = ConanHandler::parse_path(
+            "v2/conans/zlib/1.2.13/_/_/revisions/abc/packages/pkg123/revisions",
+        )
+        .unwrap();
+        assert!(matches!(info.operation, ConanOperation::PackageRevisions));
+        assert_eq!(info.package_id, Some("pkg123".to_string()));
+    }
 }

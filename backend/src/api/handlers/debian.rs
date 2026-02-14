@@ -1079,3 +1079,245 @@ async fn upload_raw(
         ))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // parse_deb_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_deb_filename_valid() {
+        let info = parse_deb_filename("nginx_1.24.0_amd64.deb").unwrap();
+        assert_eq!(info.name, "nginx");
+        assert_eq!(info.version, "1.24.0");
+        assert_eq!(info.arch, "amd64");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_complex_version() {
+        let info = parse_deb_filename("libssl_3.0.2-0ubuntu1.10_arm64.deb").unwrap();
+        assert_eq!(info.name, "libssl");
+        assert_eq!(info.version, "3.0.2-0ubuntu1.10");
+        assert_eq!(info.arch, "arm64");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_arch_all() {
+        let info = parse_deb_filename("python3-pip_23.0_all.deb").unwrap();
+        assert_eq!(info.name, "python3-pip");
+        assert_eq!(info.version, "23.0");
+        assert_eq!(info.arch, "all");
+    }
+
+    #[test]
+    fn test_parse_deb_filename_no_deb_extension() {
+        assert!(parse_deb_filename("nginx_1.0_amd64.rpm").is_none());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_too_few_parts() {
+        assert!(parse_deb_filename("nginx_amd64.deb").is_none());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_no_underscores() {
+        assert!(parse_deb_filename("nginx.deb").is_none());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_empty_string() {
+        assert!(parse_deb_filename("").is_none());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_just_extension() {
+        assert!(parse_deb_filename(".deb").is_none());
+    }
+
+    #[test]
+    fn test_parse_deb_filename_version_with_underscores_in_arch() {
+        let info = parse_deb_filename("pkg_1.0_i386.deb").unwrap();
+        assert_eq!(info.name, "pkg");
+        assert_eq!(info.version, "1.0");
+        assert_eq!(info.arch, "i386");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_packages_text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_packages_text_single_entry() {
+        let entries = vec![PackageEntry {
+            name: "nginx".to_string(),
+            version: "1.24.0".to_string(),
+            arch: "amd64".to_string(),
+            filename: "pool/main/n/nginx/nginx_1.24.0_amd64.deb".to_string(),
+            size: 1024,
+            sha256: "abc123".to_string(),
+            description: "HTTP server".to_string(),
+        }];
+        let text = build_packages_text(&entries);
+        assert!(text.contains("Package: nginx\n"));
+        assert!(text.contains("Version: 1.24.0\n"));
+        assert!(text.contains("Architecture: amd64\n"));
+        assert!(text.contains("Filename: pool/main/n/nginx/nginx_1.24.0_amd64.deb\n"));
+        assert!(text.contains("Size: 1024\n"));
+        assert!(text.contains("SHA256: abc123\n"));
+        assert!(text.contains("Description: HTTP server\n"));
+    }
+
+    #[test]
+    fn test_build_packages_text_multiple_entries() {
+        let entries = vec![
+            PackageEntry {
+                name: "pkg1".to_string(),
+                version: "1.0".to_string(),
+                arch: "amd64".to_string(),
+                filename: "pool/main/p/pkg1/pkg1_1.0_amd64.deb".to_string(),
+                size: 100,
+                sha256: "hash1".to_string(),
+                description: "Package 1".to_string(),
+            },
+            PackageEntry {
+                name: "pkg2".to_string(),
+                version: "2.0".to_string(),
+                arch: "arm64".to_string(),
+                filename: "pool/main/p/pkg2/pkg2_2.0_arm64.deb".to_string(),
+                size: 200,
+                sha256: "hash2".to_string(),
+                description: "Package 2".to_string(),
+            },
+        ];
+        let text = build_packages_text(&entries);
+        assert!(text.contains("Package: pkg1\n"));
+        assert!(text.contains("Package: pkg2\n"));
+        // Entries should be separated by a blank line
+        assert!(text.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_build_packages_text_empty() {
+        let entries: Vec<PackageEntry> = vec![];
+        let text = build_packages_text(&entries);
+        assert!(text.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // pgp_armor_signature
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pgp_armor_signature_basic() {
+        let sig_data = b"test signature data";
+        let armored = pgp_armor_signature(sig_data);
+        assert!(armored.starts_with("-----BEGIN PGP SIGNATURE-----\n"));
+        assert!(armored.ends_with("-----END PGP SIGNATURE-----\n"));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(sig_data);
+        assert!(armored.contains(&b64));
+    }
+
+    #[test]
+    fn test_pgp_armor_signature_empty() {
+        let armored = pgp_armor_signature(b"");
+        assert!(armored.contains("-----BEGIN PGP SIGNATURE-----"));
+        assert!(armored.contains("-----END PGP SIGNATURE-----"));
+    }
+
+    #[test]
+    fn test_pgp_armor_signature_long_data_wraps() {
+        let sig_data = vec![0u8; 100];
+        let armored = pgp_armor_signature(&sig_data);
+        assert!(armored.starts_with("-----BEGIN PGP SIGNATURE-----\n"));
+        assert!(armored.ends_with("-----END PGP SIGNATURE-----\n"));
+    }
+
+    // -----------------------------------------------------------------------
+    // pgp_clearsign
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pgp_clearsign_basic() {
+        let content = "Origin: artifact-keeper\nSuite: stable\n";
+        let sig_data = b"signature";
+        let result = pgp_clearsign(content, sig_data);
+        assert!(result.starts_with("-----BEGIN PGP SIGNED MESSAGE-----\n"));
+        assert!(result.contains("Hash: SHA256\n"));
+        assert!(result.contains(content));
+        assert!(result.contains("-----BEGIN PGP SIGNATURE-----\n"));
+        assert!(result.contains("-----END PGP SIGNATURE-----\n"));
+    }
+
+    #[test]
+    fn test_pgp_clearsign_preserves_content() {
+        let content = "Line 1\nLine 2\nLine 3\n";
+        let sig = b"sig";
+        let result = pgp_clearsign(content, sig);
+        assert!(result.contains("Line 1\nLine 2\nLine 3\n"));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_basic_credentials(&headers).is_some());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon_in_decoded() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic bm9jb2xvbg=="),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+}

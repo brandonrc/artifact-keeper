@@ -668,4 +668,409 @@ mod tests {
         assert_eq!(config.max_concurrent, 4);
         assert_eq!(config.throttle_delay_ms, 100);
     }
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.initial_delay_ms, 1000);
+        assert_eq!(config.max_delay_ms, 30000);
+        assert_eq!(config.backoff_multiplier, 2.0);
+    }
+
+    #[test]
+    fn test_config_default_base_url_is_empty() {
+        let config = ArtifactoryClientConfig::default();
+        assert!(config.base_url.is_empty());
+    }
+
+    #[test]
+    fn test_config_default_auth_is_api_token() {
+        let config = ArtifactoryClientConfig::default();
+        assert!(matches!(config.auth, ArtifactoryAuth::ApiToken(_)));
+    }
+
+    #[test]
+    fn test_client_creation_with_api_token() {
+        let config = ArtifactoryClientConfig {
+            base_url: "https://artifactory.example.com".to_string(),
+            auth: ArtifactoryAuth::ApiToken("test-token".to_string()),
+            ..Default::default()
+        };
+        let client = ArtifactoryClient::new(config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_client_creation_with_basic_auth() {
+        let config = ArtifactoryClientConfig {
+            base_url: "https://artifactory.example.com".to_string(),
+            auth: ArtifactoryAuth::BasicAuth {
+                username: "user".to_string(),
+                password: "pass".to_string(),
+            },
+            ..Default::default()
+        };
+        let client = ArtifactoryClient::new(config);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn test_repository_list_item_deserialization() {
+        let json = r#"{
+            "key": "libs-release",
+            "type": "LOCAL",
+            "packageType": "maven",
+            "url": "https://example.com/libs-release",
+            "description": "Release repository"
+        }"#;
+        let item: RepositoryListItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.key, "libs-release");
+        assert_eq!(item.repo_type, "LOCAL");
+        assert_eq!(item.package_type, "maven");
+        assert_eq!(
+            item.url,
+            Some("https://example.com/libs-release".to_string())
+        );
+        assert_eq!(item.description, Some("Release repository".to_string()));
+    }
+
+    #[test]
+    fn test_repository_list_item_minimal() {
+        let json = r#"{
+            "key": "repo",
+            "type": "REMOTE",
+            "packageType": "npm"
+        }"#;
+        let item: RepositoryListItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.key, "repo");
+        assert!(item.url.is_none());
+        assert!(item.description.is_none());
+    }
+
+    #[test]
+    fn test_repository_config_deserialization() {
+        let json = r#"{
+            "key": "libs-release",
+            "rclass": "local",
+            "packageType": "maven",
+            "description": "Release repo",
+            "notes": "Some notes",
+            "includesPattern": "**/*",
+            "excludesPattern": "",
+            "repoLayoutRef": "maven-2-default",
+            "handleReleases": true,
+            "handleSnapshots": false
+        }"#;
+        let config: RepositoryConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.key, "libs-release");
+        assert_eq!(config.rclass, "local");
+        assert_eq!(config.package_type, "maven");
+        assert_eq!(config.handle_releases, Some(true));
+        assert_eq!(config.handle_snapshots, Some(false));
+        assert_eq!(config.repo_layout_ref, Some("maven-2-default".to_string()));
+    }
+
+    #[test]
+    fn test_repository_config_minimal() {
+        let json = r#"{
+            "key": "simple-repo",
+            "rclass": "local",
+            "packageType": "generic"
+        }"#;
+        let config: RepositoryConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.key, "simple-repo");
+        assert!(config.description.is_none());
+        assert!(config.notes.is_none());
+        assert!(config.handle_releases.is_none());
+    }
+
+    #[test]
+    fn test_aql_result_deserialization() {
+        let json = r#"{
+            "repo": "libs-release",
+            "path": "com/example",
+            "name": "artifact-1.0.jar",
+            "size": 1024,
+            "created": "2024-01-01T00:00:00.000Z",
+            "modified": "2024-01-02T00:00:00.000Z",
+            "sha256": "abc123def456",
+            "actual_sha1": "sha1hash"
+        }"#;
+        let result: AqlResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.repo, "libs-release");
+        assert_eq!(result.path, "com/example");
+        assert_eq!(result.name, "artifact-1.0.jar");
+        assert_eq!(result.size, Some(1024));
+        assert_eq!(result.sha256, Some("abc123def456".to_string()));
+    }
+
+    #[test]
+    fn test_aql_result_minimal() {
+        let json = r#"{
+            "repo": "repo",
+            "path": ".",
+            "name": "file.txt"
+        }"#;
+        let result: AqlResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.repo, "repo");
+        assert!(result.size.is_none());
+        assert!(result.sha256.is_none());
+        assert!(result.actual_sha1.is_none());
+        assert!(result.created.is_none());
+        assert!(result.modified.is_none());
+    }
+
+    #[test]
+    fn test_aql_response_deserialization() {
+        let json = r#"{
+            "results": [
+                {
+                    "repo": "libs-release",
+                    "path": "com/example",
+                    "name": "artifact.jar"
+                }
+            ],
+            "range": {
+                "start_pos": 0,
+                "end_pos": 1,
+                "total": 1
+            }
+        }"#;
+        let response: AqlResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.range.start_pos, 0);
+        assert_eq!(response.range.end_pos, 1);
+        assert_eq!(response.range.total, 1);
+    }
+
+    #[test]
+    fn test_storage_info_deserialization() {
+        let json = r#"{
+            "repo": "libs-release",
+            "path": "/com/example/artifact-1.0.jar",
+            "created": "2024-01-01T00:00:00.000Z",
+            "createdBy": "admin",
+            "lastModified": "2024-01-02T00:00:00.000Z",
+            "modifiedBy": "admin",
+            "lastUpdated": "2024-01-02T00:00:00.000Z",
+            "downloadUri": "https://example.com/libs-release/com/example/artifact-1.0.jar",
+            "mimeType": "application/java-archive",
+            "size": "1024",
+            "checksums": {
+                "sha1": "sha1value",
+                "md5": "md5value",
+                "sha256": "sha256value"
+            },
+            "originalChecksums": {
+                "sha1": "sha1value"
+            },
+            "uri": "https://example.com/api/storage/libs-release/com/example/artifact-1.0.jar"
+        }"#;
+        let info: StorageInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.repo, "libs-release");
+        assert_eq!(info.created_by, Some("admin".to_string()));
+        assert_eq!(info.size, Some("1024".to_string()));
+        assert!(info.checksums.is_some());
+        let checksums = info.checksums.unwrap();
+        assert_eq!(checksums.sha256, Some("sha256value".to_string()));
+    }
+
+    #[test]
+    fn test_user_details_deserialization() {
+        let json = r#"{
+            "name": "admin",
+            "email": "admin@example.com",
+            "admin": true,
+            "profileUpdatable": true,
+            "internalPasswordDisabled": false,
+            "groups": ["readers", "deployers"],
+            "realm": "internal"
+        }"#;
+        let user: UserDetails = serde_json::from_str(json).unwrap();
+        assert_eq!(user.name, "admin");
+        assert_eq!(user.email, Some("admin@example.com".to_string()));
+        assert_eq!(user.admin, Some(true));
+        assert_eq!(
+            user.groups,
+            Some(vec!["readers".to_string(), "deployers".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_user_list_item_deserialization() {
+        let json = r#"{
+            "name": "john",
+            "email": "john@example.com",
+            "admin": false,
+            "profileUpdatable": true,
+            "realm": "ldap"
+        }"#;
+        let item: UserListItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.name, "john");
+        assert_eq!(item.realm, Some("ldap".to_string()));
+    }
+
+    #[test]
+    fn test_group_list_item_deserialization() {
+        let json = r#"{
+            "name": "developers",
+            "description": "Dev team",
+            "autoJoin": false,
+            "realm": "internal",
+            "realmAttributes": ""
+        }"#;
+        let group: GroupListItem = serde_json::from_str(json).unwrap();
+        assert_eq!(group.name, "developers");
+        assert_eq!(group.description, Some("Dev team".to_string()));
+        assert_eq!(group.auto_join, Some(false));
+    }
+
+    #[test]
+    fn test_permission_target_deserialization() {
+        let json = r#"{
+            "name": "read-all",
+            "repo": {
+                "repositories": ["libs-release", "libs-snapshot"],
+                "actions": {
+                    "users": {"admin": ["read", "write", "deploy"]},
+                    "groups": {"readers": ["read"]}
+                },
+                "includePatterns": ["**"],
+                "excludePatterns": []
+            }
+        }"#;
+        let perm: PermissionTarget = serde_json::from_str(json).unwrap();
+        assert_eq!(perm.name, "read-all");
+        assert!(perm.repo.is_some());
+        let repo = perm.repo.unwrap();
+        assert_eq!(
+            repo.repositories,
+            Some(vec![
+                "libs-release".to_string(),
+                "libs-snapshot".to_string()
+            ])
+        );
+        let actions = repo.actions.unwrap();
+        assert!(actions.users.is_some());
+        assert!(actions.groups.is_some());
+    }
+
+    #[test]
+    fn test_properties_response_deserialization() {
+        let json = r#"{
+            "properties": {
+                "build.name": ["my-build"],
+                "build.number": ["42"]
+            },
+            "uri": "https://example.com/api/storage/repo/artifact?properties"
+        }"#;
+        let props: PropertiesResponse = serde_json::from_str(json).unwrap();
+        assert!(props.properties.is_some());
+        let properties = props.properties.unwrap();
+        assert_eq!(
+            properties.get("build.name").unwrap(),
+            &vec!["my-build".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_properties_response_empty() {
+        let json = r#"{}"#;
+        let props: PropertiesResponse = serde_json::from_str(json).unwrap();
+        assert!(props.properties.is_none());
+        assert!(props.uri.is_none());
+    }
+
+    #[test]
+    fn test_system_version_response_deserialization() {
+        let json = r#"{
+            "version": "7.55.10",
+            "revision": "75510900",
+            "addons": ["build", "license"],
+            "license": "Enterprise"
+        }"#;
+        let version: SystemVersionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(version.version, "7.55.10");
+        assert_eq!(version.revision, Some("75510900".to_string()));
+        assert_eq!(
+            version.addons,
+            Some(vec!["build".to_string(), "license".to_string()])
+        );
+        assert_eq!(version.license, Some("Enterprise".to_string()));
+    }
+
+    #[test]
+    fn test_system_version_response_minimal() {
+        let json = r#"{"version": "7.0.0"}"#;
+        let version: SystemVersionResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(version.version, "7.0.0");
+        assert!(version.revision.is_none());
+        assert!(version.addons.is_none());
+        assert!(version.license.is_none());
+    }
+
+    #[test]
+    fn test_checksums_deserialization() {
+        let json = r#"{
+            "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+            "md5": "d41d8cd98f00b204e9800998ecf8427e",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }"#;
+        let checksums: Checksums = serde_json::from_str(json).unwrap();
+        assert!(checksums.sha1.is_some());
+        assert!(checksums.md5.is_some());
+        assert!(checksums.sha256.is_some());
+    }
+
+    #[test]
+    fn test_checksums_partial() {
+        let json = r#"{"sha256": "abc123"}"#;
+        let checksums: Checksums = serde_json::from_str(json).unwrap();
+        assert_eq!(checksums.sha256, Some("abc123".to_string()));
+        assert!(checksums.sha1.is_none());
+        assert!(checksums.md5.is_none());
+    }
+
+    #[test]
+    fn test_artifactory_error_display() {
+        let err = ArtifactoryError::NotFound("repo/file.jar".to_string());
+        assert_eq!(format!("{}", err), "Resource not found: repo/file.jar");
+
+        let err = ArtifactoryError::AuthError("Invalid token".to_string());
+        assert_eq!(format!("{}", err), "Authentication failed: Invalid token");
+
+        let err = ArtifactoryError::RateLimited {
+            retry_after: Some(30),
+        };
+        assert!(format!("{}", err).contains("30"));
+
+        let err = ArtifactoryError::ApiError {
+            status: 500,
+            message: "Internal Server Error".to_string(),
+        };
+        assert!(format!("{}", err).contains("500"));
+        assert!(format!("{}", err).contains("Internal Server Error"));
+    }
+
+    #[test]
+    fn test_aql_query_serialization() {
+        let query = AqlQuery {
+            query: r#"items.find({"repo":"libs-release"})"#.to_string(),
+        };
+        let json = serde_json::to_string(&query).unwrap();
+        assert!(json.contains("items.find"));
+    }
+
+    #[test]
+    fn test_source_type_returns_artifactory() {
+        let config = ArtifactoryClientConfig {
+            base_url: "https://example.com".to_string(),
+            auth: ArtifactoryAuth::ApiToken("token".to_string()),
+            ..Default::default()
+        };
+        let client = ArtifactoryClient::new(config).unwrap();
+        use crate::services::source_registry::SourceRegistry;
+        assert_eq!(client.source_type(), "artifactory");
+    }
 }

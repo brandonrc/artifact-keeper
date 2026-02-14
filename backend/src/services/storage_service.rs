@@ -334,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_get() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("test content");
         storage.put("test/file.txt", content.clone()).await.unwrap();
@@ -345,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cas_deduplication() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         let content = Bytes::from("duplicate content");
         let hash1 = storage.put_cas(content.clone()).await.unwrap();
@@ -361,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exists() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         assert!(!storage.exists("nonexistent").await.unwrap());
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         storage
             .put("to_delete.txt", Bytes::from("data"))
@@ -388,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list() {
-        let (storage, _temp): (StorageService, TempDir) = create_test_storage();
+        let (storage, _temp) = create_test_storage();
 
         storage
             .put("dir/file1.txt", Bytes::from("1"))
@@ -408,5 +408,204 @@ mod tests {
 
         let dir_keys = storage.list(Some("dir")).await.unwrap();
         assert_eq!(dir_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_calculate_hash_empty() {
+        let hash = StorageService::calculate_hash(b"");
+        // SHA-256 of empty string
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_calculate_hash_deterministic() {
+        let content = b"hello world";
+        let hash1 = StorageService::calculate_hash(content);
+        let hash2 = StorageService::calculate_hash(content);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_calculate_hash_different_content() {
+        let hash1 = StorageService::calculate_hash(b"foo");
+        let hash2 = StorageService::calculate_hash(b"bar");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_calculate_hash_known_value() {
+        // SHA-256 of "test" is well-known
+        let hash = StorageService::calculate_hash(b"test");
+        assert_eq!(
+            hash,
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        );
+    }
+
+    #[test]
+    fn test_cas_key_format() {
+        let hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let key = StorageService::cas_key(hash);
+        assert_eq!(
+            key,
+            "cas/ab/cd/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        );
+    }
+
+    #[test]
+    fn test_cas_key_splits_first_four_chars() {
+        let hash = "1234abcdef567890";
+        let key = StorageService::cas_key(hash);
+        assert!(key.starts_with("cas/12/34/"));
+        assert!(key.ends_with(hash));
+    }
+
+    #[test]
+    fn test_cas_key_different_hashes_different_keys() {
+        let key1 = StorageService::cas_key(
+            "aabbccddee112233445566778899aabbccddee112233445566778899aabbccdd",
+        );
+        let key2 = StorageService::cas_key(
+            "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff",
+        );
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_filesystem_backend_key_to_path() {
+        let backend = FilesystemBackend::new(PathBuf::from("/data/storage"));
+        let path = backend.key_to_path("repos/maven/artifact.jar");
+        assert_eq!(
+            path,
+            PathBuf::from("/data/storage/repos/maven/artifact.jar")
+        );
+    }
+
+    #[test]
+    fn test_filesystem_backend_key_to_path_nested() {
+        let backend = FilesystemBackend::new(PathBuf::from("/tmp/test"));
+        let path = backend.key_to_path("a/b/c/d/e.txt");
+        assert_eq!(path, PathBuf::from("/tmp/test/a/b/c/d/e.txt"));
+    }
+
+    #[test]
+    fn test_filesystem_backend_key_to_path_simple() {
+        let backend = FilesystemBackend::new(PathBuf::from("/storage"));
+        let path = backend.key_to_path("file.bin");
+        assert_eq!(path, PathBuf::from("/storage/file.bin"));
+    }
+
+    #[tokio::test]
+    async fn test_copy() {
+        let (storage, _temp) = create_test_storage();
+
+        let content = Bytes::from("copy me");
+        storage.put("source.txt", content.clone()).await.unwrap();
+        storage.copy("source.txt", "dest.txt").await.unwrap();
+
+        let retrieved = storage.get("dest.txt").await.unwrap();
+        assert_eq!(retrieved, content);
+    }
+
+    #[tokio::test]
+    async fn test_size() {
+        let (storage, _temp) = create_test_storage();
+
+        let content = Bytes::from("12345");
+        storage.put("sized.txt", content).await.unwrap();
+
+        let size = storage.size("sized.txt").await.unwrap();
+        assert_eq!(size, 5);
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_returns_error() {
+        let (storage, _temp) = create_test_storage();
+
+        let result = storage.get("does_not_exist.txt").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_succeeds() {
+        let (storage, _temp) = create_test_storage();
+
+        // Deleting a non-existent key should succeed silently
+        let result = storage.delete("nonexistent.txt").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cas_roundtrip() {
+        let (storage, _temp) = create_test_storage();
+
+        let content = Bytes::from("cas roundtrip test");
+        let hash = storage.put_cas(content.clone()).await.unwrap();
+
+        // Verify hash matches expected
+        let expected_hash = StorageService::calculate_hash(&content);
+        assert_eq!(hash, expected_hash);
+
+        // Verify existence
+        assert!(storage.exists_cas(&hash).await.unwrap());
+
+        // Verify retrieval
+        let retrieved = storage.get_cas(&hash).await.unwrap();
+        assert_eq!(retrieved, content);
+    }
+
+    #[tokio::test]
+    async fn test_cas_nonexistent_hash() {
+        let (storage, _temp) = create_test_storage();
+
+        let fake_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(!storage.exists_cas(fake_hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_key() {
+        let (storage, _temp) = create_test_storage();
+
+        storage
+            .put("overwrite.txt", Bytes::from("first"))
+            .await
+            .unwrap();
+        storage
+            .put("overwrite.txt", Bytes::from("second"))
+            .await
+            .unwrap();
+
+        let content = storage.get("overwrite.txt").await.unwrap();
+        assert_eq!(content, Bytes::from("second"));
+    }
+
+    #[tokio::test]
+    async fn test_list_empty_dir() {
+        let (storage, _temp) = create_test_storage();
+
+        let keys = storage.list(None).await.unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_nonexistent_prefix() {
+        let (storage, _temp) = create_test_storage();
+
+        let keys = storage.list(Some("nonexistent_prefix")).await.unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_storage_service_backend_accessor() {
+        let temp_dir = TempDir::new().unwrap();
+        let backend: Arc<dyn StorageBackend> =
+            Arc::new(FilesystemBackend::new(temp_dir.path().to_path_buf()));
+        let storage = StorageService::new(backend);
+
+        // Ensure backend() returns a clone of the backend arc
+        let _backend_ref = storage.backend();
     }
 }

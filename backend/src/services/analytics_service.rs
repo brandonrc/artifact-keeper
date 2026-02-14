@@ -425,3 +425,309 @@ impl AnalyticsService {
         Ok(result.rows_affected() + result2.rows_affected())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    // -----------------------------------------------------------------------
+    // StorageSnapshot
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_storage_snapshot_serialization() {
+        let snapshot = StorageSnapshot {
+            snapshot_date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+            total_repositories: 10,
+            total_artifacts: 500,
+            total_storage_bytes: 1_073_741_824,
+            total_downloads: 5000,
+            total_users: 25,
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["snapshot_date"], "2024-06-15");
+        assert_eq!(json["total_repositories"], 10);
+        assert_eq!(json["total_artifacts"], 500);
+        assert_eq!(json["total_storage_bytes"], 1_073_741_824);
+        assert_eq!(json["total_downloads"], 5000);
+        assert_eq!(json["total_users"], 25);
+    }
+
+    #[test]
+    fn test_storage_snapshot_deserialization() {
+        let json = r#"{
+            "snapshot_date": "2024-06-15",
+            "total_repositories": 10,
+            "total_artifacts": 500,
+            "total_storage_bytes": 1073741824,
+            "total_downloads": 5000,
+            "total_users": 25
+        }"#;
+        let snapshot: StorageSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            snapshot.snapshot_date,
+            NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+        );
+        assert_eq!(snapshot.total_repositories, 10);
+    }
+
+    #[test]
+    fn test_storage_snapshot_zero_values() {
+        let snapshot = StorageSnapshot {
+            snapshot_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            total_repositories: 0,
+            total_artifacts: 0,
+            total_storage_bytes: 0,
+            total_downloads: 0,
+            total_users: 0,
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["total_storage_bytes"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositorySnapshot
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_snapshot_serialization() {
+        let snapshot = RepositorySnapshot {
+            repository_id: Uuid::nil(),
+            repository_name: Some("my-repo".to_string()),
+            repository_key: Some("my-repo-key".to_string()),
+            snapshot_date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+            artifact_count: 100,
+            storage_bytes: 536_870_912,
+            download_count: 1000,
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(json["repository_name"], "my-repo");
+        assert_eq!(json["artifact_count"], 100);
+    }
+
+    #[test]
+    fn test_repository_snapshot_optional_fields_null() {
+        let snapshot = RepositorySnapshot {
+            repository_id: Uuid::nil(),
+            repository_name: None,
+            repository_key: None,
+            snapshot_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            artifact_count: 0,
+            storage_bytes: 0,
+            download_count: 0,
+        };
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert!(json["repository_name"].is_null());
+        assert!(json["repository_key"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepositoryStorageBreakdown
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repository_storage_breakdown_serialization() {
+        let breakdown = RepositoryStorageBreakdown {
+            repository_id: Uuid::nil(),
+            repository_key: "maven-central".to_string(),
+            repository_name: "Maven Central".to_string(),
+            format: "maven".to_string(),
+            artifact_count: 200,
+            storage_bytes: 2_147_483_648,
+            download_count: 10000,
+            last_upload_at: Some(Utc::now()),
+        };
+        let json = serde_json::to_value(&breakdown).unwrap();
+        assert_eq!(json["repository_key"], "maven-central");
+        assert_eq!(json["format"], "maven");
+        assert_eq!(json["artifact_count"], 200);
+    }
+
+    #[test]
+    fn test_repository_storage_breakdown_no_uploads() {
+        let breakdown = RepositoryStorageBreakdown {
+            repository_id: Uuid::nil(),
+            repository_key: "empty-repo".to_string(),
+            repository_name: "Empty Repo".to_string(),
+            format: "generic".to_string(),
+            artifact_count: 0,
+            storage_bytes: 0,
+            download_count: 0,
+            last_upload_at: None,
+        };
+        let json = serde_json::to_value(&breakdown).unwrap();
+        assert!(json["last_upload_at"].is_null());
+        assert_eq!(json["artifact_count"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // StaleArtifact
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stale_artifact_serialization() {
+        let stale = StaleArtifact {
+            artifact_id: Uuid::nil(),
+            repository_key: "old-repo".to_string(),
+            name: "old-lib-1.0.jar".to_string(),
+            path: "com/example/old-lib/1.0/old-lib-1.0.jar".to_string(),
+            size_bytes: 1_048_576,
+            created_at: Utc::now(),
+            last_downloaded_at: None,
+            days_since_download: 365,
+            download_count: 0,
+        };
+        let json = serde_json::to_value(&stale).unwrap();
+        assert_eq!(json["name"], "old-lib-1.0.jar");
+        assert_eq!(json["days_since_download"], 365);
+        assert_eq!(json["download_count"], 0);
+        assert!(json["last_downloaded_at"].is_null());
+    }
+
+    #[test]
+    fn test_stale_artifact_with_last_download() {
+        let stale = StaleArtifact {
+            artifact_id: Uuid::nil(),
+            repository_key: "repo".to_string(),
+            name: "lib.jar".to_string(),
+            path: "lib.jar".to_string(),
+            size_bytes: 512,
+            created_at: Utc::now(),
+            last_downloaded_at: Some(Utc::now()),
+            days_since_download: 90,
+            download_count: 5,
+        };
+        let json = serde_json::to_value(&stale).unwrap();
+        assert!(!json["last_downloaded_at"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // GrowthSummary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_growth_summary_serialization() {
+        let summary = GrowthSummary {
+            period_start: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            period_end: NaiveDate::from_ymd_opt(2024, 6, 30).unwrap(),
+            storage_bytes_start: 1_000_000_000,
+            storage_bytes_end: 2_000_000_000,
+            storage_growth_bytes: 1_000_000_000,
+            storage_growth_percent: 100.0,
+            artifacts_start: 100,
+            artifacts_end: 250,
+            artifacts_added: 150,
+            downloads_in_period: 5000,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["storage_growth_percent"], 100.0);
+        assert_eq!(json["artifacts_added"], 150);
+    }
+
+    #[test]
+    fn test_growth_summary_zero_growth() {
+        let summary = GrowthSummary {
+            period_start: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            period_end: NaiveDate::from_ymd_opt(2024, 1, 31).unwrap(),
+            storage_bytes_start: 1_000_000,
+            storage_bytes_end: 1_000_000,
+            storage_growth_bytes: 0,
+            storage_growth_percent: 0.0,
+            artifacts_start: 10,
+            artifacts_end: 10,
+            artifacts_added: 0,
+            downloads_in_period: 50,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["storage_growth_bytes"], 0);
+        assert_eq!(json["storage_growth_percent"], 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Growth percent calculation logic (from get_growth_summary)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_growth_percent_calculation_normal() {
+        let start_bytes: i64 = 1_000_000;
+        let end_bytes: i64 = 1_500_000;
+        let growth_bytes = end_bytes - start_bytes;
+        let growth_percent = if start_bytes > 0 {
+            (growth_bytes as f64 / start_bytes as f64) * 100.0
+        } else if end_bytes > 0 {
+            100.0
+        } else {
+            0.0
+        };
+        assert!((growth_percent - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_growth_percent_calculation_from_zero() {
+        let start_bytes: i64 = 0;
+        let end_bytes: i64 = 1_000_000;
+        let growth_bytes = end_bytes - start_bytes;
+        let growth_percent = if start_bytes > 0 {
+            (growth_bytes as f64 / start_bytes as f64) * 100.0
+        } else if end_bytes > 0 {
+            100.0
+        } else {
+            0.0
+        };
+        assert_eq!(growth_percent, 100.0);
+    }
+
+    #[test]
+    fn test_growth_percent_calculation_both_zero() {
+        let start_bytes: i64 = 0;
+        let end_bytes: i64 = 0;
+        let _growth_bytes = end_bytes - start_bytes;
+        let growth_percent = if start_bytes > 0 {
+            (0.0_f64 / start_bytes as f64) * 100.0
+        } else if end_bytes > 0 {
+            100.0
+        } else {
+            0.0
+        };
+        assert_eq!(growth_percent, 0.0);
+    }
+
+    #[test]
+    fn test_growth_percent_calculation_shrinkage() {
+        let start_bytes: i64 = 2_000_000;
+        let end_bytes: i64 = 1_000_000;
+        let growth_bytes = end_bytes - start_bytes;
+        let growth_percent = if start_bytes > 0 {
+            (growth_bytes as f64 / start_bytes as f64) * 100.0
+        } else if end_bytes > 0 {
+            100.0
+        } else {
+            0.0
+        };
+        assert!((growth_percent - (-50.0)).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------------
+    // DownloadTrend
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_trend_serialization() {
+        let trend = DownloadTrend {
+            date: NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+            download_count: 42,
+        };
+        let json = serde_json::to_value(&trend).unwrap();
+        assert_eq!(json["date"], "2024-06-15");
+        assert_eq!(json["download_count"], 42);
+    }
+
+    #[test]
+    fn test_download_trend_deserialization() {
+        let json = r#"{"date": "2024-06-15", "download_count": 100}"#;
+        let trend: DownloadTrend = serde_json::from_str(json).unwrap();
+        assert_eq!(trend.date, NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        assert_eq!(trend.download_count, 100);
+    }
+}

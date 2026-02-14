@@ -1811,3 +1811,969 @@ async fn get_resources(
         .body(Body::from(serde_json::to_string(&resp).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Compute the commit digest from a list of file path/content pairs.
+    /// The digest is the hex-encoded SHA-256 of all (path_bytes || content_bytes).
+    fn compute_commit_digest(files: &[(String, Vec<u8>)]) -> String {
+        let mut hasher = Sha256::new();
+        for (path, content) in files {
+            hasher.update(path.as_bytes());
+            hasher.update(content);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Build the storage key for a protobuf module commit.
+    fn build_module_storage_key(module_name: &str, commit_digest: &str) -> String {
+        format!("modules/{}/commits/{}", module_name, commit_digest)
+    }
+
+    /// Build the artifact path for a protobuf module commit.
+    fn build_module_artifact_path(module_name: &str, commit_digest: &str) -> String {
+        format!("modules/{}/commits/{}", module_name, commit_digest)
+    }
+
+    /// Build the label path for a module.
+    fn build_label_path(module_name: &str) -> String {
+        format!("modules/{}/_labels", module_name)
+    }
+
+    /// Build protobuf metadata JSON for an upload.
+    fn build_protobuf_metadata(
+        module_name: &str,
+        commit_digest: &str,
+        file_count: usize,
+        dep_names: &[String],
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "module": module_name,
+            "commitDigest": commit_digest,
+            "fileCount": file_count,
+            "dependencies": dep_names,
+        })
+    }
+
+    /// Extract dependency names from a list of ModuleRefs.
+    fn extract_dep_names(dep_refs: &[ModuleRef]) -> Vec<String> {
+        dep_refs
+            .iter()
+            .filter_map(|d| match (&d.owner, &d.module) {
+                (Some(o), Some(m)) => Some(format!("{}/{}", o, m)),
+                _ => d.id.clone(),
+            })
+            .collect()
+    }
+
+    /// Build a ModuleInfo struct from plain parameters.
+    fn build_module_info(
+        id: &str,
+        owner_id: &str,
+        name: &str,
+        create_time: &str,
+        update_time: &str,
+    ) -> ModuleInfo {
+        ModuleInfo {
+            id: id.to_string(),
+            owner_id: owner_id.to_string(),
+            name: name.to_string(),
+            create_time: create_time.to_string(),
+            update_time: update_time.to_string(),
+            state: "ACTIVE".to_string(),
+            default_label_name: "main".to_string(),
+        }
+    }
+
+    /// Build a CommitInfo struct from plain parameters.
+    fn build_commit_info(
+        id: &str,
+        create_time: &str,
+        owner_id: &str,
+        module_id: &str,
+        digest_value: &str,
+    ) -> CommitInfo {
+        CommitInfo {
+            id: id.to_string(),
+            create_time: create_time.to_string(),
+            owner_id: owner_id.to_string(),
+            module_id: module_id.to_string(),
+            digest: CommitDigest {
+                digest_type: "sha256".to_string(),
+                value: digest_value.to_string(),
+            },
+        }
+    }
+
+    /// Build a LabelInfo struct from parameters.
+    fn build_label_info(
+        module_name: &str,
+        label_name: &str,
+        digest: &str,
+        timestamp: &str,
+    ) -> LabelInfo {
+        LabelInfo {
+            id: format!("{}:{}:{}", module_name, label_name, digest),
+            name: label_name.to_string(),
+            commit_id: digest.to_string(),
+            create_time: timestamp.to_string(),
+            update_time: timestamp.to_string(),
+        }
+    }
+
+    /// Compute the next page token for pagination.
+    fn compute_next_page_token(count: usize, page_size: i64, offset: i64) -> String {
+        if count as i64 >= page_size {
+            (offset + page_size).to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Parse a page token string into an offset.
+    fn parse_page_token(token: Option<&str>) -> i64 {
+        token.and_then(|t| t.parse::<i64>().ok()).unwrap_or(0)
+    }
+
+    /// Clamp page size to a maximum value.
+    fn clamp_page_size(page_size: Option<i64>, max: i64) -> i64 {
+        page_size.unwrap_or(50).min(max)
+    }
+
+    /// Extract graph edges from artifact metadata.
+    fn extract_graph_edges(
+        metadata: &Option<serde_json::Value>,
+        commit_id: &str,
+    ) -> Vec<GraphEdge> {
+        let mut edges = Vec::new();
+        if let Some(meta) = metadata {
+            if let Some(deps) = meta.get("dependencies").and_then(|d| d.as_array()) {
+                for dep in deps {
+                    if let Some(dep_name) = dep.as_str() {
+                        edges.push(GraphEdge {
+                            from_commit_id: commit_id.to_string(),
+                            to_commit_id: dep_name.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        edges
+    }
+
+    // -----------------------------------------------------------------------
+    // connect_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_connect_error_returns_correct_status_and_body() {
+        let resp = connect_error(StatusCode::NOT_FOUND, "not_found", "thing missing");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_connect_error_internal_server_error() {
+        let resp = connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", "db down");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_connect_error_bad_request() {
+        let resp = connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "bad input");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        // "user:pass" in base64 = "dXNlcjpwYXNz"
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase_basic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_auth_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "useronly" in base64 = "dXNlcm9ubHk="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcm9ubHk="),
+        );
+        // Without a colon, splitn(2, ':') yields only one part, parts.next() for pass returns None
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        // "user:pa:ss" in base64 = "dXNlcjpwYTpzcw=="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_bearer_token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_token_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token-123"),
+        );
+        assert_eq!(
+            extract_bearer_token(&headers),
+            Some("my-token-123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        assert_eq!(extract_bearer_token(&headers), Some("my-token".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_token_basic_auth() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // module_name_from_ref
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_from_ref_owner_and_module() {
+        let r = ModuleRef {
+            id: None,
+            owner: Some("buf".to_string()),
+            module: Some("validate".to_string()),
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "buf/validate");
+    }
+
+    #[test]
+    fn test_module_name_from_ref_id_only() {
+        let r = ModuleRef {
+            id: Some("some-uuid".to_string()),
+            owner: None,
+            module: None,
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "some-uuid");
+    }
+
+    #[test]
+    fn test_module_name_from_ref_no_fields() {
+        let r = ModuleRef {
+            id: None,
+            owner: None,
+            module: None,
+        };
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_owner_only() {
+        let r = ModuleRef {
+            id: None,
+            owner: Some("buf".to_string()),
+            module: None,
+        };
+        // Without module, falls to id check, id is None => error
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_module_only() {
+        let r = ModuleRef {
+            id: None,
+            owner: None,
+            module: Some("validate".to_string()),
+        };
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_owner_module_and_id() {
+        // owner+module takes priority over id
+        let r = ModuleRef {
+            id: Some("some-id".to_string()),
+            owner: Some("buf".to_string()),
+            module: Some("validate".to_string()),
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "buf/validate");
+    }
+
+    // -----------------------------------------------------------------------
+    // module_name_from_resource_ref
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_from_resource_ref_owner_and_module() {
+        let r = ResourceRef {
+            id: None,
+            owner: Some("org".to_string()),
+            module: Some("pkg".to_string()),
+            label: None,
+        };
+        assert_eq!(module_name_from_resource_ref(&r).unwrap(), "org/pkg");
+    }
+
+    #[test]
+    fn test_module_name_from_resource_ref_id_only() {
+        let r = ResourceRef {
+            id: Some("id-123".to_string()),
+            owner: None,
+            module: None,
+            label: None,
+        };
+        assert_eq!(module_name_from_resource_ref(&r).unwrap(), "id-123");
+    }
+
+    #[test]
+    fn test_module_name_from_resource_ref_no_fields() {
+        let r = ResourceRef {
+            id: None,
+            owner: None,
+            module: None,
+            label: None,
+        };
+        assert!(module_name_from_resource_ref(&r).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_bundle + extract_files_from_bundle (round-trip)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_and_extract_bundle_round_trip() {
+        let files = vec![
+            UploadFile {
+                path: "hello.proto".to_string(),
+                content: base64::engine::general_purpose::STANDARD.encode(b"syntax = \"proto3\";"),
+            },
+            UploadFile {
+                path: "world.proto".to_string(),
+                content: base64::engine::general_purpose::STANDARD.encode(b"message World {}"),
+            },
+        ];
+
+        let bundle = build_bundle(&files).unwrap();
+        assert!(!bundle.is_empty());
+
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].path, "hello.proto");
+        assert_eq!(extracted[1].path, "world.proto");
+
+        // Verify content round-trip
+        let decoded0 = base64::engine::general_purpose::STANDARD
+            .decode(&extracted[0].content)
+            .unwrap();
+        assert_eq!(decoded0, b"syntax = \"proto3\";");
+
+        let decoded1 = base64::engine::general_purpose::STANDARD
+            .decode(&extracted[1].content)
+            .unwrap();
+        assert_eq!(decoded1, b"message World {}");
+    }
+
+    #[test]
+    fn test_build_bundle_empty_files() {
+        let files: Vec<UploadFile> = vec![];
+        let bundle = build_bundle(&files).unwrap();
+        // Should still produce a valid (empty) gzip tar
+        assert!(!bundle.is_empty());
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn test_build_bundle_invalid_base64() {
+        let files = vec![UploadFile {
+            path: "bad.proto".to_string(),
+            content: "not-valid-base64!!!".to_string(),
+        }];
+        assert!(build_bundle(&files).is_err());
+    }
+
+    #[test]
+    fn test_extract_files_from_bundle_invalid_gzip() {
+        let bad_data = b"this is not a gzip file";
+        assert!(extract_files_from_bundle(bad_data).is_err());
+    }
+
+    #[test]
+    fn test_build_bundle_single_file() {
+        let files = vec![UploadFile {
+            path: "single.proto".to_string(),
+            content: base64::engine::general_purpose::STANDARD.encode(b"content here"),
+        }];
+        let bundle = build_bundle(&files).unwrap();
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].path, "single.proto");
+    }
+
+    // -----------------------------------------------------------------------
+    // Struct serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_ref_deserialization_camel_case() {
+        let json = r#"{"id":"123","owner":"buf","module":"validate"}"#;
+        let r: ModuleRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.id, Some("123".to_string()));
+        assert_eq!(r.owner, Some("buf".to_string()));
+        assert_eq!(r.module, Some("validate".to_string()));
+    }
+
+    #[test]
+    fn test_module_ref_deserialization_defaults() {
+        let json = r#"{}"#;
+        let r: ModuleRef = serde_json::from_str(json).unwrap();
+        assert!(r.id.is_none());
+        assert!(r.owner.is_none());
+        assert!(r.module.is_none());
+    }
+
+    #[test]
+    fn test_get_modules_request_empty() {
+        let json = r#"{}"#;
+        let r: GetModulesRequest = serde_json::from_str(json).unwrap();
+        assert!(r.module_refs.is_empty());
+    }
+
+    #[test]
+    fn test_get_modules_request_with_refs() {
+        let json = r#"{"moduleRefs":[{"owner":"a","module":"b"}]}"#;
+        let r: GetModulesRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.module_refs.len(), 1);
+        assert_eq!(r.module_refs[0].owner, Some("a".to_string()));
+    }
+
+    #[test]
+    fn test_get_modules_response_serialization() {
+        let resp = GetModulesResponse {
+            modules: vec![ModuleInfo {
+                id: "id-1".to_string(),
+                owner_id: "owner-1".to_string(),
+                name: "test/module".to_string(),
+                create_time: "2024-01-01T00:00:00Z".to_string(),
+                update_time: "2024-01-01T00:00:00Z".to_string(),
+                state: "ACTIVE".to_string(),
+                default_label_name: "main".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"ownerId\":\"owner-1\""));
+        assert!(json.contains("\"defaultLabelName\":\"main\""));
+    }
+
+    #[test]
+    fn test_commit_info_serialization() {
+        let ci = CommitInfo {
+            id: "commit-1".to_string(),
+            create_time: "2024-01-01T00:00:00Z".to_string(),
+            owner_id: "owner-1".to_string(),
+            module_id: "mod-1".to_string(),
+            digest: CommitDigest {
+                digest_type: "sha256".to_string(),
+                value: "abc123".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&ci).unwrap();
+        assert!(json.contains("\"createTime\""));
+        assert!(json.contains("\"ownerId\""));
+        assert!(json.contains("\"moduleId\""));
+        assert!(json.contains("\"type\":\"sha256\""));
+    }
+
+    #[test]
+    fn test_list_commits_request_defaults() {
+        let json = r#"{}"#;
+        let r: ListCommitsRequest = serde_json::from_str(json).unwrap();
+        assert!(r.owner.is_none());
+        assert!(r.module.is_none());
+        assert!(r.page_size.is_none());
+        assert!(r.page_token.is_none());
+    }
+
+    #[test]
+    fn test_upload_request_empty() {
+        let json = r#"{}"#;
+        let r: UploadRequest = serde_json::from_str(json).unwrap();
+        assert!(r.contents.is_empty());
+    }
+
+    #[test]
+    fn test_download_response_serialization() {
+        let resp = DownloadResponse {
+            contents: vec![DownloadContent {
+                commit: CommitInfo {
+                    id: "c1".to_string(),
+                    create_time: "2024-01-01T00:00:00Z".to_string(),
+                    owner_id: "o1".to_string(),
+                    module_id: "m1".to_string(),
+                    digest: CommitDigest {
+                        digest_type: "sha256".to_string(),
+                        value: "hash".to_string(),
+                    },
+                },
+                files: vec![DownloadFile {
+                    path: "file.proto".to_string(),
+                    content: "Y29udGVudA==".to_string(),
+                }],
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"contents\""));
+        assert!(json.contains("file.proto"));
+    }
+
+    #[test]
+    fn test_graph_edge_serialization() {
+        let edge = GraphEdge {
+            from_commit_id: "from".to_string(),
+            to_commit_id: "to".to_string(),
+        };
+        let json = serde_json::to_string(&edge).unwrap();
+        assert!(json.contains("\"fromCommitId\":\"from\""));
+        assert!(json.contains("\"toCommitId\":\"to\""));
+    }
+
+    #[test]
+    fn test_resource_ref_deserialization() {
+        let json = r#"{"id":"id1","owner":"org","module":"mod","label":"v1"}"#;
+        let r: ResourceRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.id, Some("id1".to_string()));
+        assert_eq!(r.label, Some("v1".to_string()));
+    }
+
+    #[test]
+    fn test_label_info_serialization() {
+        let li = LabelInfo {
+            id: "label-1".to_string(),
+            name: "main".to_string(),
+            commit_id: "commit-1".to_string(),
+            create_time: "2024-01-01T00:00:00Z".to_string(),
+            update_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&li).unwrap();
+        assert!(json.contains("\"commitId\":\"commit-1\""));
+    }
+
+    #[test]
+    fn test_create_label_value_deserialization() {
+        let json = r#"{"owner":"org","module":"mod","name":"v1","commitId":"abc"}"#;
+        let v: CreateLabelValue = serde_json::from_str(json).unwrap();
+        assert_eq!(v.owner, Some("org".to_string()));
+        assert_eq!(v.name, "v1");
+        assert_eq!(v.commit_id, "abc");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_commit_digest
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_commit_digest_deterministic() {
+        let files = vec![
+            ("a.proto".to_string(), b"content a".to_vec()),
+            ("b.proto".to_string(), b"content b".to_vec()),
+        ];
+        let d1 = compute_commit_digest(&files);
+        let d2 = compute_commit_digest(&files);
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn test_compute_commit_digest_different_files() {
+        let f1 = vec![("a.proto".to_string(), b"content a".to_vec())];
+        let f2 = vec![("a.proto".to_string(), b"content b".to_vec())];
+        assert_ne!(compute_commit_digest(&f1), compute_commit_digest(&f2));
+    }
+
+    #[test]
+    fn test_compute_commit_digest_empty() {
+        let files: Vec<(String, Vec<u8>)> = vec![];
+        let digest = compute_commit_digest(&files);
+        assert_eq!(digest.len(), 64);
+    }
+
+    #[test]
+    fn test_compute_commit_digest_is_hex() {
+        let files = vec![("test.proto".to_string(), b"syntax = \"proto3\";".to_vec())];
+        let digest = compute_commit_digest(&files);
+        assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_storage_key / build_module_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_storage_key() {
+        assert_eq!(
+            build_module_storage_key("buf/validate", "abc123"),
+            "modules/buf/validate/commits/abc123"
+        );
+    }
+
+    #[test]
+    fn test_build_module_artifact_path() {
+        assert_eq!(
+            build_module_artifact_path("org/pkg", "def456"),
+            "modules/org/pkg/commits/def456"
+        );
+    }
+
+    #[test]
+    fn test_build_module_storage_key_same_as_artifact_path() {
+        let key = build_module_storage_key("a/b", "hash");
+        let path = build_module_artifact_path("a/b", "hash");
+        assert_eq!(key, path);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_label_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_label_path() {
+        assert_eq!(
+            build_label_path("buf/validate"),
+            "modules/buf/validate/_labels"
+        );
+    }
+
+    #[test]
+    fn test_build_label_path_nested() {
+        assert_eq!(
+            build_label_path("org/deep/module"),
+            "modules/org/deep/module/_labels"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_protobuf_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_protobuf_metadata_basic() {
+        let deps = vec!["dep/one".to_string()];
+        let meta = build_protobuf_metadata("buf/validate", "abc", 3, &deps);
+        assert_eq!(meta["module"], "buf/validate");
+        assert_eq!(meta["commitDigest"], "abc");
+        assert_eq!(meta["fileCount"], 3);
+        assert_eq!(meta["dependencies"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_build_protobuf_metadata_no_deps() {
+        let meta = build_protobuf_metadata("m", "d", 0, &[]);
+        assert!(meta["dependencies"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_protobuf_metadata_many_deps() {
+        let deps = vec!["a/b".to_string(), "c/d".to_string(), "e/f".to_string()];
+        let meta = build_protobuf_metadata("mod", "hash", 10, &deps);
+        assert_eq!(meta["dependencies"].as_array().unwrap().len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_dep_names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_dep_names_owner_and_module() {
+        let refs = vec![ModuleRef {
+            id: None,
+            owner: Some("buf".to_string()),
+            module: Some("validate".to_string()),
+        }];
+        let names = extract_dep_names(&refs);
+        assert_eq!(names, vec!["buf/validate"]);
+    }
+
+    #[test]
+    fn test_extract_dep_names_id_only() {
+        let refs = vec![ModuleRef {
+            id: Some("some-id".to_string()),
+            owner: None,
+            module: None,
+        }];
+        let names = extract_dep_names(&refs);
+        assert_eq!(names, vec!["some-id"]);
+    }
+
+    #[test]
+    fn test_extract_dep_names_no_fields() {
+        let refs = vec![ModuleRef {
+            id: None,
+            owner: None,
+            module: None,
+        }];
+        let names = extract_dep_names(&refs);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_dep_names_empty() {
+        let refs: Vec<ModuleRef> = vec![];
+        let names = extract_dep_names(&refs);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_extract_dep_names_mixed() {
+        let refs = vec![
+            ModuleRef {
+                id: None,
+                owner: Some("a".to_string()),
+                module: Some("b".to_string()),
+            },
+            ModuleRef {
+                id: Some("id-1".to_string()),
+                owner: None,
+                module: None,
+            },
+        ];
+        let names = extract_dep_names(&refs);
+        assert_eq!(names, vec!["a/b", "id-1"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_module_info / build_commit_info / build_label_info
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_module_info_fields() {
+        let info = build_module_info(
+            "id1",
+            "owner1",
+            "buf/validate",
+            "2024-01-01T00:00:00Z",
+            "2024-06-01T00:00:00Z",
+        );
+        assert_eq!(info.id, "id1");
+        assert_eq!(info.owner_id, "owner1");
+        assert_eq!(info.name, "buf/validate");
+        assert_eq!(info.state, "ACTIVE");
+        assert_eq!(info.default_label_name, "main");
+    }
+
+    #[test]
+    fn test_build_module_info_serialization() {
+        let info = build_module_info("id", "o", "n", "t1", "t2");
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"ownerId\""));
+        assert!(json.contains("\"defaultLabelName\":\"main\""));
+    }
+
+    #[test]
+    fn test_build_commit_info_fields() {
+        let info = build_commit_info("c1", "2024-01-01T00:00:00Z", "o1", "m1", "hash");
+        assert_eq!(info.id, "c1");
+        assert_eq!(info.module_id, "m1");
+        assert_eq!(info.digest.digest_type, "sha256");
+        assert_eq!(info.digest.value, "hash");
+    }
+
+    #[test]
+    fn test_build_commit_info_serialization() {
+        let info = build_commit_info("c", "t", "o", "m", "d");
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"type\":\"sha256\""));
+    }
+
+    #[test]
+    fn test_build_label_info_fields() {
+        let info = build_label_info("buf/validate", "main", "abc123", "2024-01-01T00:00:00Z");
+        assert_eq!(info.id, "buf/validate:main:abc123");
+        assert_eq!(info.name, "main");
+        assert_eq!(info.commit_id, "abc123");
+    }
+
+    #[test]
+    fn test_build_label_info_id_format() {
+        let info = build_label_info("org/mod", "v1", "digest", "ts");
+        assert_eq!(info.id, "org/mod:v1:digest");
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_next_page_token / parse_page_token / clamp_page_size
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_next_page_token_has_more() {
+        assert_eq!(compute_next_page_token(50, 50, 0), "50");
+    }
+
+    #[test]
+    fn test_compute_next_page_token_no_more() {
+        assert_eq!(compute_next_page_token(10, 50, 0), "");
+    }
+
+    #[test]
+    fn test_compute_next_page_token_with_offset() {
+        assert_eq!(compute_next_page_token(25, 25, 50), "75");
+    }
+
+    #[test]
+    fn test_parse_page_token_valid() {
+        assert_eq!(parse_page_token(Some("42")), 42);
+    }
+
+    #[test]
+    fn test_parse_page_token_none() {
+        assert_eq!(parse_page_token(None), 0);
+    }
+
+    #[test]
+    fn test_parse_page_token_invalid() {
+        assert_eq!(parse_page_token(Some("not-a-number")), 0);
+    }
+
+    #[test]
+    fn test_parse_page_token_empty() {
+        assert_eq!(parse_page_token(Some("")), 0);
+    }
+
+    #[test]
+    fn test_clamp_page_size_default() {
+        assert_eq!(clamp_page_size(None, 250), 50);
+    }
+
+    #[test]
+    fn test_clamp_page_size_within_limit() {
+        assert_eq!(clamp_page_size(Some(100), 250), 100);
+    }
+
+    #[test]
+    fn test_clamp_page_size_exceeds_limit() {
+        assert_eq!(clamp_page_size(Some(500), 250), 250);
+    }
+
+    #[test]
+    fn test_clamp_page_size_zero() {
+        assert_eq!(clamp_page_size(Some(0), 250), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_graph_edges
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_graph_edges_with_deps() {
+        let meta = Some(serde_json::json!({
+            "dependencies": ["dep/a", "dep/b"]
+        }));
+        let edges = extract_graph_edges(&meta, "commit-1");
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].from_commit_id, "commit-1");
+        assert_eq!(edges[0].to_commit_id, "dep/a");
+        assert_eq!(edges[1].to_commit_id, "dep/b");
+    }
+
+    #[test]
+    fn test_extract_graph_edges_no_deps() {
+        let meta = Some(serde_json::json!({"module": "test"}));
+        let edges = extract_graph_edges(&meta, "c1");
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn test_extract_graph_edges_none_metadata() {
+        let edges = extract_graph_edges(&None, "c1");
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn test_extract_graph_edges_empty_deps() {
+        let meta = Some(serde_json::json!({"dependencies": []}));
+        let edges = extract_graph_edges(&meta, "c1");
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn test_extract_graph_edges_non_string_deps_ignored() {
+        let meta = Some(serde_json::json!({"dependencies": [123, null, "valid/dep"]}));
+        let edges = extract_graph_edges(&meta, "c1");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].to_commit_id, "valid/dep");
+    }
+}

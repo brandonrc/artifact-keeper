@@ -724,3 +724,295 @@ pub struct RestoreResult {
     pub artifacts_restored: i32,
     pub errors: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(unused_imports)]
+    use chrono::Utc;
+    #[allow(unused_imports)]
+    use flate2::write::GzEncoder;
+    #[allow(unused_imports)]
+    use flate2::Compression;
+    #[allow(unused_imports)]
+    use tar::Builder;
+
+    // -----------------------------------------------------------------------
+    // BackupStatus Display tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_status_display_pending() {
+        assert_eq!(BackupStatus::Pending.to_string(), "pending");
+    }
+
+    #[test]
+    fn test_backup_status_display_in_progress() {
+        assert_eq!(BackupStatus::InProgress.to_string(), "in_progress");
+    }
+
+    #[test]
+    fn test_backup_status_display_completed() {
+        assert_eq!(BackupStatus::Completed.to_string(), "completed");
+    }
+
+    #[test]
+    fn test_backup_status_display_failed() {
+        assert_eq!(BackupStatus::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn test_backup_status_display_cancelled() {
+        assert_eq!(BackupStatus::Cancelled.to_string(), "cancelled");
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupStatus equality tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_status_equality() {
+        assert_eq!(BackupStatus::Pending, BackupStatus::Pending);
+        assert_ne!(BackupStatus::Pending, BackupStatus::InProgress);
+        assert_ne!(BackupStatus::Completed, BackupStatus::Failed);
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupType serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_type_serialization() {
+        let full = serde_json::to_string(&BackupType::Full).unwrap();
+        assert_eq!(full, "\"full\"");
+
+        let incremental = serde_json::to_string(&BackupType::Incremental).unwrap();
+        assert_eq!(incremental, "\"incremental\"");
+
+        let metadata = serde_json::to_string(&BackupType::Metadata).unwrap();
+        assert_eq!(metadata, "\"metadata\"");
+    }
+
+    #[test]
+    fn test_backup_type_deserialization() {
+        let full: BackupType = serde_json::from_str("\"full\"").unwrap();
+        assert_eq!(full, BackupType::Full);
+
+        let incremental: BackupType = serde_json::from_str("\"incremental\"").unwrap();
+        assert_eq!(incremental, BackupType::Incremental);
+
+        let metadata: BackupType = serde_json::from_str("\"metadata\"").unwrap();
+        assert_eq!(metadata, BackupType::Metadata);
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupStatus serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_status_serialization() {
+        assert_eq!(
+            serde_json::to_string(&BackupStatus::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupStatus::InProgress).unwrap(),
+            "\"in_progress\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupStatus::Completed).unwrap(),
+            "\"completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupStatus::Failed).unwrap(),
+            "\"failed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupStatus::Cancelled).unwrap(),
+            "\"cancelled\""
+        );
+    }
+
+    #[test]
+    fn test_backup_status_deserialization() {
+        let pending: BackupStatus = serde_json::from_str("\"pending\"").unwrap();
+        assert_eq!(pending, BackupStatus::Pending);
+
+        let completed: BackupStatus = serde_json::from_str("\"completed\"").unwrap();
+        assert_eq!(completed, BackupStatus::Completed);
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupManifest serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_manifest_serialization_roundtrip() {
+        let manifest = BackupManifest {
+            version: "1.0".to_string(),
+            backup_id: Uuid::nil(),
+            backup_type: BackupType::Full,
+            created_at: Utc::now(),
+            database_tables: vec!["users".to_string(), "artifacts".to_string()],
+            artifact_count: 42,
+            total_size_bytes: 1024 * 1024,
+            checksum: "abc123".to_string(),
+        };
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        let deserialized: BackupManifest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.version, "1.0");
+        assert_eq!(deserialized.backup_id, Uuid::nil());
+        assert_eq!(deserialized.backup_type, BackupType::Full);
+        assert_eq!(deserialized.database_tables.len(), 2);
+        assert_eq!(deserialized.artifact_count, 42);
+        assert_eq!(deserialized.total_size_bytes, 1024 * 1024);
+        assert_eq!(deserialized.checksum, "abc123");
+    }
+
+    // -----------------------------------------------------------------------
+    // RestoreOptions tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_restore_options_default() {
+        let opts = RestoreOptions::default();
+        assert!(!opts.restore_database);
+        assert!(!opts.restore_artifacts);
+        assert!(opts.target_repository_id.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RestoreResult serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_restore_result_serialization() {
+        let result = RestoreResult {
+            tables_restored: vec!["users".to_string()],
+            artifacts_restored: 5,
+            errors: vec!["some error".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"tables_restored\":[\"users\"]"));
+        assert!(json.contains("\"artifacts_restored\":5"));
+        assert!(json.contains("\"errors\":[\"some error\"]"));
+    }
+
+    // -----------------------------------------------------------------------
+    // count_artifacts_in_backup tests (via extract_entries + tar creation)
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a tar.gz archive in memory with the given entries.
+    fn create_test_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut tar_buffer = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut tar_buffer, Compression::default());
+            let mut tar = Builder::new(encoder);
+
+            for (path, data) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_cksum();
+                tar.append(&header, *data).unwrap();
+            }
+
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        tar_buffer
+    }
+
+    #[test]
+    fn test_extract_entries_empty_archive() {
+        let tar_data = create_test_tar_gz(&[]);
+        let entries = BackupService::extract_entries(&tar_data).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_extract_entries_with_entries() {
+        let tar_data = create_test_tar_gz(&[
+            ("manifest.json", b"{}"),
+            ("database/users.json", b"[]"),
+            ("artifacts/key1", b"binary data"),
+        ]);
+        let entries = BackupService::extract_entries(&tar_data).unwrap();
+        assert_eq!(entries.len(), 3);
+
+        let paths: Vec<String> = entries
+            .iter()
+            .map(|(p, _)| p.to_string_lossy().to_string())
+            .collect();
+        assert!(paths.contains(&"manifest.json".to_string()));
+        assert!(paths.contains(&"database/users.json".to_string()));
+        assert!(paths.contains(&"artifacts/key1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_entries_preserves_content() {
+        let tar_data = create_test_tar_gz(&[("test.txt", b"hello world")]);
+        let entries = BackupService::extract_entries(&tar_data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, b"hello world");
+    }
+
+    #[test]
+    fn test_extract_entries_invalid_data() {
+        let result = BackupService::extract_entries(b"not a tar gz");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateBackupRequest construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_backup_request_construction() {
+        let req = CreateBackupRequest {
+            backup_type: BackupType::Full,
+            repository_ids: Some(vec![Uuid::new_v4()]),
+            created_by: Some(Uuid::new_v4()),
+        };
+        assert_eq!(req.backup_type, BackupType::Full);
+        assert!(req.repository_ids.is_some());
+        assert!(req.created_by.is_some());
+    }
+
+    #[test]
+    fn test_create_backup_request_no_optional_fields() {
+        let req = CreateBackupRequest {
+            backup_type: BackupType::Metadata,
+            repository_ids: None,
+            created_by: None,
+        };
+        assert_eq!(req.backup_type, BackupType::Metadata);
+        assert!(req.repository_ids.is_none());
+        assert!(req.created_by.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupType Copy/Clone tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_type_clone_and_copy() {
+        let bt = BackupType::Full;
+        let bt2 = bt; // Copy
+        let bt3 = bt; // Clone
+        assert_eq!(bt, bt2);
+        assert_eq!(bt, bt3);
+    }
+
+    #[test]
+    fn test_backup_status_clone_and_copy() {
+        let bs = BackupStatus::Completed;
+        let bs2 = bs; // Copy
+        let bs3 = bs; // Clone
+        assert_eq!(bs, bs2);
+        assert_eq!(bs, bs3);
+    }
+}

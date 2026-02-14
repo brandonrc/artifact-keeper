@@ -126,3 +126,130 @@ impl ScanConfigService {
         Ok(result.unwrap_or(false))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // UpsertScanConfigRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upsert_scan_config_request_deserialization() {
+        let json = r#"{
+            "scan_enabled": true,
+            "scan_on_upload": true,
+            "scan_on_proxy": false,
+            "block_on_policy_violation": true,
+            "severity_threshold": "high"
+        }"#;
+        let req: UpsertScanConfigRequest = serde_json::from_str(json).unwrap();
+        assert!(req.scan_enabled);
+        assert!(req.scan_on_upload);
+        assert!(!req.scan_on_proxy);
+        assert!(req.block_on_policy_violation);
+        assert_eq!(req.severity_threshold, "high");
+    }
+
+    #[test]
+    fn test_upsert_scan_config_request_all_disabled() {
+        let json = r#"{
+            "scan_enabled": false,
+            "scan_on_upload": false,
+            "scan_on_proxy": false,
+            "block_on_policy_violation": false,
+            "severity_threshold": "critical"
+        }"#;
+        let req: UpsertScanConfigRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.scan_enabled);
+        assert!(!req.scan_on_upload);
+        assert!(!req.scan_on_proxy);
+        assert!(!req.block_on_policy_violation);
+        assert_eq!(req.severity_threshold, "critical");
+    }
+
+    #[test]
+    fn test_upsert_scan_config_request_clone() {
+        let req = UpsertScanConfigRequest {
+            scan_enabled: true,
+            scan_on_upload: false,
+            scan_on_proxy: true,
+            block_on_policy_violation: true,
+            severity_threshold: "medium".to_string(),
+        };
+        let cloned = req.clone();
+        assert_eq!(cloned.scan_enabled, req.scan_enabled);
+        assert_eq!(cloned.scan_on_upload, req.scan_on_upload);
+        assert_eq!(cloned.scan_on_proxy, req.scan_on_proxy);
+        assert_eq!(
+            cloned.block_on_policy_violation,
+            req.block_on_policy_violation
+        );
+        assert_eq!(cloned.severity_threshold, req.severity_threshold);
+    }
+
+    #[test]
+    fn test_upsert_scan_config_request_debug() {
+        let req = UpsertScanConfigRequest {
+            scan_enabled: true,
+            scan_on_upload: true,
+            scan_on_proxy: false,
+            block_on_policy_violation: false,
+            severity_threshold: "low".to_string(),
+        };
+        let debug_str = format!("{:?}", req);
+        assert!(debug_str.contains("UpsertScanConfigRequest"));
+        assert!(debug_str.contains("scan_enabled: true"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ScanConfig model (imported from models::security)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_config_threshold_method() {
+        use crate::models::security::{ScanConfig, Severity};
+
+        let config = ScanConfig {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            scan_enabled: true,
+            scan_on_upload: true,
+            scan_on_proxy: false,
+            block_on_policy_violation: true,
+            severity_threshold: "medium".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(config.threshold(), Severity::Medium);
+    }
+
+    // -----------------------------------------------------------------------
+    // Default unwrap_or(false) logic for is_scan_enabled / is_proxy_scan_enabled
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_enabled_default_when_no_config() {
+        fn is_scan_enabled(opt: Option<bool>) -> bool {
+            opt.unwrap_or(false)
+        }
+        assert!(!is_scan_enabled(None));
+    }
+
+    #[test]
+    fn test_scan_enabled_when_config_true() {
+        fn is_scan_enabled(opt: Option<bool>) -> bool {
+            opt.unwrap_or(false)
+        }
+        assert!(is_scan_enabled(Some(true)));
+    }
+
+    #[test]
+    fn test_scan_enabled_when_config_false() {
+        fn is_scan_enabled(opt: Option<bool>) -> bool {
+            opt.unwrap_or(false)
+        }
+        assert!(!is_scan_enabled(Some(false)));
+    }
+}

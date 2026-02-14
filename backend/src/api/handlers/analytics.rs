@@ -230,3 +230,176 @@ pub async fn capture_snapshot(
     ))
 )]
 pub struct AnalyticsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── DateRangeQuery::parse_dates tests ────────────────────────────
+
+    #[test]
+    fn test_parse_dates_both_provided() {
+        let query = DateRangeQuery {
+            from: Some("2024-01-01".to_string()),
+            to: Some("2024-01-31".to_string()),
+        };
+        let (from, to) = query.parse_dates();
+        assert_eq!(from, NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+        assert_eq!(to, NaiveDate::from_ymd_opt(2024, 1, 31).unwrap());
+    }
+
+    #[test]
+    fn test_parse_dates_neither_provided() {
+        let query = DateRangeQuery {
+            from: None,
+            to: None,
+        };
+        let (from, to) = query.parse_dates();
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(to, today);
+        assert_eq!(from, today - chrono::Duration::days(30));
+    }
+
+    #[test]
+    fn test_parse_dates_only_to_provided() {
+        let query = DateRangeQuery {
+            from: None,
+            to: Some("2024-06-15".to_string()),
+        };
+        let (from, to) = query.parse_dates();
+        assert_eq!(to, NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        assert_eq!(
+            from,
+            NaiveDate::from_ymd_opt(2024, 6, 15).unwrap() - chrono::Duration::days(30)
+        );
+    }
+
+    #[test]
+    fn test_parse_dates_only_from_provided() {
+        let query = DateRangeQuery {
+            from: Some("2024-03-01".to_string()),
+            to: None,
+        };
+        let (from, to) = query.parse_dates();
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(to, today);
+        assert_eq!(from, NaiveDate::from_ymd_opt(2024, 3, 1).unwrap());
+    }
+
+    #[test]
+    fn test_parse_dates_invalid_from_uses_default() {
+        let query = DateRangeQuery {
+            from: Some("not-a-date".to_string()),
+            to: Some("2024-06-15".to_string()),
+        };
+        let (from, to) = query.parse_dates();
+        assert_eq!(to, NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        // Invalid from falls back to to - 30 days
+        assert_eq!(
+            from,
+            NaiveDate::from_ymd_opt(2024, 6, 15).unwrap() - chrono::Duration::days(30)
+        );
+    }
+
+    #[test]
+    fn test_parse_dates_invalid_to_uses_today() {
+        let query = DateRangeQuery {
+            from: Some("2024-01-01".to_string()),
+            to: Some("invalid".to_string()),
+        };
+        let (from, to) = query.parse_dates();
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(to, today);
+        assert_eq!(from, NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
+    }
+
+    #[test]
+    fn test_parse_dates_both_invalid() {
+        let query = DateRangeQuery {
+            from: Some("xxx".to_string()),
+            to: Some("yyy".to_string()),
+        };
+        let (from, to) = query.parse_dates();
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(to, today);
+        assert_eq!(from, today - chrono::Duration::days(30));
+    }
+
+    #[test]
+    fn test_parse_dates_empty_strings() {
+        let query = DateRangeQuery {
+            from: Some(String::new()),
+            to: Some(String::new()),
+        };
+        let (from, to) = query.parse_dates();
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(to, today);
+        assert_eq!(from, today - chrono::Duration::days(30));
+    }
+
+    // ── DateRangeQuery deserialization tests ─────────────────────────
+
+    #[test]
+    fn test_date_range_query_deserialize_full() {
+        let json = r#"{"from": "2024-01-01", "to": "2024-12-31"}"#;
+        let q: DateRangeQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.from, Some("2024-01-01".to_string()));
+        assert_eq!(q.to, Some("2024-12-31".to_string()));
+    }
+
+    #[test]
+    fn test_date_range_query_deserialize_empty() {
+        let json = r#"{}"#;
+        let q: DateRangeQuery = serde_json::from_str(json).unwrap();
+        assert!(q.from.is_none());
+        assert!(q.to.is_none());
+    }
+
+    // ── StaleQuery deserialization tests ─────────────────────────────
+
+    #[test]
+    fn test_stale_query_defaults() {
+        let json = r#"{}"#;
+        let q: StaleQuery = serde_json::from_str(json).unwrap();
+        assert!(q.days.is_none());
+        assert!(q.limit.is_none());
+    }
+
+    #[test]
+    fn test_stale_query_with_values() {
+        let json = r#"{"days": 60, "limit": 50}"#;
+        let q: StaleQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.days, Some(60));
+        assert_eq!(q.limit, Some(50));
+    }
+
+    #[test]
+    fn test_stale_query_default_days_value() {
+        let q = StaleQuery {
+            days: None,
+            limit: None,
+        };
+        let days = q.days.unwrap_or(90);
+        assert_eq!(days, 90);
+    }
+
+    #[test]
+    fn test_stale_query_default_limit_value() {
+        let q = StaleQuery {
+            days: None,
+            limit: None,
+        };
+        let limit = q.limit.unwrap_or(100);
+        assert_eq!(limit, 100);
+    }
+
+    #[test]
+    fn test_stale_query_custom_days() {
+        let q = StaleQuery {
+            days: Some(30),
+            limit: None,
+        };
+        let days = q.days.unwrap_or(90);
+        assert_eq!(days, 30);
+    }
+}

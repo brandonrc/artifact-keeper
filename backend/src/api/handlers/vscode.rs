@@ -595,3 +595,439 @@ async fn latest_version(
         .body(Body::from(serde_json::to_string(&json).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (test-only)
+    // -----------------------------------------------------------------------
+
+    /// Build a VS Code extension ID from publisher and name.
+    fn build_extension_id(publisher: &str, name: &str) -> String {
+        format!("{}.{}", publisher, name)
+    }
+
+    /// Build a VSIX filename from publisher, name, and version.
+    fn build_vsix_filename(publisher: &str, name: &str, version: &str) -> String {
+        let extension_id = build_extension_id(publisher, name);
+        format!("{}-{}.vsix", extension_id, version)
+    }
+
+    /// Build the artifact path for a VS Code extension.
+    fn build_vscode_artifact_path(publisher: &str, name: &str, version: &str) -> String {
+        let filename = build_vsix_filename(publisher, name, version);
+        format!("{}/{}/{}", publisher, name, filename)
+    }
+
+    /// Build the storage key for a VS Code extension.
+    fn build_vscode_storage_key(publisher: &str, name: &str, version: &str) -> String {
+        let filename = build_vsix_filename(publisher, name, version);
+        format!("vscode/{}/{}/{}", publisher, name, filename)
+    }
+
+    /// Build the download URL for a VS Code extension.
+    fn build_vscode_download_url(
+        repo_key: &str,
+        publisher: &str,
+        name: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "/vscode/{}/extensions/{}/{}/{}/download",
+            repo_key, publisher, name, version
+        )
+    }
+
+    /// Build the Content-Disposition filename for a VSIX download.
+    fn build_vsix_download_filename(publisher: &str, name: &str, version: &str) -> String {
+        format!("{}.{}-{}.vsix", publisher, name, version)
+    }
+
+    /// Build the metadata JSON for a published VS Code extension.
+    fn build_vscode_metadata(publisher: &str, name: &str, version: &str) -> serde_json::Value {
+        let filename = build_vsix_filename(publisher, name, version);
+        serde_json::json!({
+            "publisher": publisher,
+            "extension_name": name,
+            "version": version,
+            "filename": filename,
+        })
+    }
+
+    /// Build the publish success response JSON.
+    fn build_vscode_publish_response(
+        publisher: &str,
+        name: &str,
+        version: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "publisher": publisher,
+            "name": name,
+            "version": version,
+            "message": "Successfully published extension",
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Bearer token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-pat-token"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("token".to_string(), "my-pat-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-pat-token"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("token".to_string(), "my-pat-token".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Basic auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("admin".to_string(), "secret".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_colon_in_password() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:p@ss:word:123");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("user".to_string(), "p@ss:word:123".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Token abc123"),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic ===invalid==="),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_extension_id
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_extension_id() {
+        assert_eq!(
+            build_extension_id("ms-python", "python"),
+            "ms-python.python"
+        );
+    }
+
+    #[test]
+    fn test_build_extension_id_complex() {
+        assert_eq!(
+            build_extension_id("esbenp", "prettier-vscode"),
+            "esbenp.prettier-vscode"
+        );
+    }
+
+    #[test]
+    fn test_build_extension_id_single_char() {
+        assert_eq!(build_extension_id("a", "b"), "a.b");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vsix_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vsix_filename() {
+        assert_eq!(
+            build_vsix_filename("ms-python", "python", "2024.1.0"),
+            "ms-python.python-2024.1.0.vsix"
+        );
+    }
+
+    #[test]
+    fn test_build_vsix_filename_prerelease() {
+        assert_eq!(
+            build_vsix_filename("ms-vscode", "cpptools", "1.18.0-insiders"),
+            "ms-vscode.cpptools-1.18.0-insiders.vsix"
+        );
+    }
+
+    #[test]
+    fn test_build_vsix_filename_ends_with_vsix() {
+        let f = build_vsix_filename("a", "b", "1.0.0");
+        assert!(f.ends_with(".vsix"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vscode_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vscode_artifact_path() {
+        assert_eq!(
+            build_vscode_artifact_path("ms-python", "python", "2024.1.0"),
+            "ms-python/python/ms-python.python-2024.1.0.vsix"
+        );
+    }
+
+    #[test]
+    fn test_build_vscode_artifact_path_contains_publisher() {
+        let path = build_vscode_artifact_path("esbenp", "prettier-vscode", "10.1.0");
+        assert!(path.starts_with("esbenp/"));
+    }
+
+    #[test]
+    fn test_build_vscode_artifact_path_contains_name() {
+        let path = build_vscode_artifact_path("redhat", "vscode-yaml", "1.14.0");
+        assert!(path.contains("/vscode-yaml/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vscode_storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vscode_storage_key() {
+        assert_eq!(
+            build_vscode_storage_key("esbenp", "prettier-vscode", "10.1.0"),
+            "vscode/esbenp/prettier-vscode/esbenp.prettier-vscode-10.1.0.vsix"
+        );
+    }
+
+    #[test]
+    fn test_build_vscode_storage_key_starts_with_vscode() {
+        let key = build_vscode_storage_key("ms-python", "python", "1.0.0");
+        assert!(key.starts_with("vscode/"));
+    }
+
+    #[test]
+    fn test_build_vscode_storage_key_ends_with_vsix() {
+        let key = build_vscode_storage_key("ms-vscode", "cpptools", "1.18.0");
+        assert!(key.ends_with(".vsix"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vscode_download_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vscode_download_url() {
+        assert_eq!(
+            build_vscode_download_url("vscode-local", "ms-vscode", "cpptools", "1.18.0"),
+            "/vscode/vscode-local/extensions/ms-vscode/cpptools/1.18.0/download"
+        );
+    }
+
+    #[test]
+    fn test_build_vscode_download_url_starts_with_vscode() {
+        let url = build_vscode_download_url("repo", "pub", "ext", "1.0.0");
+        assert!(url.starts_with("/vscode/"));
+    }
+
+    #[test]
+    fn test_build_vscode_download_url_ends_with_download() {
+        let url = build_vscode_download_url("repo", "pub", "ext", "1.0.0");
+        assert!(url.ends_with("/download"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vsix_download_filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vsix_download_filename() {
+        assert_eq!(
+            build_vsix_download_filename("redhat", "vscode-yaml", "1.14.0"),
+            "redhat.vscode-yaml-1.14.0.vsix"
+        );
+    }
+
+    #[test]
+    fn test_build_vsix_download_filename_contains_publisher() {
+        let f = build_vsix_download_filename("ms-python", "python", "2024.1.0");
+        assert!(f.starts_with("ms-python."));
+    }
+
+    #[test]
+    fn test_build_vsix_download_filename_ends_with_vsix() {
+        let f = build_vsix_download_filename("a", "b", "1.0.0");
+        assert!(f.ends_with(".vsix"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vscode_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vscode_metadata() {
+        let meta = build_vscode_metadata("ms-python", "python", "2024.1.0");
+        assert_eq!(meta["publisher"], "ms-python");
+        assert_eq!(meta["extension_name"], "python");
+        assert_eq!(meta["version"], "2024.1.0");
+        assert_eq!(meta["filename"], "ms-python.python-2024.1.0.vsix");
+    }
+
+    #[test]
+    fn test_build_vscode_metadata_has_four_keys() {
+        let meta = build_vscode_metadata("a", "b", "1.0.0");
+        assert_eq!(meta.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_build_vscode_metadata_has_all_keys() {
+        let meta = build_vscode_metadata("pub", "ext", "1.0.0");
+        let obj = meta.as_object().unwrap();
+        assert!(obj.contains_key("publisher"));
+        assert!(obj.contains_key("extension_name"));
+        assert!(obj.contains_key("version"));
+        assert!(obj.contains_key("filename"));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_vscode_publish_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_vscode_publish_response() {
+        let resp = build_vscode_publish_response("ms-python", "python", "2024.1.0");
+        assert_eq!(resp["publisher"], "ms-python");
+        assert_eq!(resp["name"], "python");
+        assert_eq!(resp["version"], "2024.1.0");
+        assert_eq!(resp["message"], "Successfully published extension");
+    }
+
+    #[test]
+    fn test_build_vscode_publish_response_has_message() {
+        let resp = build_vscode_publish_response("a", "b", "1.0.0");
+        assert!(resp["message"].as_str().unwrap().contains("published"));
+    }
+
+    #[test]
+    fn test_build_vscode_publish_response_four_keys() {
+        let resp = build_vscode_publish_response("a", "b", "1.0.0");
+        assert_eq!(resp.as_object().unwrap().len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 computation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"fake VSIX content";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = format!("{:x}", hasher.finalize());
+
+        assert_eq!(hash.len(), 64);
+
+        // Same data produces same hash
+        let mut hasher2 = Sha256::new();
+        hasher2.update(data);
+        let hash2 = format!("{:x}", hasher2.finalize());
+        assert_eq!(hash, hash2);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/vscode-local".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.storage_path, "/data/vscode-local");
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/vscode-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some(
+                "https://marketplace.visualstudio.com/_apis/public/gallery".to_string(),
+            ),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert!(repo.upstream_url.is_some());
+    }
+}

@@ -71,3 +71,128 @@ pub trait StorageBackend: Send + Sync {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_presigned_url_source_s3() {
+        let source = PresignedUrlSource::S3;
+        assert_eq!(source, PresignedUrlSource::S3);
+        assert_ne!(source, PresignedUrlSource::CloudFront);
+    }
+
+    #[test]
+    fn test_presigned_url_source_cloudfront() {
+        let source = PresignedUrlSource::CloudFront;
+        assert_eq!(source, PresignedUrlSource::CloudFront);
+    }
+
+    #[test]
+    fn test_presigned_url_source_azure() {
+        let source = PresignedUrlSource::Azure;
+        assert_eq!(source, PresignedUrlSource::Azure);
+    }
+
+    #[test]
+    fn test_presigned_url_source_gcs() {
+        let source = PresignedUrlSource::Gcs;
+        assert_eq!(source, PresignedUrlSource::Gcs);
+    }
+
+    #[test]
+    fn test_presigned_url_source_equality() {
+        assert_ne!(PresignedUrlSource::S3, PresignedUrlSource::Azure);
+        assert_ne!(PresignedUrlSource::CloudFront, PresignedUrlSource::Gcs);
+        assert_ne!(PresignedUrlSource::Azure, PresignedUrlSource::Gcs);
+    }
+
+    #[test]
+    fn test_presigned_url_source_copy() {
+        let source = PresignedUrlSource::S3;
+        let copied = source;
+        assert_eq!(source, copied);
+    }
+
+    #[test]
+    fn test_presigned_url_construction() {
+        let url = PresignedUrl {
+            url: "https://s3.amazonaws.com/bucket/key?signature=abc".to_string(),
+            expires_in: Duration::from_secs(3600),
+            source: PresignedUrlSource::S3,
+        };
+
+        assert_eq!(url.url, "https://s3.amazonaws.com/bucket/key?signature=abc");
+        assert_eq!(url.expires_in, Duration::from_secs(3600));
+        assert_eq!(url.source, PresignedUrlSource::S3);
+    }
+
+    #[test]
+    fn test_presigned_url_clone() {
+        let url = PresignedUrl {
+            url: "https://example.com/artifact".to_string(),
+            expires_in: Duration::from_secs(600),
+            source: PresignedUrlSource::Azure,
+        };
+        let cloned = url.clone();
+        assert_eq!(url.url, cloned.url);
+        assert_eq!(url.expires_in, cloned.expires_in);
+        assert_eq!(url.source, cloned.source);
+    }
+
+    #[test]
+    fn test_presigned_url_debug() {
+        let url = PresignedUrl {
+            url: "https://example.com".to_string(),
+            expires_in: Duration::from_secs(60),
+            source: PresignedUrlSource::Gcs,
+        };
+        let debug_str = format!("{:?}", url);
+        assert!(debug_str.contains("PresignedUrl"));
+        assert!(debug_str.contains("Gcs"));
+    }
+
+    /// A minimal StorageBackend implementation for testing default methods
+    struct TestBackend;
+
+    #[async_trait]
+    impl StorageBackend for TestBackend {
+        async fn put(&self, _key: &str, _content: Bytes) -> Result<()> {
+            Ok(())
+        }
+        async fn get(&self, _key: &str) -> Result<Bytes> {
+            Ok(Bytes::from_static(b"test"))
+        }
+        async fn exists(&self, _key: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_default_supports_redirect() {
+        let backend = TestBackend;
+        assert!(!backend.supports_redirect());
+    }
+
+    #[tokio::test]
+    async fn test_default_get_presigned_url() {
+        let backend = TestBackend;
+        let result = backend
+            .get_presigned_url("test-key", Duration::from_secs(3600))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_presigned_url_source_debug() {
+        let debug_str = format!("{:?}", PresignedUrlSource::S3);
+        assert_eq!(debug_str, "S3");
+        let debug_str = format!("{:?}", PresignedUrlSource::CloudFront);
+        assert_eq!(debug_str, "CloudFront");
+    }
+}

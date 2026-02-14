@@ -815,3 +815,309 @@ fn extract_plugin_from_multipart(
 
     Ok((file_bytes, plugin_name, plugin_version))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-plugin-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-plugin-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "my-token".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let headers = make_basic_header("admin", "pass123");
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "pass123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        assert_eq!(
+            extract_credentials(&headers),
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_none() {
+        assert!(extract_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_takes_priority() {
+        // Bearer should be tried first
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "my-token".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // xml_escape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_xml_escape_no_special() {
+        assert_eq!(xml_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_xml_escape_ampersand() {
+        assert_eq!(xml_escape("A & B"), "A &amp; B");
+    }
+
+    #[test]
+    fn test_xml_escape_less_than() {
+        assert_eq!(xml_escape("a < b"), "a &lt; b");
+    }
+
+    #[test]
+    fn test_xml_escape_greater_than() {
+        assert_eq!(xml_escape("a > b"), "a &gt; b");
+    }
+
+    #[test]
+    fn test_xml_escape_quotes() {
+        assert_eq!(xml_escape("say \"hello\""), "say &quot;hello&quot;");
+    }
+
+    #[test]
+    fn test_xml_escape_apostrophe() {
+        assert_eq!(xml_escape("it's"), "it&apos;s");
+    }
+
+    #[test]
+    fn test_xml_escape_all_special() {
+        assert_eq!(
+            xml_escape("<tag attr=\"val\" & 'x'>"),
+            "&lt;tag attr=&quot;val&quot; &amp; &apos;x&apos;&gt;"
+        );
+    }
+
+    #[test]
+    fn test_xml_escape_empty() {
+        assert_eq!(xml_escape(""), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_plugin_from_multipart
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_plugin_from_multipart_valid() {
+        let boundary = "myboundary";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"name\"\r\n\
+             \r\n\
+             my-plugin\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"version\"\r\n\
+             \r\n\
+             1.0.0\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"plugin.zip\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n\
+             FILECONTENT\r\n\
+             --{boundary}--\r\n",
+            boundary = boundary,
+        );
+        let result = extract_plugin_from_multipart(&content_type, body.as_bytes());
+        assert!(result.is_ok());
+        let (file_bytes, name, version) = result.unwrap();
+        assert_eq!(name, "my-plugin");
+        assert_eq!(version, "1.0.0");
+        assert!(!file_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_extract_plugin_from_multipart_missing_boundary() {
+        let content_type = "multipart/form-data";
+        let result = extract_plugin_from_multipart(content_type, b"some body");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_plugin_from_multipart_no_file() {
+        let boundary = "boundary";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"name\"\r\n\
+             \r\n\
+             my-plugin\r\n\
+             --{boundary}--\r\n",
+            boundary = boundary,
+        );
+        let result = extract_plugin_from_multipart(&content_type, body.as_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_plugin_from_multipart_defaults() {
+        let boundary = "b123";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        // Only file, no name or version fields
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"plugin.zip\"\r\n\
+             \r\n\
+             DATA\r\n\
+             --{boundary}--\r\n",
+            boundary = boundary,
+        );
+        let result = extract_plugin_from_multipart(&content_type, body.as_bytes());
+        assert!(result.is_ok());
+        let (_bytes, name, version) = result.unwrap();
+        assert_eq!(name, "unknown-plugin");
+        assert_eq!(version, "0.0.0");
+    }
+
+    #[test]
+    fn test_extract_plugin_from_multipart_quoted_boundary() {
+        let content_type = "multipart/form-data; boundary=\"myboundary\"";
+        let body = b"--myboundary\r\nContent-Disposition: form-data; name=\"plugin\"; filename=\"p.zip\"\r\n\r\nFILE\r\n--myboundary--\r\n";
+        let result = extract_plugin_from_multipart(content_type, body);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/jetbrains".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert!(info.upstream_url.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin filename and paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_filename() {
+        let name = "my-plugin";
+        let version = "2.1.0";
+        let filename = format!("{}-{}.zip", name, version);
+        assert_eq!(filename, "my-plugin-2.1.0.zip");
+    }
+
+    #[test]
+    fn test_plugin_artifact_path() {
+        let name = "my-plugin";
+        let version = "2.1.0";
+        let filename = format!("{}-{}.zip", name, version);
+        let artifact_path = format!("{}/{}/{}", name, version, filename);
+        assert_eq!(artifact_path, "my-plugin/2.1.0/my-plugin-2.1.0.zip");
+    }
+
+    #[test]
+    fn test_plugin_storage_key() {
+        let name = "intellij-rust";
+        let version = "0.4.0";
+        let filename = format!("{}-{}.zip", name, version);
+        let storage_key = format!("jetbrains/{}/{}/{}", name, version, filename);
+        assert_eq!(
+            storage_key,
+            "jetbrains/intellij-rust/0.4.0/intellij-rust-0.4.0.zip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"jetbrains plugin file";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin download URL
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_url_format() {
+        let repo_key = "jb-hosted";
+        let name = "my-plugin";
+        let version = "1.0.0";
+        let url = format!(
+            "/jetbrains/{}/plugin/download/{}/{}",
+            repo_key, name, version
+        );
+        assert_eq!(url, "/jetbrains/jb-hosted/plugin/download/my-plugin/1.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin metadata JSON
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_metadata() {
+        let metadata = serde_json::json!({
+            "plugin_id": "my-plugin",
+            "filename": "my-plugin-1.0.0.zip",
+        });
+        assert_eq!(metadata["plugin_id"], "my-plugin");
+    }
+}

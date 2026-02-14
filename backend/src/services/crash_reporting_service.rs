@@ -476,14 +476,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scrub_email() {
+    fn test_scrub_pii_email_and_ip() {
         let input = "Error for user john@example.com at 192.168.1.1";
         let result = scrub_pii(input, ScrubLevel::Minimal);
         assert_eq!(result, "Error for user [EMAIL] at [IP]");
     }
 
     #[test]
-    fn test_scrub_standard() {
+    fn test_scrub_standard_home_path() {
         let input = "Failed at /home/john/projects/app";
         let result = scrub_pii(input, ScrubLevel::Standard);
         assert!(result.contains("[USER_DIR]"));
@@ -502,5 +502,176 @@ mod tests {
         let sig1 = compute_error_signature("panic", "error A", "backend");
         let sig2 = compute_error_signature("panic", "error B", "backend");
         assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_error_signature_differs_by_type() {
+        let sig1 = compute_error_signature("panic", "same message", "backend");
+        let sig2 = compute_error_signature("error", "same message", "backend");
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_error_signature_differs_by_component() {
+        let sig1 = compute_error_signature("panic", "same message", "backend");
+        let sig2 = compute_error_signature("panic", "same message", "frontend");
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_error_signature_uses_first_line() {
+        // Multiline messages should produce same signature if first line matches
+        let sig1 = compute_error_signature("panic", "first line\nsecond line", "backend");
+        let sig2 = compute_error_signature("panic", "first line\ndifferent second", "backend");
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_error_signature_is_hex() {
+        let sig = compute_error_signature("panic", "test", "backend");
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+        // SHA256 produces 64 hex chars
+        assert_eq!(sig.len(), 64);
+    }
+
+    #[test]
+    fn test_scrub_pii_ipv4() {
+        let input = "Connection from 10.0.0.1 failed";
+        let result = scrub_pii(input, ScrubLevel::Minimal);
+        assert!(result.contains("[IP]"));
+        assert!(!result.contains("10.0.0.1"));
+    }
+
+    #[test]
+    fn test_scrub_pii_multiple_emails() {
+        let input = "From alice@foo.com to bob@bar.com";
+        let result = scrub_pii(input, ScrubLevel::Minimal);
+        assert!(!result.contains("alice@foo.com"));
+        assert!(!result.contains("bob@bar.com"));
+        assert_eq!(result.matches("[EMAIL]").count(), 2);
+    }
+
+    #[test]
+    fn test_scrub_pii_standard_user_paths() {
+        for path_prefix in ["/home/johndoe", "/Users/johndoe"] {
+            let input = format!("Error at {}/project/file.rs", path_prefix);
+            let result = scrub_pii(&input, ScrubLevel::Standard);
+            assert!(result.contains("[USER_DIR]"));
+            assert!(!result.contains("johndoe"));
+        }
+    }
+
+    #[test]
+    fn test_scrub_pii_no_false_positive_minimal() {
+        let input = "Error code 404 at component storage";
+        let result = scrub_pii(input, ScrubLevel::Minimal);
+        // Should not modify text that doesn't contain PII
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_scrub_level_from_str() {
+        for (input, expected) in [
+            ("minimal", ScrubLevel::Minimal),
+            ("aggressive", ScrubLevel::Aggressive),
+            ("standard", ScrubLevel::Standard),
+            ("unknown", ScrubLevel::Standard),
+            ("", ScrubLevel::Standard),
+        ] {
+            assert_eq!(input.parse::<ScrubLevel>().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_scrub_json_pii_string() {
+        let value = serde_json::json!("user john@example.com connected");
+        let result = scrub_json_pii(&value, ScrubLevel::Minimal);
+        assert!(result.as_str().unwrap().contains("[EMAIL]"));
+    }
+
+    #[test]
+    fn test_scrub_json_pii_object() {
+        let value = serde_json::json!({
+            "user": "john@example.com",
+            "ip": "192.168.1.1"
+        });
+        let result = scrub_json_pii(&value, ScrubLevel::Minimal);
+        assert!(result["user"].as_str().unwrap().contains("[EMAIL]"));
+        assert!(result["ip"].as_str().unwrap().contains("[IP]"));
+    }
+
+    #[test]
+    fn test_scrub_json_pii_removes_sensitive_keys() {
+        let value = serde_json::json!({
+            "message": "error occurred",
+            "password": "secret123",
+            "api_key": "key-abc",
+            "token": "jwt-token",
+        });
+        let result = scrub_json_pii(&value, ScrubLevel::Standard);
+        // Sensitive keys should be removed at Standard level
+        assert!(result.get("password").is_none());
+        assert!(result.get("api_key").is_none());
+        assert!(result.get("token").is_none());
+        assert!(result.get("message").is_some());
+    }
+
+    #[test]
+    fn test_scrub_json_pii_preserves_sensitive_keys_at_minimal() {
+        let value = serde_json::json!({
+            "message": "error",
+            "password": "secret123",
+        });
+        let result = scrub_json_pii(&value, ScrubLevel::Minimal);
+        // At Minimal level, sensitive keys are preserved
+        assert!(result.get("password").is_some());
+    }
+
+    #[test]
+    fn test_scrub_json_pii_array() {
+        let value = serde_json::json!(["john@example.com", "plain text", "192.168.1.1"]);
+        let result = scrub_json_pii(&value, ScrubLevel::Minimal);
+        let arr = result.as_array().unwrap();
+        assert!(arr[0].as_str().unwrap().contains("[EMAIL]"));
+        assert_eq!(arr[1].as_str().unwrap(), "plain text");
+        assert!(arr[2].as_str().unwrap().contains("[IP]"));
+    }
+
+    #[test]
+    fn test_scrub_json_pii_primitives_unchanged() {
+        assert_eq!(
+            scrub_json_pii(&serde_json::json!(42), ScrubLevel::Standard),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            scrub_json_pii(&serde_json::json!(true), ScrubLevel::Standard),
+            serde_json::json!(true)
+        );
+        assert!(scrub_json_pii(&serde_json::json!(null), ScrubLevel::Standard).is_null());
+    }
+
+    #[test]
+    fn test_telemetry_settings_default() {
+        let settings = TelemetrySettings::default();
+        assert!(!settings.enabled);
+        assert!(settings.review_before_send);
+        assert_eq!(settings.scrub_level, "standard");
+        assert!(!settings.include_logs);
+    }
+
+    #[test]
+    fn test_telemetry_settings_serialization() {
+        let settings = TelemetrySettings {
+            enabled: true,
+            review_before_send: false,
+            scrub_level: "aggressive".to_string(),
+            include_logs: true,
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let deserialized: TelemetrySettings = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.enabled);
+        assert!(!deserialized.review_before_send);
+        assert_eq!(deserialized.scrub_level, "aggressive");
+        assert!(deserialized.include_logs);
     }
 }

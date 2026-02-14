@@ -1542,6 +1542,485 @@ async fn get_assessment(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // SourceConnectionRow -> ConnectionResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_connection_response_from_row() {
+        let id = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let row = SourceConnectionRow {
+            id,
+            name: "My Artifactory".to_string(),
+            url: "https://artifactory.example.com".to_string(),
+            auth_type: "api_token".to_string(),
+            credentials_enc: vec![1, 2, 3],
+            source_type: "artifactory".to_string(),
+            created_at: now,
+            created_by: Some(Uuid::new_v4()),
+            verified_at: Some(now),
+        };
+        let response: ConnectionResponse = row.into();
+        assert_eq!(response.id, id);
+        assert_eq!(response.name, "My Artifactory");
+        assert_eq!(response.url, "https://artifactory.example.com");
+        assert_eq!(response.auth_type, "api_token");
+        assert_eq!(response.source_type, "artifactory");
+        assert!(response.verified_at.is_some());
+    }
+
+    #[test]
+    fn test_connection_response_no_verified_at() {
+        let row = SourceConnectionRow {
+            id: Uuid::new_v4(),
+            name: "Nexus".to_string(),
+            url: "https://nexus.local".to_string(),
+            auth_type: "basic_auth".to_string(),
+            credentials_enc: vec![],
+            source_type: "nexus".to_string(),
+            created_at: chrono::Utc::now(),
+            created_by: None,
+            verified_at: None,
+        };
+        let response: ConnectionResponse = row.into();
+        assert!(response.verified_at.is_none());
+        assert_eq!(response.source_type, "nexus");
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJobRow -> MigrationJobResponse conversion (progress calculation)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_job_response_progress_zero_total() {
+        let row = MigrationJobRow {
+            id: Uuid::new_v4(),
+            source_connection_id: Uuid::new_v4(),
+            status: "pending".to_string(),
+            job_type: "full".to_string(),
+            config: serde_json::json!({}),
+            total_items: 0,
+            completed_items: 0,
+            failed_items: 0,
+            skipped_items: 0,
+            total_bytes: 0,
+            transferred_bytes: 0,
+            started_at: None,
+            finished_at: None,
+            created_at: chrono::Utc::now(),
+            created_by: None,
+            error_summary: None,
+        };
+        let response: MigrationJobResponse = row.into();
+        assert_eq!(response.progress_percent, 0.0);
+        assert_eq!(response.status, "pending");
+    }
+
+    #[test]
+    fn test_migration_job_response_progress_half_done() {
+        let row = MigrationJobRow {
+            id: Uuid::new_v4(),
+            source_connection_id: Uuid::new_v4(),
+            status: "running".to_string(),
+            job_type: "full".to_string(),
+            config: serde_json::json!({}),
+            total_items: 100,
+            completed_items: 40,
+            failed_items: 5,
+            skipped_items: 5,
+            total_bytes: 1000,
+            transferred_bytes: 500,
+            started_at: Some(chrono::Utc::now()),
+            finished_at: None,
+            created_at: chrono::Utc::now(),
+            created_by: None,
+            error_summary: None,
+        };
+        let response: MigrationJobResponse = row.into();
+        // done = 40 + 5 + 5 = 50, progress = 50/100 * 100 = 50.0
+        assert!((response.progress_percent - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_migration_job_response_progress_complete() {
+        let row = MigrationJobRow {
+            id: Uuid::new_v4(),
+            source_connection_id: Uuid::new_v4(),
+            status: "completed".to_string(),
+            job_type: "full".to_string(),
+            config: serde_json::json!({}),
+            total_items: 200,
+            completed_items: 195,
+            failed_items: 3,
+            skipped_items: 2,
+            total_bytes: 50000,
+            transferred_bytes: 50000,
+            started_at: Some(chrono::Utc::now()),
+            finished_at: Some(chrono::Utc::now()),
+            created_at: chrono::Utc::now(),
+            created_by: None,
+            error_summary: None,
+        };
+        let response: MigrationJobResponse = row.into();
+        // done = 195 + 3 + 2 = 200, progress = 200/200 * 100 = 100.0
+        assert!((response.progress_percent - 100.0).abs() < f64::EPSILON);
+        assert!(response.finished_at.is_some());
+    }
+
+    #[test]
+    fn test_migration_job_response_with_error() {
+        let row = MigrationJobRow {
+            id: Uuid::new_v4(),
+            source_connection_id: Uuid::new_v4(),
+            status: "failed".to_string(),
+            job_type: "full".to_string(),
+            config: serde_json::json!({"include_repos": ["docker-local"]}),
+            total_items: 10,
+            completed_items: 3,
+            failed_items: 7,
+            skipped_items: 0,
+            total_bytes: 1024,
+            transferred_bytes: 300,
+            started_at: Some(chrono::Utc::now()),
+            finished_at: Some(chrono::Utc::now()),
+            created_at: chrono::Utc::now(),
+            created_by: None,
+            error_summary: Some("Connection timeout".to_string()),
+        };
+        let response: MigrationJobResponse = row.into();
+        assert_eq!(response.status, "failed");
+        assert_eq!(
+            response.error_summary,
+            Some("Connection timeout".to_string())
+        );
+        // done = 3 + 7 + 0 = 10, progress = 100%
+        assert!((response.progress_percent - 100.0).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationItemRow -> MigrationItemResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_item_response_from_row() {
+        let job_id = Uuid::new_v4();
+        let item_id = Uuid::new_v4();
+        let row = MigrationItemRow {
+            id: item_id,
+            job_id,
+            item_type: "artifact".to_string(),
+            source_path: "docker-local/image:latest".to_string(),
+            target_path: Some("docker-hosted/image:latest".to_string()),
+            status: "completed".to_string(),
+            size_bytes: 5000,
+            checksum_source: Some("sha256:abc".to_string()),
+            checksum_target: Some("sha256:abc".to_string()),
+            metadata: Some(serde_json::json!({"format": "docker"})),
+            error_message: None,
+            retry_count: 0,
+            started_at: Some(chrono::Utc::now()),
+            completed_at: Some(chrono::Utc::now()),
+        };
+        let response: MigrationItemResponse = row.into();
+        assert_eq!(response.id, item_id);
+        assert_eq!(response.job_id, job_id);
+        assert_eq!(response.item_type, "artifact");
+        assert_eq!(response.status, "completed");
+        assert_eq!(response.size_bytes, 5000);
+        assert!(response.error_message.is_none());
+    }
+
+    #[test]
+    fn test_migration_item_response_failed() {
+        let row = MigrationItemRow {
+            id: Uuid::new_v4(),
+            job_id: Uuid::new_v4(),
+            item_type: "artifact".to_string(),
+            source_path: "npm-remote/express".to_string(),
+            target_path: None,
+            status: "failed".to_string(),
+            size_bytes: 0,
+            checksum_source: None,
+            checksum_target: None,
+            metadata: None,
+            error_message: Some("Download failed: 404".to_string()),
+            retry_count: 3,
+            started_at: Some(chrono::Utc::now()),
+            completed_at: None,
+        };
+        let response: MigrationItemResponse = row.into();
+        assert_eq!(response.status, "failed");
+        assert_eq!(
+            response.error_message,
+            Some("Download failed: 404".to_string())
+        );
+        assert_eq!(response.retry_count, 3);
+        assert!(response.target_path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationReportRow -> MigrationReportResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_migration_report_response_from_row() {
+        let job_id = Uuid::new_v4();
+        let report_id = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let row = MigrationReportRow {
+            id: report_id,
+            job_id,
+            generated_at: now,
+            summary: serde_json::json!({"total": 100, "completed": 95}),
+            warnings: serde_json::json!(["Low disk space"]),
+            errors: serde_json::json!([]),
+            recommendations: serde_json::json!(["Increase bandwidth"]),
+        };
+        let response: MigrationReportResponse = row.into();
+        assert_eq!(response.id, report_id);
+        assert_eq!(response.job_id, job_id);
+        assert_eq!(response.summary["total"], 100);
+        assert!(response.errors.as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ConnectionCredentials serialization/deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_connection_credentials_token() {
+        let creds = ConnectionCredentials {
+            token: Some("my-api-token".to_string()),
+            username: None,
+            password: None,
+        };
+        let json = serde_json::to_string(&creds).unwrap();
+        let parsed: ConnectionCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.token, Some("my-api-token".to_string()));
+        assert!(parsed.username.is_none());
+    }
+
+    #[test]
+    fn test_connection_credentials_basic() {
+        let creds = ConnectionCredentials {
+            token: None,
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+        };
+        let json = serde_json::to_string(&creds).unwrap();
+        let parsed: ConnectionCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.username, Some("admin".to_string()));
+        assert_eq!(parsed.password, Some("secret".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // PaginationInfo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_info() {
+        let page_info = PaginationInfo {
+            page: 2,
+            per_page: 20,
+            total: 100,
+            total_pages: 5,
+        };
+        let json = serde_json::to_value(&page_info).unwrap();
+        assert_eq!(json["page"], 2);
+        assert_eq!(json["per_page"], 20);
+        assert_eq!(json["total"], 100);
+        assert_eq!(json["total_pages"], 5);
+    }
+
+    #[test]
+    fn test_pagination_calculation() {
+        let total = 57i64;
+        let per_page = 20i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 3);
+    }
+
+    #[test]
+    fn test_pagination_calculation_exact() {
+        let total = 40i64;
+        let per_page = 20i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 2);
+    }
+
+    #[test]
+    fn test_pagination_calculation_zero() {
+        let total = 0i64;
+        let per_page = 20i64;
+        let total_pages = (total + per_page - 1) / per_page;
+        assert_eq!(total_pages, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ListMigrationsQuery defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_migrations_query_defaults() {
+        let q: ListMigrationsQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.status.is_none());
+        assert!(q.page.is_none());
+        assert!(q.per_page.is_none());
+    }
+
+    #[test]
+    fn test_list_migrations_query_with_values() {
+        let q: ListMigrationsQuery =
+            serde_json::from_str(r#"{"status":"running","page":3,"per_page":10}"#).unwrap();
+        assert_eq!(q.status, Some("running".to_string()));
+        assert_eq!(q.page, Some(3));
+        assert_eq!(q.per_page, Some(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // ListItemsQuery
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_items_query() {
+        let q: ListItemsQuery =
+            serde_json::from_str(r#"{"status":"failed","item_type":"artifact"}"#).unwrap();
+        assert_eq!(q.status, Some("failed".to_string()));
+        assert_eq!(q.item_type, Some("artifact".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // ReportQuery
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_report_query_json() {
+        let q: ReportQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.format.is_none());
+    }
+
+    #[test]
+    fn test_report_query_html() {
+        let q: ReportQuery = serde_json::from_str(r#"{"format":"html"}"#).unwrap();
+        assert_eq!(q.format, Some("html".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // ConnectionTestResult
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_connection_test_result_success() {
+        let result = ConnectionTestResult {
+            success: true,
+            message: "Connection successful".to_string(),
+            artifactory_version: Some("7.55.0".to_string()),
+            license_type: Some("Enterprise".to_string()),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["artifactory_version"], "7.55.0");
+    }
+
+    #[test]
+    fn test_connection_test_result_failure() {
+        let result = ConnectionTestResult {
+            success: false,
+            message: "Connection failed: timeout".to_string(),
+            artifactory_version: None,
+            license_type: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], false);
+        assert!(json["artifactory_version"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // SourceRepository serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_repository_serialization() {
+        let repo = SourceRepository {
+            key: "docker-local".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "docker".to_string(),
+            url: "https://art.example.com/docker-local".to_string(),
+            description: Some("Docker images".to_string()),
+        };
+        let json = serde_json::to_value(&repo).unwrap();
+        assert_eq!(json["key"], "docker-local");
+        assert_eq!(json["type"], "local"); // serde rename
+        assert_eq!(json["package_type"], "docker");
+    }
+
+    // -----------------------------------------------------------------------
+    // AssessmentResult
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assessment_result_empty() {
+        let result = AssessmentResult {
+            job_id: Uuid::new_v4(),
+            status: "assessing".to_string(),
+            repositories: vec![],
+            users_count: 0,
+            groups_count: 0,
+            permissions_count: 0,
+            total_artifacts: 0,
+            total_size_bytes: 0,
+            estimated_duration_seconds: 0,
+            warnings: vec![],
+            blockers: vec![],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json["repositories"].as_array().unwrap().is_empty());
+        assert!(json["warnings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_repository_assessment() {
+        let assessment = RepositoryAssessment {
+            key: "npm-local".to_string(),
+            repo_type: "local".to_string(),
+            package_type: "npm".to_string(),
+            artifact_count: 500,
+            total_size_bytes: 1024 * 1024 * 100,
+            compatibility: "full".to_string(),
+            warnings: vec!["Large repository".to_string()],
+        };
+        let json = serde_json::to_value(&assessment).unwrap();
+        assert_eq!(json["key"], "npm-local");
+        assert_eq!(json["type"], "local");
+        assert_eq!(json["artifact_count"], 500);
+    }
+
+    // -----------------------------------------------------------------------
+    // Offset calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_offset_calculation() {
+        let page = 3i64;
+        let per_page = 20i64;
+        let offset = (page - 1) * per_page;
+        assert_eq!(offset, 40);
+    }
+
+    #[test]
+    fn test_offset_first_page() {
+        let page = 1i64;
+        let per_page = 50i64;
+        let offset = (page - 1) * per_page;
+        assert_eq!(offset, 0);
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(

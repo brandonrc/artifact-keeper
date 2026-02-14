@@ -230,4 +230,56 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_factory_create_handler_preserves_format_key() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let factory = WasmFormatHandlerFactory::new(registry);
+
+        let handler1 = factory.create_handler("format-a");
+        let handler2 = factory.create_handler("format-b");
+
+        assert_eq!(handler1.format_key(), "format-a");
+        assert_eq!(handler2.format_key(), "format-b");
+        assert_ne!(handler1.format_key(), handler2.format_key());
+    }
+
+    #[tokio::test]
+    async fn test_factory_registry_reference() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let factory = WasmFormatHandlerFactory::new(registry.clone());
+        // The factory should hold a reference to the same registry
+        assert!(Arc::ptr_eq(factory.registry(), &registry));
+    }
+
+    #[tokio::test]
+    async fn test_factory_has_format_nonexistent() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let factory = WasmFormatHandlerFactory::new(registry);
+        assert!(!factory.has_format("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_generate_index_no_plugin() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let handler = WasmFormatHandler::new("nonexistent".to_string(), registry);
+
+        let result = handler.generate_index().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_wasm_handler_format_key_with_special_chars() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let handler = WasmFormatHandler::new("my-org/custom-format-v2".to_string(), registry);
+        assert_eq!(handler.format_key(), "my-org/custom-format-v2");
+    }
+
+    #[tokio::test]
+    async fn test_wasm_handler_empty_format_key() {
+        let registry = Arc::new(PluginRegistry::new().unwrap());
+        let handler = WasmFormatHandler::new(String::new(), registry);
+        assert_eq!(handler.format_key(), "");
+        assert!(!handler.is_available().await);
+    }
 }

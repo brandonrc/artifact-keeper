@@ -735,3 +735,147 @@ fn extract_pubspec_from_archive(data: &[u8]) -> Result<crate::formats::r#pub::Pu
 
     Err("pubspec.yaml not found in archive".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::AUTHORIZATION;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer dart_token"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "dart_token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer dart_token"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "dart_token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_none() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_archive_path_parsing_valid() {
+        let archive_path = "my_package/versions/1.0.0.tar.gz";
+        let parts: Vec<&str> = archive_path.splitn(3, '/').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "my_package");
+        assert_eq!(parts[1], "versions");
+        assert_eq!(parts[2], "1.0.0.tar.gz");
+
+        let version = parts[2].strip_suffix(".tar.gz");
+        assert_eq!(version, Some("1.0.0"));
+    }
+
+    #[test]
+    fn test_archive_path_parsing_no_tar_gz() {
+        let version_file = "1.0.0.zip";
+        let result = version_file.strip_suffix(".tar.gz");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_archive_path_parsing_too_few_parts() {
+        let archive_path = "my_package/1.0.0.tar.gz";
+        let parts: Vec<&str> = archive_path.splitn(3, '/').collect();
+        assert_eq!(parts.len(), 2);
+        // This would be rejected: parts.len() < 3
+    }
+
+    #[test]
+    fn test_archive_path_wrong_middle_segment() {
+        let archive_path = "my_package/other/1.0.0.tar.gz";
+        let parts: Vec<&str> = archive_path.splitn(3, '/').collect();
+        assert_eq!(parts.len(), 3);
+        assert_ne!(parts[1], "versions");
+        // This would be rejected: parts[1] != "versions"
+    }
+
+    #[test]
+    fn test_pub_filename_format() {
+        let pkg_name = "my_package";
+        let pkg_version = "2.1.0";
+        let filename = format!("{}-{}.tar.gz", pkg_name, pkg_version);
+        assert_eq!(filename, "my_package-2.1.0.tar.gz");
+    }
+
+    #[test]
+    fn test_pub_artifact_path_format() {
+        let pkg_name = "flutter_utils";
+        let pkg_version = "0.5.0";
+        let filename = format!("{}-{}.tar.gz", pkg_name, pkg_version);
+        let artifact_path = format!("{}/{}/{}", pkg_name, pkg_version, filename);
+        assert_eq!(
+            artifact_path,
+            "flutter_utils/0.5.0/flutter_utils-0.5.0.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_pub_storage_key_format() {
+        let pkg_name = "provider";
+        let pkg_version = "6.0.0";
+        let filename = "provider-6.0.0.tar.gz";
+        let storage_key = format!("pub/{}/{}/{}", pkg_name, pkg_version, filename);
+        assert_eq!(storage_key, "pub/provider/6.0.0/provider-6.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_upload_url_format() {
+        let repo_key = "my-pub-repo";
+        let upload_url = format!("/pub/{}/api/packages/versions/newUpload", repo_key);
+        assert_eq!(
+            upload_url,
+            "/pub/my-pub-repo/api/packages/versions/newUpload"
+        );
+    }
+
+    #[test]
+    fn test_extract_pubspec_from_empty_archive() {
+        let result = extract_pubspec_from_archive(b"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_pubspec_from_invalid_archive() {
+        let result = extract_pubspec_from_archive(b"not a valid gzip archive");
+        assert!(result.is_err());
+    }
+}

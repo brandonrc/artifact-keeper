@@ -15,6 +15,39 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+// ---------------------------------------------------------------------------
+// Pure helper functions (no DB, testable in isolation)
+// ---------------------------------------------------------------------------
+
+/// Map an algorithm string to the RSA key size in bits.
+/// Returns `Ok(bits)` for valid RSA algorithms, `Err(message)` for unsupported ones.
+pub(crate) fn algorithm_to_bits(algorithm: &str) -> std::result::Result<usize, String> {
+    match algorithm {
+        "rsa2048" => Ok(2048),
+        "rsa4096" | "rsa" => Ok(4096),
+        other => Err(format!(
+            "Unsupported algorithm: {}. Use rsa2048 or rsa4096.",
+            other
+        )),
+    }
+}
+
+/// Compute the SHA-256 fingerprint of a DER-encoded public key.
+/// Returns the full hex-encoded fingerprint.
+pub(crate) fn compute_fingerprint(public_key_der: &[u8]) -> String {
+    hex::encode(Sha256::digest(public_key_der))
+}
+
+/// Derive the short key ID (last 16 hex chars) from a full fingerprint.
+pub(crate) fn derive_key_id(fingerprint: &str) -> String {
+    fingerprint[fingerprint.len().saturating_sub(16)..].to_string()
+}
+
+/// Build a rotated key name from an existing key name.
+pub(crate) fn build_rotated_key_name(original_name: &str) -> String {
+    format!("{} (rotated)", original_name)
+}
+
 /// Service for managing signing keys and signing operations.
 pub struct SigningService {
     db: PgPool,
@@ -42,16 +75,7 @@ impl SigningService {
 
     /// Generate a new RSA key pair and store it.
     pub async fn create_key(&self, req: CreateKeyRequest) -> Result<SigningKeyPublic> {
-        let bits = match req.algorithm.as_str() {
-            "rsa2048" => 2048,
-            "rsa4096" | "rsa" => 4096,
-            other => {
-                return Err(AppError::Validation(format!(
-                    "Unsupported algorithm: {}. Use rsa2048 or rsa4096.",
-                    other
-                )))
-            }
-        };
+        let bits = algorithm_to_bits(&req.algorithm).map_err(AppError::Validation)?;
 
         // Generate RSA key pair (use OsRng from rsa's rand_core to avoid version mismatch)
         let mut rng = rsa::rand_core::OsRng;
@@ -76,8 +100,8 @@ impl SigningService {
         let public_der = public_key
             .to_public_key_der()
             .map_err(|e| AppError::Internal(format!("Failed to encode public key DER: {}", e)))?;
-        let fingerprint = hex::encode(Sha256::digest(public_der.as_ref()));
-        let key_id = fingerprint[fingerprint.len() - 16..].to_string();
+        let fingerprint = compute_fingerprint(public_der.as_ref());
+        let key_id = derive_key_id(&fingerprint);
 
         // Build GPG-style armored public key if key_type is gpg
         let public_key_out = if req.key_type == "gpg" {
@@ -332,7 +356,7 @@ impl SigningService {
         let new_key = self
             .create_key(CreateKeyRequest {
                 repository_id: old_key.repository_id,
-                name: format!("{} (rotated)", old_key.name),
+                name: build_rotated_key_name(&old_key.name),
                 key_type: old_key.key_type.clone(),
                 algorithm: old_key.algorithm.clone(),
                 uid_name: old_key.uid_name.clone(),
@@ -571,30 +595,451 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Algorithm-to-bits mapping validation
+    // algorithm_to_bits (extracted pure function)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_algorithm_to_bits_mapping() {
-        let test_cases = vec![
-            ("rsa2048", Some(2048usize)),
-            ("rsa4096", Some(4096)),
-            ("rsa", Some(4096)),
-            ("ed25519", None),
-            ("unknown", None),
-        ];
+    fn test_algorithm_to_bits_rsa2048() {
+        assert_eq!(algorithm_to_bits("rsa2048").unwrap(), 2048);
+    }
 
-        for (algo, expected_bits) in test_cases {
-            let bits: Option<usize> = match algo {
-                "rsa2048" => Some(2048),
-                "rsa4096" | "rsa" => Some(4096),
-                _ => None,
-            };
-            assert_eq!(
-                bits, expected_bits,
-                "Algorithm '{}' should map to {:?} bits",
-                algo, expected_bits
-            );
-        }
+    #[test]
+    fn test_algorithm_to_bits_rsa4096() {
+        assert_eq!(algorithm_to_bits("rsa4096").unwrap(), 4096);
+    }
+
+    #[test]
+    fn test_algorithm_to_bits_rsa_alias() {
+        assert_eq!(algorithm_to_bits("rsa").unwrap(), 4096);
+    }
+
+    #[test]
+    fn test_algorithm_to_bits_unsupported() {
+        let result = algorithm_to_bits("ed25519");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported algorithm"));
+    }
+
+    #[test]
+    fn test_algorithm_to_bits_unknown() {
+        assert!(algorithm_to_bits("unknown").is_err());
+    }
+
+    #[test]
+    fn test_algorithm_to_bits_empty() {
+        assert!(algorithm_to_bits("").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_fingerprint (extracted pure function)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_fingerprint_is_valid_hex() {
+        let data = b"test public key data";
+        let fp = compute_fingerprint(data);
+        assert_eq!(fp.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_compute_fingerprint_deterministic() {
+        let data = b"same data";
+        let fp1 = compute_fingerprint(data);
+        let fp2 = compute_fingerprint(data);
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_compute_fingerprint_different_data() {
+        let fp1 = compute_fingerprint(b"data A");
+        let fp2 = compute_fingerprint(b"data B");
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_compute_fingerprint_empty() {
+        let fp = compute_fingerprint(b"");
+        assert_eq!(fp.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // derive_key_id (extracted pure function)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_derive_key_id_from_fingerprint() {
+        let fp = "a".repeat(64);
+        let kid = derive_key_id(&fp);
+        assert_eq!(kid.len(), 16);
+        assert_eq!(kid, "a".repeat(16));
+    }
+
+    #[test]
+    fn test_derive_key_id_is_suffix() {
+        let fp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let kid = derive_key_id(fp);
+        assert_eq!(kid, &fp[48..]);
+    }
+
+    #[test]
+    fn test_derive_key_id_short_fingerprint() {
+        // Edge case: fingerprint shorter than 16
+        let fp = "abcdef";
+        let kid = derive_key_id(fp);
+        assert_eq!(kid, "abcdef");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_rotated_key_name (extracted pure function)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_rotated_key_name() {
+        assert_eq!(build_rotated_key_name("my-key"), "my-key (rotated)");
+    }
+
+    #[test]
+    fn test_build_rotated_key_name_already_rotated() {
+        assert_eq!(
+            build_rotated_key_name("my-key (rotated)"),
+            "my-key (rotated) (rotated)"
+        );
+    }
+
+    #[test]
+    fn test_build_rotated_key_name_empty() {
+        assert_eq!(build_rotated_key_name(""), " (rotated)");
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateKeyRequest construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_key_request_construction() {
+        let repo_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+        let req = CreateKeyRequest {
+            repository_id: Some(repo_id),
+            name: "my-signing-key".to_string(),
+            key_type: "rsa".to_string(),
+            algorithm: "rsa4096".to_string(),
+            uid_name: Some("John Doe".to_string()),
+            uid_email: Some("john@example.com".to_string()),
+            created_by: Some(user_id),
+        };
+        assert_eq!(req.repository_id, Some(repo_id));
+        assert_eq!(req.name, "my-signing-key");
+        assert_eq!(req.key_type, "rsa");
+        assert_eq!(req.algorithm, "rsa4096");
+        assert_eq!(req.uid_name, Some("John Doe".to_string()));
+        assert_eq!(req.uid_email, Some("john@example.com".to_string()));
+        assert_eq!(req.created_by, Some(user_id));
+    }
+
+    #[test]
+    fn test_create_key_request_minimal() {
+        let req = CreateKeyRequest {
+            repository_id: None,
+            name: "global-key".to_string(),
+            key_type: "gpg".to_string(),
+            algorithm: "rsa2048".to_string(),
+            uid_name: None,
+            uid_email: None,
+            created_by: None,
+        };
+        assert!(req.repository_id.is_none());
+        assert!(req.uid_name.is_none());
+        assert!(req.uid_email.is_none());
+        assert!(req.created_by.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CredentialEncryption - additional edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_encryption_empty_data() {
+        let encryption = CredentialEncryption::from_passphrase("test-key");
+        let encrypted = encryption.encrypt(b"");
+        let decrypted = encryption.decrypt(&encrypted).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn test_encryption_large_data() {
+        let encryption = CredentialEncryption::from_passphrase("test-key");
+        let data = vec![0xABu8; 10_000];
+        let encrypted = encryption.encrypt(&data);
+        let decrypted = encryption.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_encryption_binary_data() {
+        let encryption = CredentialEncryption::from_passphrase("binary-test");
+        let data: Vec<u8> = (0..=255).collect();
+        let encrypted = encryption.encrypt(&data);
+        let decrypted = encryption.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_encryption_different_passphrases_produce_different_output() {
+        let enc1 = CredentialEncryption::from_passphrase("key-1");
+        let enc2 = CredentialEncryption::from_passphrase("key-2");
+        let data = b"secret data";
+        let encrypted1 = enc1.encrypt(data);
+        let encrypted2 = enc2.encrypt(data);
+        assert_ne!(encrypted1, encrypted2);
+    }
+
+    #[test]
+    fn test_encryption_same_passphrase_decrypts_to_same() {
+        let enc1 = CredentialEncryption::from_passphrase("same-key");
+        let enc2 = CredentialEncryption::from_passphrase("same-key");
+        let data = b"test data";
+        let encrypted1 = enc1.encrypt(data);
+        let encrypted2 = enc2.encrypt(data);
+        // Both should decrypt to the same plaintext
+        let decrypted1 = enc1.decrypt(&encrypted1).unwrap();
+        let decrypted2 = enc2.decrypt(&encrypted2).unwrap();
+        assert_eq!(decrypted1, data);
+        assert_eq!(decrypted2, data);
+        // Cross-decryption should also work
+        let cross1 = enc2.decrypt(&encrypted1).unwrap();
+        let cross2 = enc1.decrypt(&encrypted2).unwrap();
+        assert_eq!(cross1, data);
+        assert_eq!(cross2, data);
+    }
+
+    // -----------------------------------------------------------------------
+    // SigningKey fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_signing_key_all_fields() {
+        let key = generate_test_signing_key("all-fields-test");
+        assert_eq!(key.name, "test-key");
+        assert_eq!(key.key_type, "rsa");
+        assert_eq!(key.algorithm, "rsa2048");
+        assert!(key.is_active);
+        assert!(key.repository_id.is_none());
+        assert!(key.uid_name.is_none());
+        assert!(key.uid_email.is_none());
+        assert!(key.expires_at.is_none());
+        assert!(key.created_by.is_none());
+        assert!(key.rotated_from.is_none());
+        assert!(key.last_used_at.is_none());
+    }
+
+    #[test]
+    fn test_signing_key_clone() {
+        let key = generate_test_signing_key("clone-test");
+        let cloned = key.clone();
+        assert_eq!(key.id, cloned.id);
+        assert_eq!(key.name, cloned.name);
+        assert_eq!(key.fingerprint, cloned.fingerprint);
+        assert_eq!(key.key_id, cloned.key_id);
+        assert_eq!(key.public_key_pem, cloned.public_key_pem);
+        assert_eq!(key.private_key_enc, cloned.private_key_enc);
+    }
+
+    // -----------------------------------------------------------------------
+    // SigningKeyPublic fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_signing_key_public_fields() {
+        let key = generate_test_signing_key("pub-fields-test");
+        let public: SigningKeyPublic = key.clone().into();
+
+        assert_eq!(public.id, key.id);
+        assert_eq!(public.repository_id, key.repository_id);
+        assert_eq!(public.name, key.name);
+        assert_eq!(public.key_type, key.key_type);
+        assert_eq!(public.fingerprint, key.fingerprint);
+        assert_eq!(public.key_id, key.key_id);
+        assert_eq!(public.public_key_pem, key.public_key_pem);
+        assert_eq!(public.algorithm, key.algorithm);
+        assert_eq!(public.uid_name, key.uid_name);
+        assert_eq!(public.uid_email, key.uid_email);
+        assert_eq!(public.is_active, key.is_active);
+        assert_eq!(public.created_at, key.created_at);
+        assert_eq!(public.last_used_at, key.last_used_at);
+    }
+
+    // -----------------------------------------------------------------------
+    // Public key PEM format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_public_key_pem_format() {
+        let key = generate_test_signing_key("pem-format-test");
+        assert!(key.public_key_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
+        assert!(key.public_key_pem.ends_with("-----END PUBLIC KEY-----\n"));
+    }
+
+    #[test]
+    fn test_public_key_is_parseable() {
+        let key = generate_test_signing_key("parseable-test");
+        let result = RsaPublicKey::from_public_key_pem(&key.public_key_pem);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Fingerprint properties
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fingerprint_deterministic() {
+        // Two keys should have different fingerprints (different random keys)
+        let key1 = generate_test_signing_key("fp-det-1");
+        let key2 = generate_test_signing_key("fp-det-2");
+        assert_ne!(
+            key1.fingerprint.as_ref().unwrap(),
+            key2.fingerprint.as_ref().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_key_id_is_hex() {
+        let key = generate_test_signing_key("kid-hex-test");
+        let key_id = key.key_id.as_ref().unwrap();
+        assert!(key_id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // -----------------------------------------------------------------------
+    // sign / verify with different data
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sign_empty_data() {
+        let passphrase = "empty-data-sign";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = b"";
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let signature = rsa_signing_key.sign(data);
+
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+
+        let public_key = RsaPublicKey::from_public_key_pem(&signing_key.public_key_pem).unwrap();
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+        assert!(verifying_key.verify(data, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_sign_large_data() {
+        let passphrase = "large-data-sign";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = vec![0xBBu8; 100_000];
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let signature = rsa_signing_key.sign(&data);
+
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+
+        let public_key = RsaPublicKey::from_public_key_pem(&signing_key.public_key_pem).unwrap();
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+        assert!(verifying_key.verify(&data, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_tampered_data_fails_verification() {
+        let passphrase = "tamper-test";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = b"original data";
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let signature = rsa_signing_key.sign(data);
+
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+
+        let public_key = RsaPublicKey::from_public_key_pem(&signing_key.public_key_pem).unwrap();
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+        // Tampered data should fail verification
+        assert!(verifying_key.verify(b"tampered data", &signature).is_err());
+    }
+
+    #[test]
+    fn test_wrong_key_fails_verification() {
+        let signing_key1 = generate_test_signing_key("key-1-verify");
+        let signing_key2 = generate_test_signing_key("key-2-verify");
+
+        let encryption1 = CredentialEncryption::from_passphrase("key-1-verify");
+        let private_pem_bytes = encryption1.decrypt(&signing_key1.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = b"test data for wrong key";
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let signature = rsa_signing_key.sign(data);
+
+        use rsa::pkcs1v15::VerifyingKey;
+        use rsa::signature::Verifier;
+
+        // Try to verify with key2's public key - should fail
+        let public_key2 = RsaPublicKey::from_public_key_pem(&signing_key2.public_key_pem).unwrap();
+        let verifying_key2 = VerifyingKey::<Sha256>::new(public_key2);
+        assert!(verifying_key2.verify(data, &signature).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Deterministic signing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sign_same_data_deterministic() {
+        let passphrase = "deterministic-sign";
+        let signing_key = generate_test_signing_key(passphrase);
+
+        let encryption = CredentialEncryption::from_passphrase(passphrase);
+        let private_pem_bytes = encryption.decrypt(&signing_key.private_key_enc).unwrap();
+        let private_pem = std::str::from_utf8(&private_pem_bytes).unwrap();
+        let private_key = RsaPrivateKey::from_pkcs8_pem(private_pem).unwrap();
+
+        let data = b"deterministic test data";
+        let rsa_signing_key = RsaSigningKey::<Sha256>::new(private_key);
+        let sig1 = rsa_signing_key.sign(data);
+        let sig2 = rsa_signing_key.sign(data);
+
+        // PKCS#1 v1.5 is deterministic (unlike PSS)
+        assert_eq!(sig1.to_bytes(), sig2.to_bytes());
+    }
+
+    // -----------------------------------------------------------------------
+    // Private key encrypted storage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_private_key_not_stored_plaintext() {
+        let key = generate_test_signing_key("not-plaintext");
+        let enc_bytes = &key.private_key_enc;
+        // The encrypted bytes should NOT contain the PEM header
+        let enc_str = String::from_utf8_lossy(enc_bytes);
+        assert!(
+            !enc_str.contains("BEGIN PRIVATE KEY"),
+            "Private key should not be stored as plaintext PEM"
+        );
     }
 }

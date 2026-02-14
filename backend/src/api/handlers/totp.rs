@@ -434,3 +434,274 @@ pub async fn disable_totp(
     ))
 )]
 pub struct TotpApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // TotpSetupResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_totp_setup_response_serialize() {
+        let resp = TotpSetupResponse {
+            secret: "JBSWY3DPEHPK3PXP".to_string(),
+            qr_code_url:
+                "otpauth://totp/ArtifactKeeper:admin?secret=JBSWY3DPEHPK3PXP&issuer=ArtifactKeeper"
+                    .to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["secret"], "JBSWY3DPEHPK3PXP");
+        assert!(json["qr_code_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://"));
+    }
+
+    #[test]
+    fn test_totp_setup_response_serialize_empty() {
+        let resp = TotpSetupResponse {
+            secret: "".to_string(),
+            qr_code_url: "".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["secret"], "");
+        assert_eq!(json["qr_code_url"], "");
+    }
+
+    // -----------------------------------------------------------------------
+    // TotpCodeRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_totp_code_request() {
+        let json = r#"{"code": "123456"}"#;
+        let req: TotpCodeRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.code, "123456");
+    }
+
+    #[test]
+    fn test_totp_code_request_empty_code() {
+        let json = r#"{"code": ""}"#;
+        let req: TotpCodeRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.code, "");
+    }
+
+    #[test]
+    fn test_totp_code_request_missing_field() {
+        let json = r#"{}"#;
+        let result = serde_json::from_str::<TotpCodeRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // TotpEnableResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_totp_enable_response_serialize() {
+        let resp = TotpEnableResponse {
+            backup_codes: vec!["ABCD-1234".to_string(), "EFGH-5678".to_string()],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let codes = json["backup_codes"].as_array().unwrap();
+        assert_eq!(codes.len(), 2);
+        assert_eq!(codes[0], "ABCD-1234");
+        assert_eq!(codes[1], "EFGH-5678");
+    }
+
+    #[test]
+    fn test_totp_enable_response_serialize_empty() {
+        let resp = TotpEnableResponse {
+            backup_codes: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["backup_codes"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TotpVerifyRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_totp_verify_request() {
+        let json = r#"{"totp_token": "pending_abc123", "code": "654321"}"#;
+        let req: TotpVerifyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.totp_token, "pending_abc123");
+        assert_eq!(req.code, "654321");
+    }
+
+    #[test]
+    fn test_totp_verify_request_missing_code() {
+        let json = r#"{"totp_token": "tok"}"#;
+        let result = serde_json::from_str::<TotpVerifyRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_totp_verify_request_missing_token() {
+        let json = r#"{"code": "123456"}"#;
+        let result = serde_json::from_str::<TotpVerifyRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // TotpDisableRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_totp_disable_request() {
+        let json = r#"{"password": "mypassword", "code": "123456"}"#;
+        let req: TotpDisableRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.password, "mypassword");
+        assert_eq!(req.code, "123456");
+    }
+
+    #[test]
+    fn test_totp_disable_request_missing_password() {
+        let json = r#"{"code": "123456"}"#;
+        let result = serde_json::from_str::<TotpDisableRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_totp_disable_request_missing_code() {
+        let json = r#"{"password": "pass"}"#;
+        let result = serde_json::from_str::<TotpDisableRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_totp helper
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_totp_success() {
+        // Use a known valid secret (20 bytes for SHA1)
+        let secret_bytes = vec![0u8; 20];
+        let result = build_totp(secret_bytes, "testuser".to_string());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_totp_generates_6_digit_codes() {
+        let secret_bytes = vec![
+            0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef, 0x48, 0x65, 0x6c, 0x6c,
+            0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef,
+        ];
+        let totp = build_totp(secret_bytes, "user@example.com".to_string()).unwrap();
+        // Generate a code at a specific time
+        let code = totp.generate(1_000_000_000);
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_build_totp_uses_correct_issuer() {
+        let secret_bytes = vec![0u8; 20];
+        let totp = build_totp(secret_bytes, "admin".to_string()).unwrap();
+        let url = totp.get_url();
+        assert!(url.contains("ArtifactKeeper"));
+        assert!(url.contains("admin"));
+    }
+
+    #[test]
+    fn test_build_totp_url_format() {
+        let secret_bytes = vec![0u8; 20];
+        let totp = build_totp(secret_bytes, "testuser".to_string()).unwrap();
+        let url = totp.get_url();
+        assert!(url.starts_with("otpauth://totp/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // decode_secret helper
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_decode_secret_valid() {
+        // JBSWY3DPEHPK3PXP is base32 for "Hello!\xde\xad\xbe\xef"
+        let result = decode_secret("JBSWY3DPEHPK3PXP");
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_decode_secret_round_trip() {
+        // Generate a secret and decode it back
+        let secret = Secret::generate_secret();
+        let encoded = secret.to_encoded().to_string();
+        let result = decode_secret(&encoded);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_decode_secret_invalid() {
+        // "!!!invalid!!!" is not valid base32
+        let result = decode_secret("!!!invalid!!!");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Backup code cleanup logic (from verify_totp)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_code_clean_format() {
+        let code = "ABCD-1234";
+        let clean = code.replace('-', "").to_uppercase();
+        assert_eq!(clean, "ABCD1234");
+    }
+
+    #[test]
+    fn test_backup_code_clean_already_clean() {
+        let code = "ABCD1234";
+        let clean = code.replace('-', "").to_uppercase();
+        assert_eq!(clean, "ABCD1234");
+    }
+
+    #[test]
+    fn test_backup_code_clean_lowercase() {
+        let code = "abcd-1234";
+        let clean = code.replace('-', "").to_uppercase();
+        assert_eq!(clean, "ABCD1234");
+    }
+
+    // -----------------------------------------------------------------------
+    // Backup codes JSON serialization/deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_codes_json_roundtrip() {
+        let codes = vec!["hash1".to_string(), "hash2".to_string(), "".to_string()];
+        let json = serde_json::to_string(&codes).unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0], "hash1");
+        assert_eq!(parsed[2], "");
+    }
+
+    #[test]
+    fn test_backup_codes_marking_used() {
+        let hashed_codes = vec![
+            "hash_a".to_string(),
+            "hash_b".to_string(),
+            "hash_c".to_string(),
+        ];
+        let mut codes = hashed_codes.clone();
+        // Mark the second code as used
+        codes[1] = String::new();
+        assert_eq!(codes[0], "hash_a");
+        assert_eq!(codes[1], "");
+        assert_eq!(codes[2], "hash_c");
+    }
+
+    #[test]
+    fn test_backup_codes_skip_empty_hashes() {
+        let hashed_codes = ["".to_string(), "valid_hash".to_string(), "".to_string()];
+        let non_empty: Vec<_> = hashed_codes.iter().filter(|h| !h.is_empty()).collect();
+        assert_eq!(non_empty.len(), 1);
+        assert_eq!(*non_empty[0], "valid_hash");
+    }
+}

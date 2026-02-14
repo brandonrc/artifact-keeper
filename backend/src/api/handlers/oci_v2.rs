@@ -1187,3 +1187,410 @@ pub fn router() -> Router<SharedState> {
 pub fn version_check_handler() -> axum::routing::MethodRouter<SharedState> {
     get(version_check)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // oci_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_oci_error_status() {
+        let resp = oci_error(StatusCode::NOT_FOUND, "BLOB_UNKNOWN", "blob not found");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_oci_error_bad_request() {
+        let resp = oci_error(StatusCode::BAD_REQUEST, "DIGEST_INVALID", "bad digest");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_oci_error_internal() {
+        let resp = oci_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "oops");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // -----------------------------------------------------------------------
+    // OciErrorResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_oci_error_response_serialization() {
+        let resp = OciErrorResponse {
+            errors: vec![OciErrorEntry {
+                code: "BLOB_UNKNOWN".to_string(),
+                message: "blob not found".to_string(),
+                detail: None,
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"code\":\"BLOB_UNKNOWN\""));
+        assert!(json.contains("\"message\":\"blob not found\""));
+        // detail should not be present when None
+        assert!(!json.contains("\"detail\""));
+    }
+
+    #[test]
+    fn test_oci_error_response_with_detail() {
+        let resp = OciErrorResponse {
+            errors: vec![OciErrorEntry {
+                code: "MANIFEST_INVALID".to_string(),
+                message: "invalid manifest".to_string(),
+                detail: Some(serde_json::json!({"reason": "bad json"})),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"detail\""));
+        assert!(json.contains("bad json"));
+    }
+
+    // -----------------------------------------------------------------------
+    // www_authenticate_header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_www_authenticate_header_with_scheme() {
+        let header = www_authenticate_header("http://localhost:8080");
+        assert!(header.contains("realm=\"http://localhost:8080/v2/token\""));
+        assert!(header.contains("service=\"artifact-keeper\""));
+    }
+
+    #[test]
+    fn test_www_authenticate_header_https() {
+        let header = www_authenticate_header("https://registry.example.com");
+        assert!(header.contains("https://registry.example.com/v2/token"));
+    }
+
+    // -----------------------------------------------------------------------
+    // unauthorized_challenge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unauthorized_challenge_status() {
+        let resp = unauthorized_challenge("http://localhost");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_unauthorized_challenge_has_www_authenticate_header() {
+        let resp = unauthorized_challenge("http://localhost");
+        assert!(resp.headers().get("WWW-Authenticate").is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_bearer_token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_token_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token-123"),
+        );
+        assert_eq!(
+            extract_bearer_token(&headers),
+            Some("my-token-123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer my-token"));
+        assert_eq!(extract_bearer_token(&headers), Some("my-token".to_string()));
+    }
+
+    #[test]
+    fn test_extract_bearer_token_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_token_basic_auth_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic !!!invalid"));
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "useronly" in base64 = "dXNlcm9ubHk="
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcm9ubHk="),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        // "user:pa:ss" in base64 = "dXNlcjpwYTpzcw=="
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // request_host
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_request_host_with_host_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("registry.example.com"));
+        assert_eq!(request_host(&headers), "http://registry.example.com");
+    }
+
+    #[test]
+    fn test_request_host_with_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "host",
+            HeaderValue::from_static("https://registry.example.com"),
+        );
+        assert_eq!(request_host(&headers), "https://registry.example.com");
+    }
+
+    #[test]
+    fn test_request_host_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(request_host(&headers), "http://localhost");
+    }
+
+    #[test]
+    fn test_request_host_with_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("localhost:8080"));
+        assert_eq!(request_host(&headers), "http://localhost:8080");
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage key helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_blob_storage_key() {
+        assert_eq!(blob_storage_key("sha256:abc123"), "oci-blobs/sha256:abc123");
+    }
+
+    #[test]
+    fn test_manifest_storage_key() {
+        assert_eq!(
+            manifest_storage_key("sha256:def456"),
+            "oci-manifests/sha256:def456"
+        );
+    }
+
+    #[test]
+    fn test_upload_storage_key() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(
+            upload_storage_key(&uuid),
+            "oci-uploads/550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // compute_sha256
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_sha256_empty() {
+        let hash = compute_sha256(b"");
+        assert!(hash.starts_with("sha256:"));
+        // SHA256 of empty string is a well-known value
+        assert_eq!(
+            hash,
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_compute_sha256_hello_world() {
+        let hash = compute_sha256(b"hello world");
+        assert!(hash.starts_with("sha256:"));
+        assert_eq!(
+            hash,
+            "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_compute_sha256_deterministic() {
+        let h1 = compute_sha256(b"test data");
+        let h2 = compute_sha256(b"test data");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_sha256_different_data() {
+        let h1 = compute_sha256(b"data1");
+        let h2 = compute_sha256(b"data2");
+        assert_ne!(h1, h2);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_oci_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_oci_path_blobs() {
+        let result = parse_oci_path("/test/python/blobs/sha256:abc");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/python");
+        assert_eq!(op, "blobs");
+        assert_eq!(reference, Some("sha256:abc".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_manifests() {
+        let result = parse_oci_path("/test/python/manifests/latest");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/python");
+        assert_eq!(op, "manifests");
+        assert_eq!(reference, Some("latest".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_uploads_no_uuid() {
+        let result = parse_oci_path("/test/python/blobs/uploads/");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/python");
+        assert_eq!(op, "uploads");
+        // Empty string from splitting trailing slash
+        assert_eq!(reference, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_uploads_with_uuid() {
+        let result = parse_oci_path("/test/python/blobs/uploads/some-uuid");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/python");
+        assert_eq!(op, "uploads");
+        assert_eq!(reference, Some("some-uuid".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_no_leading_slash() {
+        let result = parse_oci_path("test/python/manifests/v1.0");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/python");
+        assert_eq!(op, "manifests");
+        assert_eq!(reference, Some("v1.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_deep_name() {
+        let result = parse_oci_path("myrepo/org/image/manifests/latest");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "myrepo/org/image");
+        assert_eq!(op, "manifests");
+        assert_eq!(reference, Some("latest".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_no_operation() {
+        let result = parse_oci_path("just/a/name");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_oci_path_tags_operation() {
+        let result = parse_oci_path("test/image/tags/list");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/image");
+        assert_eq!(op, "tags");
+        assert_eq!(reference, Some("list".to_string()));
+    }
+
+    #[test]
+    fn test_parse_oci_path_blobs_no_digest() {
+        let result = parse_oci_path("test/image/blobs");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/image");
+        assert_eq!(op, "blobs");
+        assert!(reference.is_none());
+    }
+
+    #[test]
+    fn test_parse_oci_path_manifests_sha256_reference() {
+        let result = parse_oci_path("test/image/manifests/sha256:abc123");
+        let (name, op, reference) = result.unwrap();
+        assert_eq!(name, "test/image");
+        assert_eq!(op, "manifests");
+        assert_eq!(reference, Some("sha256:abc123".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_response_serialization() {
+        let resp = TokenResponse {
+            token: "tok1".to_string(),
+            access_token: "tok1".to_string(),
+            expires_in: 3600,
+            issued_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"token\":\"tok1\""));
+        assert!(json.contains("\"access_token\":\"tok1\""));
+        assert!(json.contains("\"expires_in\":3600"));
+        assert!(json.contains("\"issued_at\""));
+    }
+}

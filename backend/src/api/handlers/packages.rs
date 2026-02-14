@@ -360,3 +360,306 @@ pub async fn get_package_versions(
     ))
 )]
 pub struct PackagesApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use serde_json;
+
+    fn make_package_row() -> PackageRow {
+        let now = Utc::now();
+        PackageRow {
+            id: Uuid::new_v4(),
+            repository_key: "my-repo".to_string(),
+            name: "my-package".to_string(),
+            version: "1.0.0".to_string(),
+            format: "npm".to_string(),
+            description: Some("A test package".to_string()),
+            size_bytes: 1024,
+            download_count: 42,
+            created_at: now,
+            updated_at: now,
+            metadata: Some(serde_json::json!({"license": "MIT"})),
+        }
+    }
+
+    fn make_version_row() -> PackageVersionRow {
+        PackageVersionRow {
+            version: "2.0.0".to_string(),
+            size_bytes: 2048,
+            download_count: 10,
+            created_at: Utc::now(),
+            checksum_sha256: "abc123def456".to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PackageRow -> PackageResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_row_to_response_all_fields() {
+        let row = make_package_row();
+        let id = row.id;
+        let resp = PackageResponse::from(row);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.repository_key, "my-repo");
+        assert_eq!(resp.name, "my-package");
+        assert_eq!(resp.version, "1.0.0");
+        assert_eq!(resp.format, "npm");
+        assert_eq!(resp.description.as_deref(), Some("A test package"));
+        assert_eq!(resp.size_bytes, 1024);
+        assert_eq!(resp.download_count, 42);
+        assert!(resp.metadata.is_some());
+    }
+
+    #[test]
+    fn test_package_row_to_response_no_description() {
+        let mut row = make_package_row();
+        row.description = None;
+        let resp = PackageResponse::from(row);
+        assert!(resp.description.is_none());
+    }
+
+    #[test]
+    fn test_package_row_to_response_no_metadata() {
+        let mut row = make_package_row();
+        row.metadata = None;
+        let resp = PackageResponse::from(row);
+        assert!(resp.metadata.is_none());
+    }
+
+    #[test]
+    fn test_package_row_to_response_zero_size() {
+        let mut row = make_package_row();
+        row.size_bytes = 0;
+        let resp = PackageResponse::from(row);
+        assert_eq!(resp.size_bytes, 0);
+    }
+
+    #[test]
+    fn test_package_row_to_response_zero_downloads() {
+        let mut row = make_package_row();
+        row.download_count = 0;
+        let resp = PackageResponse::from(row);
+        assert_eq!(resp.download_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // PackageVersionRow -> PackageVersionResponse conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_row_to_response() {
+        let row = make_version_row();
+        let resp = PackageVersionResponse::from(row);
+        assert_eq!(resp.version, "2.0.0");
+        assert_eq!(resp.size_bytes, 2048);
+        assert_eq!(resp.download_count, 10);
+        assert_eq!(resp.checksum_sha256, "abc123def456");
+    }
+
+    #[test]
+    fn test_version_row_to_response_empty_checksum() {
+        let mut row = make_version_row();
+        row.checksum_sha256 = String::new();
+        let resp = PackageVersionResponse::from(row);
+        assert_eq!(resp.checksum_sha256, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // ListPackagesQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_packages_query_empty() {
+        let json = r#"{}"#;
+        let query: ListPackagesQuery = serde_json::from_str(json).unwrap();
+        assert!(query.page.is_none());
+        assert!(query.per_page.is_none());
+        assert!(query.repository_key.is_none());
+        assert!(query.format.is_none());
+        assert!(query.search.is_none());
+    }
+
+    #[test]
+    fn test_list_packages_query_full() {
+        let json = serde_json::json!({
+            "page": 2,
+            "per_page": 50,
+            "repository_key": "main-repo",
+            "format": "maven",
+            "search": "spring"
+        });
+        let query: ListPackagesQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+        assert_eq!(query.repository_key.as_deref(), Some("main-repo"));
+        assert_eq!(query.format.as_deref(), Some("maven"));
+        assert_eq!(query.search.as_deref(), Some("spring"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination logic (simulating handler code)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_defaults() {
+        let query = ListPackagesQuery {
+            page: None,
+            per_page: None,
+            repository_key: None,
+            format: None,
+            search: None,
+        };
+        let page = query.page.unwrap_or(1).max(1);
+        let per_page = query.per_page.unwrap_or(24).min(100);
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 24);
+    }
+
+    #[test]
+    fn test_pagination_page_zero_clamped_to_one() {
+        let query = ListPackagesQuery {
+            page: Some(0),
+            per_page: None,
+            repository_key: None,
+            format: None,
+            search: None,
+        };
+        let page = query.page.unwrap_or(1).max(1);
+        assert_eq!(page, 1);
+    }
+
+    #[test]
+    fn test_pagination_per_page_clamped_to_100() {
+        let query = ListPackagesQuery {
+            page: None,
+            per_page: Some(200),
+            repository_key: None,
+            format: None,
+            search: None,
+        };
+        let per_page = query.per_page.unwrap_or(24).min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_pagination_offset_calculation() {
+        let page: u32 = 3;
+        let per_page: u32 = 10;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 20);
+    }
+
+    #[test]
+    fn test_pagination_offset_first_page() {
+        let page: u32 = 1;
+        let per_page: u32 = 24;
+        let offset = ((page - 1) * per_page) as i64;
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_total_pages_calculation() {
+        let total: i64 = 50;
+        let per_page: u32 = 24;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 3); // ceil(50/24) = 3
+    }
+
+    #[test]
+    fn test_total_pages_exact_division() {
+        let total: i64 = 48;
+        let per_page: u32 = 24;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 2);
+    }
+
+    #[test]
+    fn test_total_pages_zero_total() {
+        let total: i64 = 0;
+        let per_page: u32 = 24;
+        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        assert_eq!(total_pages, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Search pattern construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_pattern_some() {
+        let search = Some("react".to_string());
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert_eq!(pattern.as_deref(), Some("%react%"));
+    }
+
+    #[test]
+    fn test_search_pattern_none() {
+        let search: Option<String> = None;
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert!(pattern.is_none());
+    }
+
+    #[test]
+    fn test_search_pattern_empty_string() {
+        let search = Some("".to_string());
+        let pattern = search.as_ref().map(|s| format!("%{}%", s));
+        assert_eq!(pattern.as_deref(), Some("%%"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_response_serialize() {
+        let row = make_package_row();
+        let resp = PackageResponse::from(row);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["id"].is_string());
+        assert_eq!(json["repository_key"], "my-repo");
+        assert_eq!(json["name"], "my-package");
+        assert_eq!(json["version"], "1.0.0");
+        assert_eq!(json["format"], "npm");
+        assert_eq!(json["size_bytes"], 1024);
+        assert_eq!(json["download_count"], 42);
+    }
+
+    #[test]
+    fn test_package_version_response_serialize() {
+        let row = make_version_row();
+        let resp = PackageVersionResponse::from(row);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["version"], "2.0.0");
+        assert_eq!(json["size_bytes"], 2048);
+        assert_eq!(json["checksum_sha256"], "abc123def456");
+    }
+
+    #[test]
+    fn test_package_versions_response_serialize_empty() {
+        let resp = PackageVersionsResponse { versions: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["versions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_package_list_response_serialize() {
+        let resp = PackageListResponse {
+            items: vec![],
+            pagination: Pagination {
+                page: 1,
+                per_page: 24,
+                total: 0,
+                total_pages: 0,
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+        assert_eq!(json["pagination"]["page"], 1);
+        assert_eq!(json["pagination"]["per_page"], 24);
+        assert_eq!(json["pagination"]["total"], 0);
+    }
+}

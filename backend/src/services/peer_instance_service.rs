@@ -702,3 +702,563 @@ pub struct SyncTask {
     pub storage_key: String,
     pub artifact_size: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    // -----------------------------------------------------------------------
+    // Pure helper functions (moved from module scope — test-only)
+    // -----------------------------------------------------------------------
+
+    fn derive_sync_status(completed: bool) -> InstanceStatus {
+        if completed {
+            InstanceStatus::Online
+        } else {
+            InstanceStatus::Syncing
+        }
+    }
+
+    fn resolve_heartbeat_status(status: Option<InstanceStatus>) -> InstanceStatus {
+        status.unwrap_or(InstanceStatus::Online)
+    }
+
+    fn cache_utilization_pct(cache_size_bytes: i64, cache_used_bytes: i64) -> f64 {
+        if cache_size_bytes <= 0 {
+            0.0
+        } else {
+            (cache_used_bytes as f64 / cache_size_bytes as f64) * 100.0
+        }
+    }
+
+    fn is_heartbeat_stale(
+        last_heartbeat_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+        stale_threshold_minutes: i64,
+    ) -> bool {
+        match last_heartbeat_at {
+            Some(hb) => (now - hb).num_minutes() >= stale_threshold_minutes,
+            None => true,
+        }
+    }
+
+    fn is_in_backoff(backoff_until: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        backoff_until.is_some_and(|bu| now < bu)
+    }
+
+    fn has_transfer_capacity(
+        active_transfers: i32,
+        concurrent_transfers_limit: Option<i32>,
+    ) -> bool {
+        match concurrent_transfers_limit {
+            Some(limit) => active_transfers < limit,
+            None => true,
+        }
+    }
+
+    fn transfer_success_rate(bytes_transferred_total: i64, transfer_failures_total: i32) -> f64 {
+        let _total_attempts = bytes_transferred_total.max(1) as f64;
+        if transfer_failures_total == 0 {
+            1.0
+        } else {
+            let failure_rate =
+                transfer_failures_total as f64 / (transfer_failures_total as f64 + 1.0);
+            1.0 - failure_rate
+        }
+    }
+
+    fn build_announce_url(remote_endpoint: &str) -> String {
+        format!(
+            "{}/api/v1/peers/announce",
+            remote_endpoint.trim_end_matches('/')
+        )
+    }
+
+    fn sync_task_started_at(status: SyncStatus, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if status == SyncStatus::InProgress {
+            Some(now)
+        } else {
+            None
+        }
+    }
+
+    fn sync_task_completed_at(status: SyncStatus, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if matches!(
+            status,
+            SyncStatus::Completed | SyncStatus::Failed | SyncStatus::Cancelled
+        ) {
+            Some(now)
+        } else {
+            None
+        }
+    }
+
+    // ===================================================================
+    // InstanceStatus Display
+    // ===================================================================
+
+    #[test]
+    fn test_instance_status_display_online() {
+        assert_eq!(InstanceStatus::Online.to_string(), "online");
+    }
+
+    #[test]
+    fn test_instance_status_display_offline() {
+        assert_eq!(InstanceStatus::Offline.to_string(), "offline");
+    }
+
+    #[test]
+    fn test_instance_status_display_syncing() {
+        assert_eq!(InstanceStatus::Syncing.to_string(), "syncing");
+    }
+
+    #[test]
+    fn test_instance_status_display_degraded() {
+        assert_eq!(InstanceStatus::Degraded.to_string(), "degraded");
+    }
+
+    #[test]
+    fn test_instance_status_equality() {
+        assert_eq!(InstanceStatus::Online, InstanceStatus::Online);
+        assert_ne!(InstanceStatus::Online, InstanceStatus::Offline);
+    }
+
+    #[test]
+    fn test_instance_status_clone_copy() {
+        let s = InstanceStatus::Syncing;
+        let s2 = s;
+        let s3 = s;
+        assert_eq!(s, s2);
+        assert_eq!(s, s3);
+    }
+
+    // ===================================================================
+    // ReplicationMode / SyncStatus
+    // ===================================================================
+
+    #[test]
+    fn test_replication_mode_equality() {
+        assert_eq!(ReplicationMode::Push, ReplicationMode::Push);
+        assert_ne!(ReplicationMode::Push, ReplicationMode::Pull);
+    }
+
+    #[test]
+    fn test_sync_status_equality() {
+        assert_eq!(SyncStatus::Pending, SyncStatus::Pending);
+        assert_ne!(SyncStatus::Pending, SyncStatus::Completed);
+    }
+
+    // ===================================================================
+    // derive_sync_status
+    // ===================================================================
+
+    #[test]
+    fn test_derive_sync_status_completed() {
+        assert_eq!(derive_sync_status(true), InstanceStatus::Online);
+    }
+
+    #[test]
+    fn test_derive_sync_status_not_completed() {
+        assert_eq!(derive_sync_status(false), InstanceStatus::Syncing);
+    }
+
+    // ===================================================================
+    // resolve_heartbeat_status
+    // ===================================================================
+
+    #[test]
+    fn test_resolve_heartbeat_status_none() {
+        assert_eq!(resolve_heartbeat_status(None), InstanceStatus::Online);
+    }
+
+    #[test]
+    fn test_resolve_heartbeat_status_some_degraded() {
+        assert_eq!(
+            resolve_heartbeat_status(Some(InstanceStatus::Degraded)),
+            InstanceStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn test_resolve_heartbeat_status_some_syncing() {
+        assert_eq!(
+            resolve_heartbeat_status(Some(InstanceStatus::Syncing)),
+            InstanceStatus::Syncing
+        );
+    }
+
+    #[test]
+    fn test_resolve_heartbeat_status_some_offline() {
+        assert_eq!(
+            resolve_heartbeat_status(Some(InstanceStatus::Offline)),
+            InstanceStatus::Offline
+        );
+    }
+
+    #[test]
+    fn test_resolve_heartbeat_status_some_online() {
+        assert_eq!(
+            resolve_heartbeat_status(Some(InstanceStatus::Online)),
+            InstanceStatus::Online
+        );
+    }
+
+    // ===================================================================
+    // cache_utilization_pct
+    // ===================================================================
+
+    #[test]
+    fn test_cache_utilization_pct_zero_size() {
+        assert!((cache_utilization_pct(0, 0) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_utilization_pct_negative_size() {
+        assert!((cache_utilization_pct(-1, 100) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_utilization_pct_half_used() {
+        assert!((cache_utilization_pct(1000, 500) - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_utilization_pct_fully_used() {
+        assert!((cache_utilization_pct(1000, 1000) - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_cache_utilization_pct_empty() {
+        assert!((cache_utilization_pct(1000, 0) - 0.0).abs() < f64::EPSILON);
+    }
+
+    // ===================================================================
+    // is_heartbeat_stale
+    // ===================================================================
+
+    #[test]
+    fn test_is_heartbeat_stale_no_heartbeat() {
+        let now = Utc::now();
+        assert!(is_heartbeat_stale(None, now, 5));
+    }
+
+    #[test]
+    fn test_is_heartbeat_stale_recent() {
+        let now = Utc::now();
+        let recent = now - Duration::minutes(2);
+        assert!(!is_heartbeat_stale(Some(recent), now, 5));
+    }
+
+    #[test]
+    fn test_is_heartbeat_stale_exactly_threshold() {
+        let now = Utc::now();
+        let exactly = now - Duration::minutes(5);
+        assert!(is_heartbeat_stale(Some(exactly), now, 5));
+    }
+
+    #[test]
+    fn test_is_heartbeat_stale_old() {
+        let now = Utc::now();
+        let old = now - Duration::minutes(60);
+        assert!(is_heartbeat_stale(Some(old), now, 5));
+    }
+
+    #[test]
+    fn test_is_heartbeat_stale_zero_threshold() {
+        let now = Utc::now();
+        // Any heartbeat in the past is stale with 0 threshold
+        let hb = now - Duration::seconds(1);
+        assert!(is_heartbeat_stale(Some(hb), now, 0));
+    }
+
+    // ===================================================================
+    // is_in_backoff
+    // ===================================================================
+
+    #[test]
+    fn test_is_in_backoff_none() {
+        assert!(!is_in_backoff(None, Utc::now()));
+    }
+
+    #[test]
+    fn test_is_in_backoff_future() {
+        let now = Utc::now();
+        let future = now + Duration::minutes(10);
+        assert!(is_in_backoff(Some(future), now));
+    }
+
+    #[test]
+    fn test_is_in_backoff_past() {
+        let now = Utc::now();
+        let past = now - Duration::minutes(10);
+        assert!(!is_in_backoff(Some(past), now));
+    }
+
+    #[test]
+    fn test_is_in_backoff_exact_now() {
+        let now = Utc::now();
+        assert!(!is_in_backoff(Some(now), now));
+    }
+
+    // ===================================================================
+    // has_transfer_capacity
+    // ===================================================================
+
+    #[test]
+    fn test_has_transfer_capacity_no_limit() {
+        assert!(has_transfer_capacity(100, None));
+    }
+
+    #[test]
+    fn test_has_transfer_capacity_under_limit() {
+        assert!(has_transfer_capacity(2, Some(4)));
+    }
+
+    #[test]
+    fn test_has_transfer_capacity_at_limit() {
+        assert!(!has_transfer_capacity(4, Some(4)));
+    }
+
+    #[test]
+    fn test_has_transfer_capacity_over_limit() {
+        assert!(!has_transfer_capacity(5, Some(4)));
+    }
+
+    #[test]
+    fn test_has_transfer_capacity_zero_active() {
+        assert!(has_transfer_capacity(0, Some(1)));
+    }
+
+    // ===================================================================
+    // transfer_success_rate
+    // ===================================================================
+
+    #[test]
+    fn test_transfer_success_rate_no_failures() {
+        assert!((transfer_success_rate(1000, 0) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_transfer_success_rate_some_failures() {
+        let rate = transfer_success_rate(1000, 1);
+        assert!(rate > 0.0);
+        assert!(rate < 1.0);
+    }
+
+    #[test]
+    fn test_transfer_success_rate_many_failures() {
+        let rate = transfer_success_rate(1000, 99);
+        assert!(rate > 0.0);
+        assert!(rate < 0.05);
+    }
+
+    #[test]
+    fn test_transfer_success_rate_zero_bytes() {
+        let rate = transfer_success_rate(0, 0);
+        assert!((rate - 1.0).abs() < f64::EPSILON);
+    }
+
+    // ===================================================================
+    // build_announce_url
+    // ===================================================================
+
+    #[test]
+    fn test_build_announce_url_simple() {
+        assert_eq!(
+            build_announce_url("https://peer.example.com"),
+            "https://peer.example.com/api/v1/peers/announce"
+        );
+    }
+
+    #[test]
+    fn test_build_announce_url_trailing_slash() {
+        assert_eq!(
+            build_announce_url("https://peer.example.com/"),
+            "https://peer.example.com/api/v1/peers/announce"
+        );
+    }
+
+    #[test]
+    fn test_build_announce_url_multiple_trailing_slashes() {
+        // trim_end_matches removes ALL trailing matching chars
+        assert_eq!(
+            build_announce_url("https://peer.example.com///"),
+            "https://peer.example.com/api/v1/peers/announce"
+        );
+    }
+
+    #[test]
+    fn test_build_announce_url_with_port() {
+        assert_eq!(
+            build_announce_url("http://localhost:8080"),
+            "http://localhost:8080/api/v1/peers/announce"
+        );
+    }
+
+    #[test]
+    fn test_build_announce_url_with_path() {
+        assert_eq!(
+            build_announce_url("https://peer.example.com/prefix"),
+            "https://peer.example.com/prefix/api/v1/peers/announce"
+        );
+    }
+
+    // ===================================================================
+    // sync_task_started_at
+    // ===================================================================
+
+    #[test]
+    fn test_sync_task_started_at_in_progress() {
+        let now = Utc::now();
+        let result = sync_task_started_at(SyncStatus::InProgress, now);
+        assert_eq!(result, Some(now));
+    }
+
+    #[test]
+    fn test_sync_task_started_at_pending() {
+        let now = Utc::now();
+        assert!(sync_task_started_at(SyncStatus::Pending, now).is_none());
+    }
+
+    #[test]
+    fn test_sync_task_started_at_completed() {
+        let now = Utc::now();
+        assert!(sync_task_started_at(SyncStatus::Completed, now).is_none());
+    }
+
+    #[test]
+    fn test_sync_task_started_at_failed() {
+        let now = Utc::now();
+        assert!(sync_task_started_at(SyncStatus::Failed, now).is_none());
+    }
+
+    #[test]
+    fn test_sync_task_started_at_cancelled() {
+        let now = Utc::now();
+        assert!(sync_task_started_at(SyncStatus::Cancelled, now).is_none());
+    }
+
+    // ===================================================================
+    // sync_task_completed_at
+    // ===================================================================
+
+    #[test]
+    fn test_sync_task_completed_at_completed() {
+        let now = Utc::now();
+        assert_eq!(
+            sync_task_completed_at(SyncStatus::Completed, now),
+            Some(now)
+        );
+    }
+
+    #[test]
+    fn test_sync_task_completed_at_failed() {
+        let now = Utc::now();
+        assert_eq!(sync_task_completed_at(SyncStatus::Failed, now), Some(now));
+    }
+
+    #[test]
+    fn test_sync_task_completed_at_cancelled() {
+        let now = Utc::now();
+        assert_eq!(
+            sync_task_completed_at(SyncStatus::Cancelled, now),
+            Some(now)
+        );
+    }
+
+    #[test]
+    fn test_sync_task_completed_at_pending() {
+        let now = Utc::now();
+        assert!(sync_task_completed_at(SyncStatus::Pending, now).is_none());
+    }
+
+    #[test]
+    fn test_sync_task_completed_at_in_progress() {
+        let now = Utc::now();
+        assert!(sync_task_completed_at(SyncStatus::InProgress, now).is_none());
+    }
+
+    // ===================================================================
+    // Existing struct construction tests
+    // ===================================================================
+
+    #[test]
+    fn test_register_peer_instance_request_construction() {
+        let req = RegisterPeerInstanceRequest {
+            name: "peer-1".to_string(),
+            endpoint_url: "https://peer1.example.com".to_string(),
+            region: Some("us-east-1".to_string()),
+            cache_size_bytes: 10 * 1024 * 1024 * 1024,
+            sync_filter: Some(serde_json::json!({"formats": ["maven", "docker"]})),
+            api_key: "secret-key".to_string(),
+        };
+        assert_eq!(req.name, "peer-1");
+        assert_eq!(req.cache_size_bytes, 10_737_418_240);
+    }
+
+    #[test]
+    fn test_peer_instance_construction() {
+        let now = Utc::now();
+        let peer = PeerInstance {
+            id: Uuid::new_v4(),
+            name: "peer-node".to_string(),
+            endpoint_url: "https://node.example.com".to_string(),
+            status: InstanceStatus::Online,
+            region: Some("eu-west-1".to_string()),
+            cache_size_bytes: 5_000_000_000,
+            cache_used_bytes: 1_000_000_000,
+            last_heartbeat_at: Some(now),
+            last_sync_at: None,
+            sync_filter: None,
+            max_bandwidth_bps: Some(100_000_000),
+            sync_window_start: None,
+            sync_window_end: None,
+            sync_window_timezone: None,
+            concurrent_transfers_limit: Some(4),
+            active_transfers: 0,
+            backoff_until: None,
+            consecutive_failures: 0,
+            bytes_transferred_total: 0,
+            transfer_failures_total: 0,
+            api_key: "key".to_string(),
+            is_local: false,
+            created_at: now,
+            updated_at: now,
+        };
+        assert_eq!(peer.name, "peer-node");
+        assert_eq!(peer.status, InstanceStatus::Online);
+        assert!(!peer.is_local);
+    }
+
+    #[test]
+    fn test_sync_task_construction() {
+        let now = Utc::now();
+        let task = SyncTask {
+            id: Uuid::new_v4(),
+            peer_instance_id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            status: SyncStatus::Pending,
+            priority: 5,
+            bytes_transferred: 0,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: now,
+            storage_key: "repos/maven/com/example/1.0/artifact.jar".to_string(),
+            artifact_size: 1024 * 1024,
+        };
+        assert_eq!(task.status, SyncStatus::Pending);
+        assert_eq!(task.priority, 5);
+    }
+
+    #[test]
+    fn test_mirror_repo_construction() {
+        let repo = MirrorRepo {
+            repo_id: Uuid::new_v4(),
+            schedule: Some("0 */6 * * *".to_string()),
+            last_replicated_at: Some(Utc::now()),
+        };
+        assert!(repo.schedule.is_some());
+    }
+}

@@ -98,3 +98,169 @@ async fn revoke_access_token(
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::middleware::auth::AuthExtension;
+
+    // ── CreateAccessTokenRequest deserialization tests ───────────────
+
+    #[test]
+    fn test_create_access_token_request_full() {
+        let json = r#"{
+            "name": "ci-token",
+            "scopes": ["read", "write", "admin"],
+            "expires_in_days": 90
+        }"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "ci-token");
+        assert_eq!(
+            req.scopes,
+            Some(vec![
+                "read".to_string(),
+                "write".to_string(),
+                "admin".to_string()
+            ])
+        );
+        assert_eq!(req.expires_in_days, Some(90));
+    }
+
+    #[test]
+    fn test_create_access_token_request_minimal() {
+        let json = r#"{"name": "my-token"}"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "my-token");
+        assert!(req.scopes.is_none());
+        assert!(req.expires_in_days.is_none());
+    }
+
+    #[test]
+    fn test_create_access_token_request_missing_name_fails() {
+        let json = r#"{"scopes": ["read"]}"#;
+        let result: std::result::Result<CreateAccessTokenRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_access_token_request_empty_scopes() {
+        let json = r#"{"name": "token", "scopes": []}"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.scopes, Some(vec![]));
+    }
+
+    #[test]
+    fn test_create_access_token_request_null_scopes() {
+        let json = r#"{"name": "token", "scopes": null}"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert!(req.scopes.is_none());
+    }
+
+    #[test]
+    fn test_create_access_token_request_expires_in_days_zero() {
+        let json = r#"{"name": "ephemeral", "expires_in_days": 0}"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.expires_in_days, Some(0));
+    }
+
+    #[test]
+    fn test_create_access_token_request_expires_in_days_large() {
+        let json = r#"{"name": "long-lived", "expires_in_days": 365}"#;
+        let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.expires_in_days, Some(365));
+    }
+
+    // ── Default scopes logic tests ──────────────────────────────────
+
+    #[test]
+    fn test_default_scopes_when_none() {
+        let payload = CreateAccessTokenRequest {
+            name: "test".to_string(),
+            scopes: None,
+            expires_in_days: None,
+        };
+        let scopes = payload.scopes.unwrap_or_else(|| vec!["read".to_string()]);
+        assert_eq!(scopes, vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn test_provided_scopes_preserved() {
+        let payload = CreateAccessTokenRequest {
+            name: "test".to_string(),
+            scopes: Some(vec!["read".to_string(), "write".to_string()]),
+            expires_in_days: None,
+        };
+        let scopes = payload.scopes.unwrap_or_else(|| vec!["read".to_string()]);
+        assert_eq!(scopes, vec!["read".to_string(), "write".to_string()]);
+    }
+
+    // ── AuthExtension construction tests ────────────────────────────
+
+    #[test]
+    fn test_auth_extension_admin() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "admin".to_string(),
+            email: "admin@example.com".to_string(),
+            is_admin: true,
+            is_api_token: false,
+            scopes: None,
+        };
+        assert!(auth.is_admin);
+        assert!(!auth.is_api_token);
+    }
+
+    #[test]
+    fn test_auth_extension_api_token_user() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "ci-bot".to_string(),
+            email: "ci@example.com".to_string(),
+            is_admin: false,
+            is_api_token: true,
+            scopes: Some(vec!["read".to_string()]),
+        };
+        assert!(!auth.is_admin);
+        assert!(auth.is_api_token);
+        assert_eq!(auth.scopes.as_ref().unwrap().len(), 1);
+    }
+
+    // ── ApiTokenResponse / ApiTokenListResponse tests ───────────────
+
+    #[test]
+    fn test_api_token_response_serialization() {
+        let now = chrono::Utc::now();
+        let resp = ApiTokenResponse {
+            id: Uuid::new_v4(),
+            name: "deploy-key".to_string(),
+            token_prefix: "ak_".to_string(),
+            scopes: vec!["read".to_string(), "write".to_string()],
+            expires_at: Some(now + chrono::Duration::days(30)),
+            last_used_at: Some(now),
+            created_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "deploy-key");
+        assert_eq!(json["token_prefix"], "ak_");
+        assert_eq!(json["scopes"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_api_token_list_response_serialization() {
+        let resp = ApiTokenListResponse { items: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_api_token_created_response_serialization() {
+        let resp = ApiTokenCreatedResponse {
+            id: Uuid::new_v4(),
+            name: "new-token".to_string(),
+            token: "ak_secret_token_value".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "new-token");
+        assert_eq!(json["token"], "ak_secret_token_value");
+    }
+}
