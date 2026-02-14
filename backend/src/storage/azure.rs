@@ -729,7 +729,10 @@ mod tests {
         let backend = AzureBackend::new(config).await.unwrap();
 
         let expires = Duration::from_secs(1800);
-        let result = backend.get_presigned_url("test.txt", expires).await.unwrap();
+        let result = backend
+            .get_presigned_url("test.txt", expires)
+            .await
+            .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().expires_in, expires);
     }
@@ -742,7 +745,9 @@ mod tests {
         let url = backend
             .generate_sas_url("path/to/blob.dat", Duration::from_secs(300))
             .unwrap();
-        assert!(url.starts_with("https://testaccount.blob.core.windows.net/testcontainer/path/to/blob.dat?"));
+        assert!(url.starts_with(
+            "https://testaccount.blob.core.windows.net/testcontainer/path/to/blob.dat?"
+        ));
     }
 
     #[tokio::test]

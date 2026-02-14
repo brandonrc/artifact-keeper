@@ -447,11 +447,16 @@ mod tests {
     fn test_totp_setup_response_serialize() {
         let resp = TotpSetupResponse {
             secret: "JBSWY3DPEHPK3PXP".to_string(),
-            qr_code_url: "otpauth://totp/ArtifactKeeper:admin?secret=JBSWY3DPEHPK3PXP&issuer=ArtifactKeeper".to_string(),
+            qr_code_url:
+                "otpauth://totp/ArtifactKeeper:admin?secret=JBSWY3DPEHPK3PXP&issuer=ArtifactKeeper"
+                    .to_string(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["secret"], "JBSWY3DPEHPK3PXP");
-        assert!(json["qr_code_url"].as_str().unwrap().starts_with("otpauth://"));
+        assert!(json["qr_code_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://"));
     }
 
     #[test]
@@ -497,10 +502,7 @@ mod tests {
     #[test]
     fn test_totp_enable_response_serialize() {
         let resp = TotpEnableResponse {
-            backup_codes: vec![
-                "ABCD-1234".to_string(),
-                "EFGH-5678".to_string(),
-            ],
+            backup_codes: vec!["ABCD-1234".to_string(), "EFGH-5678".to_string()],
         };
         let json = serde_json::to_value(&resp).unwrap();
         let codes = json["backup_codes"].as_array().unwrap();
@@ -584,8 +586,10 @@ mod tests {
 
     #[test]
     fn test_build_totp_generates_6_digit_codes() {
-        let secret_bytes = vec![0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef,
-                                 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef];
+        let secret_bytes = vec![
+            0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef, 0x48, 0x65, 0x6c, 0x6c,
+            0x6f, 0x21, 0xde, 0xad, 0xbe, 0xef,
+        ];
         let totp = build_totp(secret_bytes, "user@example.com".to_string()).unwrap();
         // Generate a code at a specific time
         let code = totp.generate(1_000_000_000);
@@ -670,11 +674,7 @@ mod tests {
 
     #[test]
     fn test_backup_codes_json_roundtrip() {
-        let codes = vec![
-            "hash1".to_string(),
-            "hash2".to_string(),
-            "".to_string(),
-        ];
+        let codes = vec!["hash1".to_string(), "hash2".to_string(), "".to_string()];
         let json = serde_json::to_string(&codes).unwrap();
         let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.len(), 3);
@@ -699,11 +699,7 @@ mod tests {
 
     #[test]
     fn test_backup_codes_skip_empty_hashes() {
-        let hashed_codes = vec![
-            "".to_string(),
-            "valid_hash".to_string(),
-            "".to_string(),
-        ];
+        let hashed_codes = vec!["".to_string(), "valid_hash".to_string(), "".to_string()];
         let non_empty: Vec<_> = hashed_codes.iter().filter(|h| !h.is_empty()).collect();
         assert_eq!(non_empty.len(), 1);
         assert_eq!(*non_empty[0], "valid_hash");

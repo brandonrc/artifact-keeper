@@ -470,7 +470,10 @@ mod tests {
         let asset: NexusAsset = serde_json::from_str(json).unwrap();
         assert_eq!(asset.id, "asset-001");
         assert_eq!(asset.file_size, Some(4096));
-        assert_eq!(asset.content_type, Some("application/java-archive".to_string()));
+        assert_eq!(
+            asset.content_type,
+            Some("application/java-archive".to_string())
+        );
         let checksum = asset.checksum.unwrap();
         assert_eq!(checksum.sha256, Some("sha256hash".to_string()));
     }

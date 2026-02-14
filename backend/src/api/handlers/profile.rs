@@ -115,7 +115,14 @@ mod tests {
         }"#;
         let req: CreateAccessTokenRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "ci-token");
-        assert_eq!(req.scopes, Some(vec!["read".to_string(), "write".to_string(), "admin".to_string()]));
+        assert_eq!(
+            req.scopes,
+            Some(vec![
+                "read".to_string(),
+                "write".to_string(),
+                "admin".to_string()
+            ])
+        );
         assert_eq!(req.expires_in_days, Some(90));
     }
 

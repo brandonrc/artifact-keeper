@@ -741,9 +741,8 @@ zlib*:shared=True
 
     #[test]
     fn test_parse_path_with_user_channel() {
-        let info =
-            ConanHandler::parse_path("v2/conans/zlib/1.2.13/myuser/stable/revisions/abc123")
-                .unwrap();
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/myuser/stable/revisions/abc123")
+            .unwrap();
         assert_eq!(info.name, Some("zlib".to_string()));
         assert_eq!(info.version, Some("1.2.13".to_string()));
         assert_eq!(info.user, Some("myuser".to_string()));
@@ -762,22 +761,19 @@ zlib*:shared=True
     #[test]
     fn test_parse_path_packages_list() {
         let info =
-            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/packages")
-                .unwrap();
+            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/packages").unwrap();
         assert!(matches!(info.operation, ConanOperation::Packages));
     }
 
     #[test]
     fn test_parse_path_recipe_revisions() {
-        let info =
-            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions").unwrap();
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions").unwrap();
         assert!(matches!(info.operation, ConanOperation::RecipeRevisions));
     }
 
     #[test]
     fn test_parse_path_latest() {
-        let info =
-            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/latest").unwrap();
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/latest").unwrap();
         assert!(matches!(info.operation, ConanOperation::RecipeLatest));
     }
 
@@ -846,7 +842,10 @@ zlib*:shared=True
             channel: Some("stable".to_string()),
             revision: Some("abc123".to_string()),
         };
-        assert_eq!(reference.to_reference_string(), "zlib/1.2.13@user/stable#abc123");
+        assert_eq!(
+            reference.to_reference_string(),
+            "zlib/1.2.13@user/stable#abc123"
+        );
     }
 
     #[test]
@@ -895,16 +894,16 @@ zlib*:shared=True
             ConanHandler::extract_string_value("name = 'zlib'"),
             Some("zlib".to_string())
         );
-        assert_eq!(
-            ConanHandler::extract_string_value(r#"name = """#),
-            None
-        );
+        assert_eq!(ConanHandler::extract_string_value(r#"name = """#), None);
     }
 
     #[test]
     fn test_extract_tuple_values_parens() {
         let result = ConanHandler::extract_tuple_values(r#"topics = ("compression", "zlib")"#);
-        assert_eq!(result, Some(vec!["compression".to_string(), "zlib".to_string()]));
+        assert_eq!(
+            result,
+            Some(vec!["compression".to_string(), "zlib".to_string()])
+        );
     }
 
     #[test]
@@ -978,12 +977,10 @@ CMakeDeps
 
     #[test]
     fn test_generate_revisions_response() {
-        let revisions = vec![
-            RecipeRevision {
-                revision: "abc123".to_string(),
-                time: "2024-01-01T00:00:00Z".to_string(),
-            },
-        ];
+        let revisions = vec![RecipeRevision {
+            revision: "abc123".to_string(),
+            time: "2024-01-01T00:00:00Z".to_string(),
+        }];
         let response = generate_revisions_response(revisions);
         let revs = response["revisions"].as_array().unwrap();
         assert_eq!(revs.len(), 1);
@@ -992,14 +989,12 @@ CMakeDeps
 
     #[test]
     fn test_generate_packages_response() {
-        let packages = vec![
-            PackageInfo {
-                package_id: "pkg123".to_string(),
-                settings: HashMap::from([("os".to_string(), "Linux".to_string())]),
-                options: HashMap::new(),
-                requires: vec![],
-            },
-        ];
+        let packages = vec![PackageInfo {
+            package_id: "pkg123".to_string(),
+            settings: HashMap::from([("os".to_string(), "Linux".to_string())]),
+            options: HashMap::new(),
+            requires: vec![],
+        }];
         let response = generate_packages_response(packages);
         let pkgs = response["packages"].as_array().unwrap();
         assert_eq!(pkgs.len(), 1);
@@ -1026,9 +1021,8 @@ CMakeDeps
 
     #[test]
     fn test_parse_path_file_in_conans() {
-        let info =
-            ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/conanfile.py")
-                .unwrap();
+        let info = ConanHandler::parse_path("v2/conans/zlib/1.2.13/_/_/revisions/abc/conanfile.py")
+            .unwrap();
         assert!(matches!(info.operation, ConanOperation::File(ref f) if f == "conanfile.py"));
         assert_eq!(info.name, Some("zlib".to_string()));
     }

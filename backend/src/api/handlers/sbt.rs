@@ -502,7 +502,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer mytoken123".parse().unwrap());
         let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("token".to_string(), "mytoken123".to_string())));
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "mytoken123".to_string()))
+        );
     }
 
     #[test]
@@ -510,7 +513,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "bearer mytoken456".parse().unwrap());
         let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("token".to_string(), "mytoken456".to_string())));
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "mytoken456".to_string()))
+        );
     }
 
     // -----------------------------------------------------------------------

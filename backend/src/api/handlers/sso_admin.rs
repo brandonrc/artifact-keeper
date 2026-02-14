@@ -656,7 +656,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         let err_msg = format!("{}", err);
-        assert!(err_msg.contains("Admin required"), "Error message: {}", err_msg);
+        assert!(
+            err_msg.contains("Admin required"),
+            "Error message: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -821,7 +825,10 @@ mod tests {
         let req: CreateSamlConfigRequest = serde_json::from_value(json).unwrap();
         assert_eq!(req.name, "Okta SAML");
         assert_eq!(req.entity_id, "http://www.okta.com/exk1234");
-        assert_eq!(req.sp_entity_id, Some("https://registry.example.com/saml/metadata".to_string()));
+        assert_eq!(
+            req.sp_entity_id,
+            Some("https://registry.example.com/saml/metadata".to_string())
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -944,7 +951,8 @@ mod tests {
             id: Uuid::nil(),
             name: "My OIDC Provider".to_string(),
             provider_type: "oidc".to_string(),
-            login_url: "/api/v1/auth/sso/oidc/00000000-0000-0000-0000-000000000000/login".to_string(),
+            login_url: "/api/v1/auth/sso/oidc/00000000-0000-0000-0000-000000000000/login"
+                .to_string(),
         };
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["provider_type"], "oidc");

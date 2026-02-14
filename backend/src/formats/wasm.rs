@@ -286,8 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_wasm_handler_format_key_with_special_chars() {
         let registry = Arc::new(PluginRegistry::new().unwrap());
-        let handler =
-            WasmFormatHandler::new("my-org/custom-format-v2".to_string(), registry);
+        let handler = WasmFormatHandler::new("my-org/custom-format-v2".to_string(), registry);
         assert_eq!(handler.format_key(), "my-org/custom-format-v2");
     }
 

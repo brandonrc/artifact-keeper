@@ -77,7 +77,10 @@ mod tests {
     async fn test_parse_metadata_returns_path() {
         let handler = GenericHandler::new();
         let content = Bytes::from_static(b"some binary data");
-        let metadata = handler.parse_metadata("/path/to/file.bin", &content).await.unwrap();
+        let metadata = handler
+            .parse_metadata("/path/to/file.bin", &content)
+            .await
+            .unwrap();
         assert_eq!(metadata["path"], "/path/to/file.bin");
     }
 
@@ -89,7 +92,10 @@ mod tests {
         let m1 = handler.parse_metadata("file.txt", &content).await.unwrap();
         assert_eq!(m1["path"], "file.txt");
 
-        let m2 = handler.parse_metadata("/a/b/c/d.tar.gz", &content).await.unwrap();
+        let m2 = handler
+            .parse_metadata("/a/b/c/d.tar.gz", &content)
+            .await
+            .unwrap();
         assert_eq!(m2["path"], "/a/b/c/d.tar.gz");
     }
 
@@ -116,8 +122,14 @@ mod tests {
     async fn test_validate_accepts_anything() {
         let handler = GenericHandler::new();
         // Generic format should accept any content
-        assert!(handler.validate("file.bin", &Bytes::from_static(b"")).await.is_ok());
-        assert!(handler.validate("file.bin", &Bytes::from_static(b"data")).await.is_ok());
+        assert!(handler
+            .validate("file.bin", &Bytes::from_static(b""))
+            .await
+            .is_ok());
+        assert!(handler
+            .validate("file.bin", &Bytes::from_static(b"data"))
+            .await
+            .is_ok());
         assert!(handler.validate("", &Bytes::new()).await.is_ok());
     }
 
@@ -139,7 +151,10 @@ mod tests {
     async fn test_parse_metadata_with_unicode_path() {
         let handler = GenericHandler::new();
         let content = Bytes::from_static(b"data");
-        let metadata = handler.parse_metadata("/path/to/file-\u{00e9}\u{00e8}.bin", &content).await.unwrap();
+        let metadata = handler
+            .parse_metadata("/path/to/file-\u{00e9}\u{00e8}.bin", &content)
+            .await
+            .unwrap();
         assert_eq!(metadata["path"], "/path/to/file-\u{00e9}\u{00e8}.bin");
     }
 
@@ -147,7 +162,10 @@ mod tests {
     async fn test_parse_metadata_with_large_content() {
         let handler = GenericHandler::new();
         let large_content = Bytes::from(vec![0u8; 10_000]);
-        let metadata = handler.parse_metadata("large.bin", &large_content).await.unwrap();
+        let metadata = handler
+            .parse_metadata("large.bin", &large_content)
+            .await
+            .unwrap();
         assert_eq!(metadata["path"], "large.bin");
     }
 }

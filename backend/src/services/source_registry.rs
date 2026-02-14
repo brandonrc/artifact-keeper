@@ -92,15 +92,13 @@ mod tests {
         }
 
         async fn list_repositories(&self) -> Result<Vec<RepositoryListItem>, ArtifactoryError> {
-            Ok(vec![
-                RepositoryListItem {
-                    key: "libs-release".to_string(),
-                    repo_type: "local".to_string(),
-                    package_type: "maven".to_string(),
-                    url: Some("http://localhost/libs-release".to_string()),
-                    description: Some("Release repo".to_string()),
-                },
-            ])
+            Ok(vec![RepositoryListItem {
+                key: "libs-release".to_string(),
+                repo_type: "local".to_string(),
+                package_type: "maven".to_string(),
+                url: Some("http://localhost/libs-release".to_string()),
+                description: Some("Release repo".to_string()),
+            }])
         }
 
         async fn list_artifacts(
@@ -175,7 +173,10 @@ mod tests {
     #[tokio::test]
     async fn test_mock_list_artifacts_pagination() {
         let registry = MockSourceRegistry::new("artifactory");
-        let response = registry.list_artifacts("libs-release", 0, 100).await.unwrap();
+        let response = registry
+            .list_artifacts("libs-release", 0, 100)
+            .await
+            .unwrap();
         assert_eq!(response.range.start_pos, 0);
         assert_eq!(response.range.end_pos, 100);
         assert_eq!(response.results.len(), 0);
@@ -184,14 +185,20 @@ mod tests {
     #[tokio::test]
     async fn test_mock_download_artifact() {
         let registry = MockSourceRegistry::new("artifactory");
-        let content = registry.download_artifact("libs-release", "com/example/test.jar").await.unwrap();
+        let content = registry
+            .download_artifact("libs-release", "com/example/test.jar")
+            .await
+            .unwrap();
         assert_eq!(content, bytes::Bytes::from_static(b"artifact content"));
     }
 
     #[tokio::test]
     async fn test_mock_get_properties() {
         let registry = MockSourceRegistry::new("artifactory");
-        let props = registry.get_properties("libs-release", "test.jar").await.unwrap();
+        let props = registry
+            .get_properties("libs-release", "test.jar")
+            .await
+            .unwrap();
         assert!(props.properties.is_some());
         assert!(props.uri.is_none());
     }

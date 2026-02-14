@@ -1812,161 +1812,161 @@ async fn get_resources(
         .unwrap())
 }
 
-// ---------------------------------------------------------------------------
-// Extracted pure functions for testability
-// ---------------------------------------------------------------------------
-
-/// Compute the commit digest from a list of file path/content pairs.
-/// The digest is the hex-encoded SHA-256 of all (path_bytes || content_bytes).
-pub(crate) fn compute_commit_digest(files: &[(String, Vec<u8>)]) -> String {
-    let mut hasher = Sha256::new();
-    for (path, content) in files {
-        hasher.update(path.as_bytes());
-        hasher.update(content);
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-/// Build the storage key for a protobuf module commit.
-pub(crate) fn build_module_storage_key(module_name: &str, commit_digest: &str) -> String {
-    format!("modules/{}/commits/{}", module_name, commit_digest)
-}
-
-/// Build the artifact path for a protobuf module commit.
-pub(crate) fn build_module_artifact_path(module_name: &str, commit_digest: &str) -> String {
-    format!("modules/{}/commits/{}", module_name, commit_digest)
-}
-
-/// Build the label path for a module.
-pub(crate) fn build_label_path(module_name: &str) -> String {
-    format!("modules/{}/_labels", module_name)
-}
-
-/// Build protobuf metadata JSON for an upload.
-pub(crate) fn build_protobuf_metadata(
-    module_name: &str,
-    commit_digest: &str,
-    file_count: usize,
-    dep_names: &[String],
-) -> serde_json::Value {
-    serde_json::json!({
-        "module": module_name,
-        "commitDigest": commit_digest,
-        "fileCount": file_count,
-        "dependencies": dep_names,
-    })
-}
-
-/// Extract dependency names from a list of ModuleRefs.
-pub(crate) fn extract_dep_names(dep_refs: &[ModuleRef]) -> Vec<String> {
-    dep_refs
-        .iter()
-        .filter_map(|d| match (&d.owner, &d.module) {
-            (Some(o), Some(m)) => Some(format!("{}/{}", o, m)),
-            _ => d.id.clone(),
-        })
-        .collect()
-}
-
-/// Build a ModuleInfo struct from plain parameters.
-pub(crate) fn build_module_info(
-    id: &str,
-    owner_id: &str,
-    name: &str,
-    create_time: &str,
-    update_time: &str,
-) -> ModuleInfo {
-    ModuleInfo {
-        id: id.to_string(),
-        owner_id: owner_id.to_string(),
-        name: name.to_string(),
-        create_time: create_time.to_string(),
-        update_time: update_time.to_string(),
-        state: "ACTIVE".to_string(),
-        default_label_name: "main".to_string(),
-    }
-}
-
-/// Build a CommitInfo struct from plain parameters.
-pub(crate) fn build_commit_info(
-    id: &str,
-    create_time: &str,
-    owner_id: &str,
-    module_id: &str,
-    digest_value: &str,
-) -> CommitInfo {
-    CommitInfo {
-        id: id.to_string(),
-        create_time: create_time.to_string(),
-        owner_id: owner_id.to_string(),
-        module_id: module_id.to_string(),
-        digest: CommitDigest {
-            digest_type: "sha256".to_string(),
-            value: digest_value.to_string(),
-        },
-    }
-}
-
-/// Build a LabelInfo struct from parameters.
-pub(crate) fn build_label_info(
-    module_name: &str,
-    label_name: &str,
-    digest: &str,
-    timestamp: &str,
-) -> LabelInfo {
-    LabelInfo {
-        id: format!("{}:{}:{}", module_name, label_name, digest),
-        name: label_name.to_string(),
-        commit_id: digest.to_string(),
-        create_time: timestamp.to_string(),
-        update_time: timestamp.to_string(),
-    }
-}
-
-/// Compute the next page token for pagination.
-pub(crate) fn compute_next_page_token(count: usize, page_size: i64, offset: i64) -> String {
-    if count as i64 >= page_size {
-        (offset + page_size).to_string()
-    } else {
-        String::new()
-    }
-}
-
-/// Parse a page token string into an offset.
-pub(crate) fn parse_page_token(token: Option<&str>) -> i64 {
-    token.and_then(|t| t.parse::<i64>().ok()).unwrap_or(0)
-}
-
-/// Clamp page size to a maximum value.
-pub(crate) fn clamp_page_size(page_size: Option<i64>, max: i64) -> i64 {
-    page_size.unwrap_or(50).min(max)
-}
-
-/// Extract graph edges from artifact metadata.
-pub(crate) fn extract_graph_edges(
-    metadata: &Option<serde_json::Value>,
-    commit_id: &str,
-) -> Vec<GraphEdge> {
-    let mut edges = Vec::new();
-    if let Some(meta) = metadata {
-        if let Some(deps) = meta.get("dependencies").and_then(|d| d.as_array()) {
-            for dep in deps {
-                if let Some(dep_name) = dep.as_str() {
-                    edges.push(GraphEdge {
-                        from_commit_id: commit_id.to_string(),
-                        to_commit_id: dep_name.to_string(),
-                    });
-                }
-            }
-        }
-    }
-    edges
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Compute the commit digest from a list of file path/content pairs.
+    /// The digest is the hex-encoded SHA-256 of all (path_bytes || content_bytes).
+    fn compute_commit_digest(files: &[(String, Vec<u8>)]) -> String {
+        let mut hasher = Sha256::new();
+        for (path, content) in files {
+            hasher.update(path.as_bytes());
+            hasher.update(content);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Build the storage key for a protobuf module commit.
+    fn build_module_storage_key(module_name: &str, commit_digest: &str) -> String {
+        format!("modules/{}/commits/{}", module_name, commit_digest)
+    }
+
+    /// Build the artifact path for a protobuf module commit.
+    fn build_module_artifact_path(module_name: &str, commit_digest: &str) -> String {
+        format!("modules/{}/commits/{}", module_name, commit_digest)
+    }
+
+    /// Build the label path for a module.
+    fn build_label_path(module_name: &str) -> String {
+        format!("modules/{}/_labels", module_name)
+    }
+
+    /// Build protobuf metadata JSON for an upload.
+    fn build_protobuf_metadata(
+        module_name: &str,
+        commit_digest: &str,
+        file_count: usize,
+        dep_names: &[String],
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "module": module_name,
+            "commitDigest": commit_digest,
+            "fileCount": file_count,
+            "dependencies": dep_names,
+        })
+    }
+
+    /// Extract dependency names from a list of ModuleRefs.
+    fn extract_dep_names(dep_refs: &[ModuleRef]) -> Vec<String> {
+        dep_refs
+            .iter()
+            .filter_map(|d| match (&d.owner, &d.module) {
+                (Some(o), Some(m)) => Some(format!("{}/{}", o, m)),
+                _ => d.id.clone(),
+            })
+            .collect()
+    }
+
+    /// Build a ModuleInfo struct from plain parameters.
+    fn build_module_info(
+        id: &str,
+        owner_id: &str,
+        name: &str,
+        create_time: &str,
+        update_time: &str,
+    ) -> ModuleInfo {
+        ModuleInfo {
+            id: id.to_string(),
+            owner_id: owner_id.to_string(),
+            name: name.to_string(),
+            create_time: create_time.to_string(),
+            update_time: update_time.to_string(),
+            state: "ACTIVE".to_string(),
+            default_label_name: "main".to_string(),
+        }
+    }
+
+    /// Build a CommitInfo struct from plain parameters.
+    fn build_commit_info(
+        id: &str,
+        create_time: &str,
+        owner_id: &str,
+        module_id: &str,
+        digest_value: &str,
+    ) -> CommitInfo {
+        CommitInfo {
+            id: id.to_string(),
+            create_time: create_time.to_string(),
+            owner_id: owner_id.to_string(),
+            module_id: module_id.to_string(),
+            digest: CommitDigest {
+                digest_type: "sha256".to_string(),
+                value: digest_value.to_string(),
+            },
+        }
+    }
+
+    /// Build a LabelInfo struct from parameters.
+    fn build_label_info(
+        module_name: &str,
+        label_name: &str,
+        digest: &str,
+        timestamp: &str,
+    ) -> LabelInfo {
+        LabelInfo {
+            id: format!("{}:{}:{}", module_name, label_name, digest),
+            name: label_name.to_string(),
+            commit_id: digest.to_string(),
+            create_time: timestamp.to_string(),
+            update_time: timestamp.to_string(),
+        }
+    }
+
+    /// Compute the next page token for pagination.
+    fn compute_next_page_token(count: usize, page_size: i64, offset: i64) -> String {
+        if count as i64 >= page_size {
+            (offset + page_size).to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Parse a page token string into an offset.
+    fn parse_page_token(token: Option<&str>) -> i64 {
+        token.and_then(|t| t.parse::<i64>().ok()).unwrap_or(0)
+    }
+
+    /// Clamp page size to a maximum value.
+    fn clamp_page_size(page_size: Option<i64>, max: i64) -> i64 {
+        page_size.unwrap_or(50).min(max)
+    }
+
+    /// Extract graph edges from artifact metadata.
+    fn extract_graph_edges(
+        metadata: &Option<serde_json::Value>,
+        commit_id: &str,
+    ) -> Vec<GraphEdge> {
+        let mut edges = Vec::new();
+        if let Some(meta) = metadata {
+            if let Some(deps) = meta.get("dependencies").and_then(|d| d.as_array()) {
+                for dep in deps {
+                    if let Some(dep_name) = dep.as_str() {
+                        edges.push(GraphEdge {
+                            from_commit_id: commit_id.to_string(),
+                            to_commit_id: dep_name.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        edges
+    }
 
     // -----------------------------------------------------------------------
     // connect_error

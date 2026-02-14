@@ -1426,35 +1426,39 @@ pub(crate) fn build_recipe_upstream_path(
     )
 }
 
-/// Build the upstream path for proxying a package file.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_package_upstream_path(
-    name: &str,
-    version: &str,
-    user: &str,
-    channel: &str,
-    revision: &str,
-    package_id: &str,
-    pkg_revision: &str,
-    file_path: &str,
-) -> String {
-    format!(
-        "v2/conans/{}/{}/{}/{}/revisions/{}/packages/{}/revisions/{}/files/{}",
-        name,
-        version,
-        user,
-        channel,
-        revision,
-        package_id,
-        pkg_revision,
-        file_path.trim_start_matches('/')
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the upstream path for proxying a package file.
+    #[allow(clippy::too_many_arguments)]
+    fn build_package_upstream_path(
+        name: &str,
+        version: &str,
+        user: &str,
+        channel: &str,
+        revision: &str,
+        package_id: &str,
+        pkg_revision: &str,
+        file_path: &str,
+    ) -> String {
+        format!(
+            "v2/conans/{}/{}/{}/{}/revisions/{}/packages/{}/revisions/{}/files/{}",
+            name,
+            version,
+            user,
+            channel,
+            revision,
+            package_id,
+            pkg_revision,
+            file_path.trim_start_matches('/')
+        )
+    }
 
     // -----------------------------------------------------------------------
     // normalize_user

@@ -818,87 +818,87 @@ pub async fn promotion_history(
 )]
 pub struct PromotionApiDoc;
 
-// ---------------------------------------------------------------------------
-// Pure helper functions (testable without DB)
-// ---------------------------------------------------------------------------
-
-/// Build the source display string for promotion responses.
-pub(crate) fn build_promotion_source_display(repo_key: &str, artifact_path: &str) -> String {
-    format!("{}/{}", repo_key, artifact_path)
-}
-
-/// Build the target display string for promotion responses.
-pub(crate) fn build_promotion_target_display(target_repo: &str, artifact_path: &str) -> String {
-    format!("{}/{}", target_repo, artifact_path)
-}
-
-/// Compute promotion pagination values (page, per_page, offset).
-/// Returns `(page, per_page, offset)`.
-pub(crate) fn compute_promotion_pagination(
-    raw_page: Option<u32>,
-    raw_per_page: Option<u32>,
-) -> (u32, u32, i64) {
-    let page = raw_page.unwrap_or(1).max(1);
-    let per_page = raw_per_page.unwrap_or(20).min(100);
-    let offset = ((page - 1) * per_page) as i64;
-    (page, per_page, offset)
-}
-
-/// Compute total pages from total items and per_page.
-pub(crate) fn compute_total_pages(total: i64, per_page: u32) -> u32 {
-    ((total as f64) / (per_page as f64)).ceil() as u32
-}
-
-/// Build a successful promotion response.
-pub(crate) fn build_success_response(
-    source: String,
-    target: String,
-    promotion_id: Uuid,
-) -> PromotionResponse {
-    PromotionResponse {
-        promoted: true,
-        source,
-        target,
-        promotion_id: Some(promotion_id),
-        policy_violations: vec![],
-        message: Some("Artifact promoted successfully".to_string()),
-    }
-}
-
-/// Build a bulk promotion summary response.
-pub(crate) fn build_bulk_summary(
-    total: usize,
-    promoted: usize,
-    failed: usize,
-    results: Vec<PromotionResponse>,
-) -> BulkPromotionResponse {
-    BulkPromotionResponse {
-        total,
-        promoted,
-        failed,
-        results,
-    }
-}
-
-/// Build a rejection response.
-pub(crate) fn build_rejection_response(
-    artifact_id: Uuid,
-    source: String,
-    reason: String,
-    rejection_id: Uuid,
-) -> RejectionResponse {
-    RejectionResponse {
-        rejected: true,
-        artifact_id,
-        source,
-        reason,
-        rejection_id,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build the source display string for promotion responses.
+    fn build_promotion_source_display(repo_key: &str, artifact_path: &str) -> String {
+        format!("{}/{}", repo_key, artifact_path)
+    }
+
+    /// Build the target display string for promotion responses.
+    fn build_promotion_target_display(target_repo: &str, artifact_path: &str) -> String {
+        format!("{}/{}", target_repo, artifact_path)
+    }
+
+    /// Compute promotion pagination values (page, per_page, offset).
+    /// Returns `(page, per_page, offset)`.
+    fn compute_promotion_pagination(
+        raw_page: Option<u32>,
+        raw_per_page: Option<u32>,
+    ) -> (u32, u32, i64) {
+        let page = raw_page.unwrap_or(1).max(1);
+        let per_page = raw_per_page.unwrap_or(20).min(100);
+        let offset = ((page - 1) * per_page) as i64;
+        (page, per_page, offset)
+    }
+
+    /// Compute total pages from total items and per_page.
+    fn compute_total_pages(total: i64, per_page: u32) -> u32 {
+        ((total as f64) / (per_page as f64)).ceil() as u32
+    }
+
+    /// Build a successful promotion response.
+    fn build_success_response(
+        source: String,
+        target: String,
+        promotion_id: Uuid,
+    ) -> PromotionResponse {
+        PromotionResponse {
+            promoted: true,
+            source,
+            target,
+            promotion_id: Some(promotion_id),
+            policy_violations: vec![],
+            message: Some("Artifact promoted successfully".to_string()),
+        }
+    }
+
+    /// Build a bulk promotion summary response.
+    fn build_bulk_summary(
+        total: usize,
+        promoted: usize,
+        failed: usize,
+        results: Vec<PromotionResponse>,
+    ) -> BulkPromotionResponse {
+        BulkPromotionResponse {
+            total,
+            promoted,
+            failed,
+            results,
+        }
+    }
+
+    /// Build a rejection response.
+    fn build_rejection_response(
+        artifact_id: Uuid,
+        source: String,
+        reason: String,
+        rejection_id: Uuid,
+    ) -> RejectionResponse {
+        RejectionResponse {
+            rejected: true,
+            artifact_id,
+            source,
+            reason,
+            rejection_id,
+        }
+    }
 
     // -----------------------------------------------------------------------
     // validate_promotion_repos

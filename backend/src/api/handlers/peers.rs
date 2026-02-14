@@ -622,30 +622,54 @@ mod tests {
 
     #[test]
     fn test_parse_status_online() {
-        assert!(matches!(parse_status("online"), Some(InstanceStatus::Online)));
+        assert!(matches!(
+            parse_status("online"),
+            Some(InstanceStatus::Online)
+        ));
     }
 
     #[test]
     fn test_parse_status_offline() {
-        assert!(matches!(parse_status("offline"), Some(InstanceStatus::Offline)));
+        assert!(matches!(
+            parse_status("offline"),
+            Some(InstanceStatus::Offline)
+        ));
     }
 
     #[test]
     fn test_parse_status_syncing() {
-        assert!(matches!(parse_status("syncing"), Some(InstanceStatus::Syncing)));
+        assert!(matches!(
+            parse_status("syncing"),
+            Some(InstanceStatus::Syncing)
+        ));
     }
 
     #[test]
     fn test_parse_status_degraded() {
-        assert!(matches!(parse_status("degraded"), Some(InstanceStatus::Degraded)));
+        assert!(matches!(
+            parse_status("degraded"),
+            Some(InstanceStatus::Degraded)
+        ));
     }
 
     #[test]
     fn test_parse_status_case_insensitive() {
-        assert!(matches!(parse_status("ONLINE"), Some(InstanceStatus::Online)));
-        assert!(matches!(parse_status("Offline"), Some(InstanceStatus::Offline)));
-        assert!(matches!(parse_status("SyNcInG"), Some(InstanceStatus::Syncing)));
-        assert!(matches!(parse_status("DEGRADED"), Some(InstanceStatus::Degraded)));
+        assert!(matches!(
+            parse_status("ONLINE"),
+            Some(InstanceStatus::Online)
+        ));
+        assert!(matches!(
+            parse_status("Offline"),
+            Some(InstanceStatus::Offline)
+        ));
+        assert!(matches!(
+            parse_status("SyNcInG"),
+            Some(InstanceStatus::Syncing)
+        ));
+        assert!(matches!(
+            parse_status("DEGRADED"),
+            Some(InstanceStatus::Degraded)
+        ));
     }
 
     #[test]
@@ -686,7 +710,8 @@ mod tests {
 
     #[test]
     fn test_register_peer_request_deserialize_minimal() {
-        let json_str = r#"{"name":"peer1","endpoint_url":"https://peer1.example.com","api_key":"key123"}"#;
+        let json_str =
+            r#"{"name":"peer1","endpoint_url":"https://peer1.example.com","api_key":"key123"}"#;
         let req: RegisterPeerRequest = serde_json::from_str(json_str).unwrap();
         assert_eq!(req.name, "peer1");
         assert_eq!(req.endpoint_url, "https://peer1.example.com");
@@ -858,7 +883,10 @@ mod tests {
         };
         assert!(matches!(parse_mode("push"), Some(ReplicationMode::Push)));
         assert!(matches!(parse_mode("pull"), Some(ReplicationMode::Pull)));
-        assert!(matches!(parse_mode("mirror"), Some(ReplicationMode::Mirror)));
+        assert!(matches!(
+            parse_mode("mirror"),
+            Some(ReplicationMode::Mirror)
+        ));
         assert!(matches!(parse_mode("none"), Some(ReplicationMode::None)));
         assert!(matches!(parse_mode("PUSH"), Some(ReplicationMode::Push)));
         assert!(parse_mode("invalid").is_none());
@@ -951,7 +979,10 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["id"], id.to_string());
         assert_eq!(json["artifact_id"], artifact_id.to_string());
-        assert_eq!(json["storage_key"], "artifacts/maven/com/example/1.0/foo.jar");
+        assert_eq!(
+            json["storage_key"],
+            "artifacts/maven/com/example/1.0/foo.jar"
+        );
         assert_eq!(json["artifact_size"], 1048576);
         assert_eq!(json["priority"], 5);
     }

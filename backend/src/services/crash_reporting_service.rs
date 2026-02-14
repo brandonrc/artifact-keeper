@@ -585,11 +585,23 @@ mod tests {
 
     #[test]
     fn test_scrub_level_from_str() {
-        assert_eq!("minimal".parse::<ScrubLevel>().unwrap(), ScrubLevel::Minimal);
-        assert_eq!("aggressive".parse::<ScrubLevel>().unwrap(), ScrubLevel::Aggressive);
-        assert_eq!("standard".parse::<ScrubLevel>().unwrap(), ScrubLevel::Standard);
+        assert_eq!(
+            "minimal".parse::<ScrubLevel>().unwrap(),
+            ScrubLevel::Minimal
+        );
+        assert_eq!(
+            "aggressive".parse::<ScrubLevel>().unwrap(),
+            ScrubLevel::Aggressive
+        );
+        assert_eq!(
+            "standard".parse::<ScrubLevel>().unwrap(),
+            ScrubLevel::Standard
+        );
         // Unknown defaults to Standard
-        assert_eq!("unknown".parse::<ScrubLevel>().unwrap(), ScrubLevel::Standard);
+        assert_eq!(
+            "unknown".parse::<ScrubLevel>().unwrap(),
+            ScrubLevel::Standard
+        );
         assert_eq!("".parse::<ScrubLevel>().unwrap(), ScrubLevel::Standard);
     }
 

@@ -6,12 +6,19 @@ secret:
     - "**/tests/**"
     - "**/test_*.rs"
     - "**/test-*.sh"
+    - "**/test_fixtures/**"
     - "scripts/native-tests/**"
     - "scripts/mesh-e2e/**"
     - "scripts/redteam/**"
     - "**/.astro/**"
-    # Storage backend files contain test keys in #[cfg(test)] modules
+    # Backend source files contain #[cfg(test)] modules with test credentials
     - "backend/src/storage/*.rs"
+    - "backend/src/api/handlers/*.rs"
+    - "backend/src/services/*.rs"
+    - "backend/src/formats/*.rs"
+    - "backend/src/models/*.rs"
+    - "backend/src/config.rs"
+    - "backend/src/api/middleware/*.rs"
 
   # Specific patterns to ignore
   ignored-matches:
@@ -26,6 +33,22 @@ secret:
     # Default test password used in examples and integration tests
     - match: "admin123"
       name: "Default test password"
+    - match: "secret123"
+      name: "Test password in unit tests"
+    - match: "password123"
+      name: "Test password in unit tests"
+    - match: "test-secret"
+      name: "Test secret in unit tests"
+    - match: "test-key"
+      name: "Test key in unit tests"
+    - match: "test-api-key"
+      name: "Test API key in unit tests"
+    - match: "my-secret-key"
+      name: "Test webhook secret in unit tests"
+
+    # GCS test service account
+    - match: "iam.gserviceaccount.com"
+      name: "Test GCS service account email"
 
     # Astro build cache hashes
     - match: "data-store.json"

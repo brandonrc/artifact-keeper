@@ -599,7 +599,11 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         let err_msg = format!("{}", err);
-        assert!(err_msg.contains("Authentication required"), "Error: {}", err_msg);
+        assert!(
+            err_msg.contains("Authentication required"),
+            "Error: {}",
+            err_msg
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -445,35 +445,8 @@ impl StorageBackend for GcsBackend {
 mod tests {
     use super::*;
 
-    // Test RSA private key in PKCS#8 format (DO NOT USE IN PRODUCTION - for testing only)
-    const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDGFba6RcDmJ3+E
-ae/+ewT/KBq64g31LmNxUrPso7VDJayu/GL+sEDw1afq2YZIHbLehJIzy5b7YCRF
-xqgpMO+T+xSvK5gCdtr7uz9k6B7gmrGthLWDYNfqcBXy1YoUdhujdBRCpClp87vI
-03G+jOw3JpB2nCz01cPkEjsWyIAd0XJnReRYbtvrtQaljI5PWbz/SBzA6YcAjMWk
-hmMydLTNRppqVfdzTDgmauhmJikhIoikfTg0k8LH4dB57kRJPw1LqP5gQcIODVzh
-f3STviGxgSYumldXgtKcmS1BLufPVmVGfBxIn9qZBYdY8aBF5Tuw31xKBxuoj6Da
-MfO9lY6BAgMBAAECggEADfkUJbmr7NBWd3G9ozbsWE9s60fs8iGulBzgYk3+CFmM
-/97/4LVwL0zzBmcHyOiHaJjzc0HmSZ8zj9R+okE4dTjd8alilLHrqpw/0Y9qNi/T
-XskgwL7BHGGButqDXgQi2PnkP/syjK3LzlPUDzwDobRPtn430aGOqvT6RBYqq2+u
-B3KVLwToRBRZSODrxMUP3NJuJQF4L7HdSBBFKi8PsRvnoX4PZFBkZBUvE9j/I1gk
-RzJEf1eQt73bt1j424kbON12uw3+pfU5LHumK5Pw5W6QBpYEbnmZMWt5sw6nd1/i
-2xh/iM7nkqDM3ShRxLOMgRGkT49clEfjYDt9zD7jbQKBgQDx07EbXVnNqUcao8Zp
-HYEqylnCWBa/sLFHEOckzAT8V2PPlIU7dIkFmqrYIWiV/NwZOVVN3Zs2kg9zZCDF
-2mjvrN4wUOOWjluXPGMfpi6/0j67xCtoeYhcZjKxQ3FYJUNFATYFrWTO0lx9LomW
-Cm/0lPjFnmRVzqfTn78jBCkeOwKBgQDRsboStRU0vv1hDsabmq5I5XOIWMkwINdJ
-h/Zye7Ag/+dKyRieLrq9ydl40Lmk18lO1tSl3LLh29xAHMwZH5ipnFFVerNMVsd4
-zOFD+HZ+F8WvZ7ex+33iv0BEztFpdCzOtCvACa4YQubd3iT8DhaTGuVZagjENbEc
-IaXQdkVOcwKBgCyjF6DmdUoaAe7v5hLHCG2eljziR6iwc7ibbR8ErbLqapkJYCJe
-W2B2cSyd1hFBcFsTkyRhUGIdSc7R357FtvLupMCkXa4PruZWljFkWmK76yp7hkut
-izcLAjZoLYbIsgcNtywLGn12pO3SZkEUwh+SU+0eVITmNWJBrWVIQlK7AoGANa70
-Xhmx5iEHKTPpMKj2+X6Uh1GDoCioNRDzzPdRbgFVq1W0UbrQ4Amu/Tkibcs4pFBn
-fFb2DNCGoHs+3Sezo6h7QhD5mg+VXZ3GBeq0Gy/m0jMRWiVyYvxnbbYs8nxlhD2n
-/a/8vAVUqXRXr5fDu8Fk+fElcWX1g6gxlR7SO3UCgYAkle2pUbhtYzXo6Jhb0nFE
-VOvOXph5MBRtp7Iz9DxfIiFIHRS9GHt3152oEjZYwwC/uywvXSqyAkP4af0iwEMO
-0JhIjLu/cFu68UNTgURA60XjxMRKU1P4kxfY6lqI27x0My9denhrrd/BkhyUSi/l
-mpzFW04qb46Uh1fAvnM0cg==
------END PRIVATE KEY-----"#;
+    // Generated test-only RSA key — not used anywhere, safe to commit
+    const TEST_PRIVATE_KEY: &str = include_str!("../../test_fixtures/test_rsa_key.pem");
 
     fn create_test_config() -> GcsConfig {
         GcsConfig {
@@ -795,7 +768,10 @@ mpzFW04qb46Uh1fAvnM0cg==
         let backend = GcsBackend::new(config).await.unwrap();
 
         let expires = Duration::from_secs(1800);
-        let result = backend.get_presigned_url("test.txt", expires).await.unwrap();
+        let result = backend
+            .get_presigned_url("test.txt", expires)
+            .await
+            .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().expires_in, expires);
     }

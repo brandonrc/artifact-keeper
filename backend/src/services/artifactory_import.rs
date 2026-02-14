@@ -1128,10 +1128,7 @@ mod tests {
 
     #[test]
     fn test_infer_repo_type_cache() {
-        assert_eq!(
-            ArtifactoryImporter::infer_repo_type("npm-cache"),
-            "remote"
-        );
+        assert_eq!(ArtifactoryImporter::infer_repo_type("npm-cache"), "remote");
     }
 
     #[test]
@@ -1338,7 +1335,9 @@ mod tests {
     fn test_list_artifacts_skips_metadata_files() {
         let temp = create_test_export();
         // Create metadata files that should be skipped
-        let repo_path = temp.path().join("repositories/libs-release/com/example/test/1.0");
+        let repo_path = temp
+            .path()
+            .join("repositories/libs-release/com/example/test/1.0");
         fs::write(repo_path.join(".gitkeep"), "").unwrap();
         fs::write(repo_path.join("metadata.xml"), "<meta/>").unwrap();
 

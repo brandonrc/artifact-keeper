@@ -728,7 +728,10 @@ mod tests {
         assert_eq!(item.key, "libs-release");
         assert_eq!(item.repo_type, "LOCAL");
         assert_eq!(item.package_type, "maven");
-        assert_eq!(item.url, Some("https://example.com/libs-release".to_string()));
+        assert_eq!(
+            item.url,
+            Some("https://example.com/libs-release".to_string())
+        );
         assert_eq!(item.description, Some("Release repository".to_string()));
     }
 
@@ -888,7 +891,10 @@ mod tests {
         assert_eq!(user.name, "admin");
         assert_eq!(user.email, Some("admin@example.com".to_string()));
         assert_eq!(user.admin, Some(true));
-        assert_eq!(user.groups, Some(vec!["readers".to_string(), "deployers".to_string()]));
+        assert_eq!(
+            user.groups,
+            Some(vec!["readers".to_string(), "deployers".to_string()])
+        );
     }
 
     #[test]
@@ -938,7 +944,13 @@ mod tests {
         assert_eq!(perm.name, "read-all");
         assert!(perm.repo.is_some());
         let repo = perm.repo.unwrap();
-        assert_eq!(repo.repositories, Some(vec!["libs-release".to_string(), "libs-snapshot".to_string()]));
+        assert_eq!(
+            repo.repositories,
+            Some(vec![
+                "libs-release".to_string(),
+                "libs-snapshot".to_string()
+            ])
+        );
         let actions = repo.actions.unwrap();
         assert!(actions.users.is_some());
         assert!(actions.groups.is_some());
@@ -956,7 +968,10 @@ mod tests {
         let props: PropertiesResponse = serde_json::from_str(json).unwrap();
         assert!(props.properties.is_some());
         let properties = props.properties.unwrap();
-        assert_eq!(properties.get("build.name").unwrap(), &vec!["my-build".to_string()]);
+        assert_eq!(
+            properties.get("build.name").unwrap(),
+            &vec!["my-build".to_string()]
+        );
     }
 
     #[test]
@@ -978,7 +993,10 @@ mod tests {
         let version: SystemVersionResponse = serde_json::from_str(json).unwrap();
         assert_eq!(version.version, "7.55.10");
         assert_eq!(version.revision, Some("75510900".to_string()));
-        assert_eq!(version.addons, Some(vec!["build".to_string(), "license".to_string()]));
+        assert_eq!(
+            version.addons,
+            Some(vec!["build".to_string(), "license".to_string()])
+        );
         assert_eq!(version.license, Some("Enterprise".to_string()));
     }
 

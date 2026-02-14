@@ -478,7 +478,10 @@ mod tests {
     fn test_filesystem_backend_key_to_path() {
         let backend = FilesystemBackend::new(PathBuf::from("/data/storage"));
         let path = backend.key_to_path("repos/maven/artifact.jar");
-        assert_eq!(path, PathBuf::from("/data/storage/repos/maven/artifact.jar"));
+        assert_eq!(
+            path,
+            PathBuf::from("/data/storage/repos/maven/artifact.jar")
+        );
     }
 
     #[test]

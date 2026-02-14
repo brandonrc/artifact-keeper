@@ -297,7 +297,8 @@ mod tests {
             name: "empty".to_string(),
             version: None,
             size_bytes: 0,
-            checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+            checksum_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
             checksum_md5: None,
             checksum_sha1: None,
             content_type: "application/octet-stream".to_string(),

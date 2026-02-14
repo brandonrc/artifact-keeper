@@ -1065,140 +1065,6 @@ pub(crate) fn build_conda_storage_key(
     format!("conda/{}/{}/{}", repo_id, subdir, filename)
 }
 
-/// Return the appropriate content type for a conda package filename.
-pub(crate) fn conda_content_type(filename: &str) -> &'static str {
-    if filename.ends_with(".conda") {
-        "application/octet-stream"
-    } else if filename.ends_with(".tar.bz2") {
-        "application/x-tar"
-    } else {
-        "application/octet-stream"
-    }
-}
-
-/// Build conda-specific metadata JSON.
-pub(crate) fn build_conda_metadata(
-    name: &str,
-    version: &str,
-    build_string: &str,
-    subdir: &str,
-    filename: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "build": build_string,
-        "build_number": 0,
-        "subdir": subdir,
-        "package_format": if filename.ends_with(".conda") { "v2" } else { "v1" },
-        "depends": [],
-    })
-}
-
-/// Build the upload response JSON.
-pub(crate) fn build_conda_upload_response(
-    name: &str,
-    version: &str,
-    build_string: &str,
-    subdir: &str,
-    sha256: &str,
-    size: i64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "build": build_string,
-        "subdir": subdir,
-        "sha256": sha256,
-        "size": size,
-    })
-}
-
-/// Build a single repodata entry for a package.
-pub(crate) fn build_repodata_entry(
-    name: &str,
-    version: &str,
-    build: &str,
-    build_number: u64,
-    depends: &serde_json::Value,
-    md5: &str,
-    sha256: &str,
-    size: i64,
-    subdir: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "version": version,
-        "build": build,
-        "build_number": build_number,
-        "depends": depends,
-        "md5": md5,
-        "sha256": sha256,
-        "size": size,
-        "subdir": subdir,
-    })
-}
-
-/// Build a channeldata package entry.
-pub(crate) fn build_channeldata_package_entry(
-    subdirs: &[String],
-    version: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "subdirs": subdirs,
-        "version": version,
-    })
-}
-
-/// Build the full channeldata.json response.
-pub(crate) fn build_channeldata_json(
-    packages: &serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "channeldata_version": 1,
-        "packages": packages,
-        "subdirs": KNOWN_SUBDIRS,
-    })
-}
-
-/// Build the full repodata.json response for a subdir.
-pub(crate) fn build_repodata_json(
-    subdir: &str,
-    packages: &serde_json::Map<String, serde_json::Value>,
-    packages_conda: &serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    serde_json::json!({
-        "info": { "subdir": subdir },
-        "packages": packages,
-        "packages.conda": packages_conda,
-    })
-}
-
-/// Extract the subdir from artifact metadata or path.
-pub(crate) fn extract_subdir(metadata: Option<&serde_json::Value>, path: &str) -> String {
-    metadata
-        .and_then(|m| m.get("subdir").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .or_else(|| {
-            path.split('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "noarch".to_string())
-}
-
-/// Extract the package name from artifact metadata or use the artifact name.
-pub(crate) fn extract_package_name(
-    metadata: Option<&serde_json::Value>,
-    artifact_name: &str,
-) -> String {
-    metadata
-        .and_then(|m| m.get("name").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| artifact_name.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1206,6 +1072,138 @@ pub(crate) fn extract_package_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Return the appropriate content type for a conda package filename.
+    fn conda_content_type(filename: &str) -> &'static str {
+        if filename.ends_with(".conda") {
+            "application/octet-stream"
+        } else if filename.ends_with(".tar.bz2") {
+            "application/x-tar"
+        } else {
+            "application/octet-stream"
+        }
+    }
+
+    /// Build conda-specific metadata JSON.
+    fn build_conda_metadata(
+        name: &str,
+        version: &str,
+        build_string: &str,
+        subdir: &str,
+        filename: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "build": build_string,
+            "build_number": 0,
+            "subdir": subdir,
+            "package_format": if filename.ends_with(".conda") { "v2" } else { "v1" },
+            "depends": [],
+        })
+    }
+
+    /// Build the upload response JSON.
+    fn build_conda_upload_response(
+        name: &str,
+        version: &str,
+        build_string: &str,
+        subdir: &str,
+        sha256: &str,
+        size: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "build": build_string,
+            "subdir": subdir,
+            "sha256": sha256,
+            "size": size,
+        })
+    }
+
+    /// Build a single repodata entry for a package.
+    fn build_repodata_entry(
+        name: &str,
+        version: &str,
+        build: &str,
+        build_number: u64,
+        depends: &serde_json::Value,
+        md5: &str,
+        sha256: &str,
+        size: i64,
+        subdir: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "build": build,
+            "build_number": build_number,
+            "depends": depends,
+            "md5": md5,
+            "sha256": sha256,
+            "size": size,
+            "subdir": subdir,
+        })
+    }
+
+    /// Build a channeldata package entry.
+    fn build_channeldata_package_entry(subdirs: &[String], version: &str) -> serde_json::Value {
+        serde_json::json!({
+            "subdirs": subdirs,
+            "version": version,
+        })
+    }
+
+    /// Build the full channeldata.json response.
+    fn build_channeldata_json(
+        packages: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "channeldata_version": 1,
+            "packages": packages,
+            "subdirs": KNOWN_SUBDIRS,
+        })
+    }
+
+    /// Build the full repodata.json response for a subdir.
+    fn build_repodata_json(
+        subdir: &str,
+        packages: &serde_json::Map<String, serde_json::Value>,
+        packages_conda: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "info": { "subdir": subdir },
+            "packages": packages,
+            "packages.conda": packages_conda,
+        })
+    }
+
+    /// Extract the subdir from artifact metadata or path.
+    fn extract_subdir(metadata: Option<&serde_json::Value>, path: &str) -> String {
+        metadata
+            .and_then(|m| m.get("subdir").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+            .or_else(|| {
+                path.split('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "noarch".to_string())
+    }
+
+    /// Extract the package name from artifact metadata or use the artifact name.
+    fn extract_package_name(metadata: Option<&serde_json::Value>, artifact_name: &str) -> String {
+        metadata
+            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| artifact_name.to_string())
+    }
 
     // -----------------------------------------------------------------------
     // is_conda_package / is_conda_v2

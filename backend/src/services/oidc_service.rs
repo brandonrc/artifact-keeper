@@ -971,7 +971,10 @@ mod tests {
         assert_eq!(claims.sub, "1234567890");
         assert!(claims.aud.contains("client-123"));
         assert_eq!(
-            claims.extra.get("preferred_username").and_then(|v| v.as_str()),
+            claims
+                .extra
+                .get("preferred_username")
+                .and_then(|v| v.as_str()),
             Some("testuser")
         );
     }

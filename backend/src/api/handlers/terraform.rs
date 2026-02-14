@@ -1019,196 +1019,196 @@ pub(crate) fn build_service_discovery_json(repo_key: &str) -> serde_json::Value 
     })
 }
 
-/// Build a fully-qualified module name.
-pub(crate) fn build_module_name(namespace: &str, name: &str, provider: &str) -> String {
-    format!("{}/{}/{}", namespace, name, provider)
-}
-
-/// Build a fully-qualified provider name.
-pub(crate) fn build_provider_name(namespace: &str, type_name: &str) -> String {
-    format!("{}/{}", namespace, type_name)
-}
-
-/// Build the download URL for a module.
-pub(crate) fn build_module_download_url(
-    repo_key: &str,
-    namespace: &str,
-    name: &str,
-    provider: &str,
-    version: &str,
-) -> String {
-    format!(
-        "/terraform/{}/v1/modules/{}/{}/{}/{}/archive",
-        repo_key, namespace, name, provider, version
-    )
-}
-
-/// Build the download URL for a provider binary.
-pub(crate) fn build_provider_download_url(
-    repo_key: &str,
-    namespace: &str,
-    type_name: &str,
-    version: &str,
-    os: &str,
-    arch: &str,
-) -> String {
-    format!(
-        "/terraform/{}/v1/providers/{}/{}/{}/binary/{}/{}",
-        repo_key, namespace, type_name, version, os, arch
-    )
-}
-
-/// Build the provider binary filename.
-pub(crate) fn build_provider_filename(
-    type_name: &str,
-    version: &str,
-    platform_path: &str,
-) -> String {
-    format!(
-        "terraform-provider-{}_{}_{}.zip",
-        type_name, version, platform_path
-    )
-}
-
-/// Build the platform path string (os_arch).
-pub(crate) fn build_platform_path(os: &str, arch: &str) -> String {
-    format!("{}_{}", os, arch)
-}
-
-/// Build the storage key for a Terraform module.
-pub(crate) fn build_module_storage_key(
-    namespace: &str,
-    name: &str,
-    provider: &str,
-    version: &str,
-) -> String {
-    format!(
-        "terraform/modules/{}/{}/{}/{}.tar.gz",
-        namespace, name, provider, version
-    )
-}
-
-/// Build the storage key for a Terraform provider.
-pub(crate) fn build_provider_storage_key(
-    namespace: &str,
-    type_name: &str,
-    version: &str,
-    platform: &str,
-) -> String {
-    format!(
-        "terraform/providers/{}/{}/{}/terraform-provider-{}_{}.zip",
-        namespace, type_name, version, type_name, platform
-    )
-}
-
-/// Build the artifact path for a module.
-pub(crate) fn build_module_artifact_path(
-    namespace: &str,
-    name: &str,
-    provider: &str,
-    version: &str,
-) -> String {
-    format!("{}/{}/{}/{}", namespace, name, provider, version)
-}
-
-/// Build the artifact path for a provider.
-pub(crate) fn build_provider_artifact_path(
-    namespace: &str,
-    type_name: &str,
-    version: &str,
-    platform: &str,
-) -> String {
-    format!("{}/{}/{}/{}", namespace, type_name, version, platform)
-}
-
-/// Build module metadata JSON.
-pub(crate) fn build_module_metadata(
-    namespace: &str,
-    name: &str,
-    provider: &str,
-    version: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "module",
-        "namespace": namespace,
-        "name": name,
-        "provider": provider,
-        "version": version,
-    })
-}
-
-/// Build provider metadata JSON.
-pub(crate) fn build_provider_metadata(
-    namespace: &str,
-    type_name: &str,
-    version: &str,
-    os: &str,
-    arch: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "kind": "provider",
-        "namespace": namespace,
-        "type": type_name,
-        "version": version,
-        "os": os,
-        "arch": arch,
-    })
-}
-
-/// Build the version list JSON for a module.
-pub(crate) fn build_version_list_json(versions: &[String]) -> serde_json::Value {
-    let version_list: Vec<serde_json::Value> = versions
-        .iter()
-        .map(|v| serde_json::json!({ "version": v }))
-        .collect();
-    serde_json::json!({
-        "modules": [{
-            "versions": version_list,
-        }]
-    })
-}
-
-/// Build the provider download JSON response.
-pub(crate) fn build_provider_download_json(
-    os: &str,
-    arch: &str,
-    filename: &str,
-    download_url: &str,
-    shasum: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "protocols": ["5.0"],
-        "os": os,
-        "arch": arch,
-        "filename": filename,
-        "download_url": download_url,
-        "shasum": shasum,
-        "shasums_url": "",
-        "shasums_signature_url": "",
-        "signing_keys": {
-            "gpg_public_keys": []
-        },
-    })
-}
-
-/// Parse a module name into (namespace, name, provider).
-pub(crate) fn parse_module_name(full_name: &str) -> (String, String, String) {
-    let parts: Vec<&str> = full_name.splitn(3, '/').collect();
-    match parts.as_slice() {
-        [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
-        _ => (full_name.to_string(), String::new(), String::new()),
-    }
-}
-
-/// Build a SQL LIKE search pattern from a query string.
-pub(crate) fn build_search_pattern(query: &str) -> String {
-    format!("%{}%", query)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // Extracted pure functions (moved into test module)
+    // -----------------------------------------------------------------------
+
+    /// Build a fully-qualified module name.
+    fn build_module_name(namespace: &str, name: &str, provider: &str) -> String {
+        format!("{}/{}/{}", namespace, name, provider)
+    }
+
+    /// Build a fully-qualified provider name.
+    fn build_provider_name(namespace: &str, type_name: &str) -> String {
+        format!("{}/{}", namespace, type_name)
+    }
+
+    /// Build the download URL for a module.
+    fn build_module_download_url(
+        repo_key: &str,
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "/terraform/{}/v1/modules/{}/{}/{}/{}/archive",
+            repo_key, namespace, name, provider, version
+        )
+    }
+
+    /// Build the download URL for a provider binary.
+    fn build_provider_download_url(
+        repo_key: &str,
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+    ) -> String {
+        format!(
+            "/terraform/{}/v1/providers/{}/{}/{}/binary/{}/{}",
+            repo_key, namespace, type_name, version, os, arch
+        )
+    }
+
+    /// Build the provider binary filename.
+    fn build_provider_filename(type_name: &str, version: &str, platform_path: &str) -> String {
+        format!(
+            "terraform-provider-{}_{}_{}.zip",
+            type_name, version, platform_path
+        )
+    }
+
+    /// Build the platform path string (os_arch).
+    fn build_platform_path(os: &str, arch: &str) -> String {
+        format!("{}_{}", os, arch)
+    }
+
+    /// Build the storage key for a Terraform module.
+    fn build_module_storage_key(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "terraform/modules/{}/{}/{}/{}.tar.gz",
+            namespace, name, provider, version
+        )
+    }
+
+    /// Build the storage key for a Terraform provider.
+    fn build_provider_storage_key(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        platform: &str,
+    ) -> String {
+        format!(
+            "terraform/providers/{}/{}/{}/terraform-provider-{}_{}.zip",
+            namespace, type_name, version, type_name, platform
+        )
+    }
+
+    /// Build the artifact path for a module.
+    fn build_module_artifact_path(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> String {
+        format!("{}/{}/{}/{}", namespace, name, provider, version)
+    }
+
+    /// Build the artifact path for a provider.
+    fn build_provider_artifact_path(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        platform: &str,
+    ) -> String {
+        format!("{}/{}/{}/{}", namespace, type_name, version, platform)
+    }
+
+    /// Build module metadata JSON.
+    fn build_module_metadata(
+        namespace: &str,
+        name: &str,
+        provider: &str,
+        version: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "module",
+            "namespace": namespace,
+            "name": name,
+            "provider": provider,
+            "version": version,
+        })
+    }
+
+    /// Build provider metadata JSON.
+    fn build_provider_metadata(
+        namespace: &str,
+        type_name: &str,
+        version: &str,
+        os: &str,
+        arch: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "provider",
+            "namespace": namespace,
+            "type": type_name,
+            "version": version,
+            "os": os,
+            "arch": arch,
+        })
+    }
+
+    /// Build the version list JSON for a module.
+    fn build_version_list_json(versions: &[String]) -> serde_json::Value {
+        let version_list: Vec<serde_json::Value> = versions
+            .iter()
+            .map(|v| serde_json::json!({ "version": v }))
+            .collect();
+        serde_json::json!({
+            "modules": [{
+                "versions": version_list,
+            }]
+        })
+    }
+
+    /// Build the provider download JSON response.
+    fn build_provider_download_json(
+        os: &str,
+        arch: &str,
+        filename: &str,
+        download_url: &str,
+        shasum: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "protocols": ["5.0"],
+            "os": os,
+            "arch": arch,
+            "filename": filename,
+            "download_url": download_url,
+            "shasum": shasum,
+            "shasums_url": "",
+            "shasums_signature_url": "",
+            "signing_keys": {
+                "gpg_public_keys": []
+            },
+        })
+    }
+
+    /// Parse a module name into (namespace, name, provider).
+    fn parse_module_name(full_name: &str) -> (String, String, String) {
+        let parts: Vec<&str> = full_name.splitn(3, '/').collect();
+        match parts.as_slice() {
+            [ns, n, p] => (ns.to_string(), n.to_string(), p.to_string()),
+            _ => (full_name.to_string(), String::new(), String::new()),
+        }
+    }
+
+    /// Build a SQL LIKE search pattern from a query string.
+    fn build_search_pattern(query: &str) -> String {
+        format!("%{}%", query)
+    }
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials

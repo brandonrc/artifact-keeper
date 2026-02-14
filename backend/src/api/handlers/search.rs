@@ -1006,12 +1006,19 @@ mod tests {
     fn test_facets_response_serialize() {
         let facets = FacetsResponse {
             formats: vec![
-                FacetValue { value: "maven".to_string(), count: 100 },
-                FacetValue { value: "npm".to_string(), count: 50 },
+                FacetValue {
+                    value: "maven".to_string(),
+                    count: 100,
+                },
+                FacetValue {
+                    value: "npm".to_string(),
+                    count: 50,
+                },
             ],
-            repositories: vec![
-                FacetValue { value: "libs-release".to_string(), count: 75 },
-            ],
+            repositories: vec![FacetValue {
+                value: "libs-release".to_string(),
+                count: 75,
+            }],
             content_types: vec![],
         };
         let json = serde_json::to_value(&facets).unwrap();
@@ -1049,7 +1056,9 @@ mod tests {
 
     #[test]
     fn test_quick_search_response_empty() {
-        let resp = QuickSearchResponse { results: Vec::new() };
+        let resp = QuickSearchResponse {
+            results: Vec::new(),
+        };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["results"].as_array().unwrap().len(), 0);
     }

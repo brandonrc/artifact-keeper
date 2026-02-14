@@ -407,7 +407,10 @@ mod tests {
             artifacts_matched: 10,
             artifacts_removed: 8,
             bytes_freed: 1024 * 1024,
-            errors: vec!["timeout on artifact A".to_string(), "locked artifact B".to_string()],
+            errors: vec![
+                "timeout on artifact A".to_string(),
+                "locked artifact B".to_string(),
+            ],
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["errors"].as_array().unwrap().len(), 2);

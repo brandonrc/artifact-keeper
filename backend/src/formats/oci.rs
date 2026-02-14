@@ -482,10 +482,22 @@ mod tests {
 
     #[test]
     fn test_media_type_constants() {
-        assert_eq!(media_types::MANIFEST_V2, "application/vnd.docker.distribution.manifest.v2+json");
-        assert_eq!(media_types::OCI_MANIFEST, "application/vnd.oci.image.manifest.v1+json");
-        assert_eq!(media_types::OCI_INDEX, "application/vnd.oci.image.index.v1+json");
-        assert_eq!(media_types::CONFIG, "application/vnd.docker.container.image.v1+json");
+        assert_eq!(
+            media_types::MANIFEST_V2,
+            "application/vnd.docker.distribution.manifest.v2+json"
+        );
+        assert_eq!(
+            media_types::OCI_MANIFEST,
+            "application/vnd.oci.image.manifest.v1+json"
+        );
+        assert_eq!(
+            media_types::OCI_INDEX,
+            "application/vnd.oci.image.index.v1+json"
+        );
+        assert_eq!(
+            media_types::CONFIG,
+            "application/vnd.docker.container.image.v1+json"
+        );
     }
 
     #[test]

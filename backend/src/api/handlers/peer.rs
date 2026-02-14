@@ -524,30 +524,54 @@ mod tests {
 
     #[test]
     fn test_parse_peer_status_active() {
-        assert!(matches!(parse_peer_status("active"), Some(PeerStatus::Active)));
+        assert!(matches!(
+            parse_peer_status("active"),
+            Some(PeerStatus::Active)
+        ));
     }
 
     #[test]
     fn test_parse_peer_status_probing() {
-        assert!(matches!(parse_peer_status("probing"), Some(PeerStatus::Probing)));
+        assert!(matches!(
+            parse_peer_status("probing"),
+            Some(PeerStatus::Probing)
+        ));
     }
 
     #[test]
     fn test_parse_peer_status_unreachable() {
-        assert!(matches!(parse_peer_status("unreachable"), Some(PeerStatus::Unreachable)));
+        assert!(matches!(
+            parse_peer_status("unreachable"),
+            Some(PeerStatus::Unreachable)
+        ));
     }
 
     #[test]
     fn test_parse_peer_status_disabled() {
-        assert!(matches!(parse_peer_status("disabled"), Some(PeerStatus::Disabled)));
+        assert!(matches!(
+            parse_peer_status("disabled"),
+            Some(PeerStatus::Disabled)
+        ));
     }
 
     #[test]
     fn test_parse_peer_status_case_insensitive() {
-        assert!(matches!(parse_peer_status("ACTIVE"), Some(PeerStatus::Active)));
-        assert!(matches!(parse_peer_status("Probing"), Some(PeerStatus::Probing)));
-        assert!(matches!(parse_peer_status("UNREACHABLE"), Some(PeerStatus::Unreachable)));
-        assert!(matches!(parse_peer_status("Disabled"), Some(PeerStatus::Disabled)));
+        assert!(matches!(
+            parse_peer_status("ACTIVE"),
+            Some(PeerStatus::Active)
+        ));
+        assert!(matches!(
+            parse_peer_status("Probing"),
+            Some(PeerStatus::Probing)
+        ));
+        assert!(matches!(
+            parse_peer_status("UNREACHABLE"),
+            Some(PeerStatus::Unreachable)
+        ));
+        assert!(matches!(
+            parse_peer_status("Disabled"),
+            Some(PeerStatus::Disabled)
+        ));
     }
 
     #[test]
@@ -801,7 +825,10 @@ mod tests {
         assert_eq!(body.max_bandwidth_bps, Some(100000000));
         assert_eq!(body.sync_window_start.as_deref(), Some("02:00:00"));
         assert_eq!(body.sync_window_end.as_deref(), Some("06:00:00"));
-        assert_eq!(body.sync_window_timezone.as_deref(), Some("America/New_York"));
+        assert_eq!(
+            body.sync_window_timezone.as_deref(),
+            Some("America/New_York")
+        );
         assert_eq!(body.concurrent_transfers_limit, Some(4));
     }
 

@@ -99,10 +99,7 @@ mod tests {
         let storage = FilesystemStorage::new("/storage");
         let key = "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
         let path = storage.key_to_path(key);
-        assert_eq!(
-            path,
-            PathBuf::from(format!("/storage/91/{}", key))
-        );
+        assert_eq!(path, PathBuf::from(format!("/storage/91/{}", key)));
     }
 
     #[test]
@@ -126,10 +123,7 @@ mod tests {
         let path1 = storage.key_to_path("aa1234");
         let path2 = storage.key_to_path("bb5678");
         // Different prefix subdirectories
-        assert_ne!(
-            path1.parent().unwrap(),
-            path2.parent().unwrap()
-        );
+        assert_ne!(path1.parent().unwrap(), path2.parent().unwrap());
     }
 
     #[test]
@@ -138,10 +132,7 @@ mod tests {
         let path1 = storage.key_to_path("ab1111");
         let path2 = storage.key_to_path("ab2222");
         // Same prefix = same subdirectory
-        assert_eq!(
-            path1.parent().unwrap(),
-            path2.parent().unwrap()
-        );
+        assert_eq!(path1.parent().unwrap(), path2.parent().unwrap());
     }
 
     #[tokio::test]
@@ -207,8 +198,14 @@ mod tests {
         let storage = FilesystemStorage::new(temp_dir.path());
 
         let key = "abcdef1234567890";
-        storage.put(key, Bytes::from_static(b"original")).await.unwrap();
-        storage.put(key, Bytes::from_static(b"updated")).await.unwrap();
+        storage
+            .put(key, Bytes::from_static(b"original"))
+            .await
+            .unwrap();
+        storage
+            .put(key, Bytes::from_static(b"updated"))
+            .await
+            .unwrap();
 
         let retrieved = storage.get(key).await.unwrap();
         assert_eq!(retrieved, Bytes::from_static(b"updated"));

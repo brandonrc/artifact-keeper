@@ -640,9 +640,7 @@ mod tests {
 
     #[test]
     fn test_package_versions_response_serialize_empty() {
-        let resp = PackageVersionsResponse {
-            versions: vec![],
-        };
+        let resp = PackageVersionsResponse { versions: vec![] };
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json["versions"].as_array().unwrap().is_empty());
     }

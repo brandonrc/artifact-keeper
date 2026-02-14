@@ -550,7 +550,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_ldap_input_null_byte() {
-        assert_eq!(LdapService::sanitize_ldap_input("user\0name"), "user\\00name");
+        assert_eq!(
+            LdapService::sanitize_ldap_input("user\0name"),
+            "user\\00name"
+        );
     }
 
     #[test]

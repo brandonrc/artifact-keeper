@@ -705,7 +705,12 @@ mod tests {
     #[test]
     fn test_extract_cookie_found() {
         let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, "ak_access_token=abc123; ak_refresh_token=xyz".parse().unwrap());
+        headers.insert(
+            COOKIE,
+            "ak_access_token=abc123; ak_refresh_token=xyz"
+                .parse()
+                .unwrap(),
+        );
         let result = extract_cookie(&headers, "ak_access_token");
         assert_eq!(result, Some("abc123"));
     }
@@ -713,7 +718,12 @@ mod tests {
     #[test]
     fn test_extract_cookie_second_cookie() {
         let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, "ak_access_token=abc; ak_refresh_token=xyz789".parse().unwrap());
+        headers.insert(
+            COOKIE,
+            "ak_access_token=abc; ak_refresh_token=xyz789"
+                .parse()
+                .unwrap(),
+        );
         let result = extract_cookie(&headers, "ak_refresh_token");
         assert_eq!(result, Some("xyz789"));
     }
@@ -744,7 +754,10 @@ mod tests {
     #[test]
     fn test_extract_cookie_with_spaces() {
         let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, "  ak_access_token=spaced ; other=val ".parse().unwrap());
+        headers.insert(
+            COOKIE,
+            "  ak_access_token=spaced ; other=val ".parse().unwrap(),
+        );
         let result = extract_cookie(&headers, "ak_access_token");
         assert_eq!(result, Some("spaced"));
     }
@@ -770,7 +783,10 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
-        let access_cookie = cookies.iter().find(|c| c.contains("ak_access_token=")).unwrap();
+        let access_cookie = cookies
+            .iter()
+            .find(|c| c.contains("ak_access_token="))
+            .unwrap();
         assert!(access_cookie.contains("ak_access_token=myaccess"));
         assert!(access_cookie.contains("HttpOnly"));
         assert!(access_cookie.contains("SameSite=Strict"));
@@ -787,7 +803,10 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
-        let refresh_cookie = cookies.iter().find(|c| c.contains("ak_refresh_token=")).unwrap();
+        let refresh_cookie = cookies
+            .iter()
+            .find(|c| c.contains("ak_refresh_token="))
+            .unwrap();
         assert!(refresh_cookie.contains("ak_refresh_token=ref"));
         assert!(refresh_cookie.contains("Path=/api/v1/auth/refresh"));
         // 7 days in seconds
@@ -809,7 +828,11 @@ mod tests {
             .collect();
         assert_eq!(cookies.len(), 2);
         for cookie in &cookies {
-            assert!(cookie.contains("Max-Age=0"), "Cookie should have Max-Age=0: {}", cookie);
+            assert!(
+                cookie.contains("Max-Age=0"),
+                "Cookie should have Max-Age=0: {}",
+                cookie
+            );
         }
     }
 
@@ -822,7 +845,10 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap().to_string())
             .collect();
-        let access = cookies.iter().find(|c| c.starts_with("ak_access_token=")).unwrap();
+        let access = cookies
+            .iter()
+            .find(|c| c.starts_with("ak_access_token="))
+            .unwrap();
         assert!(access.starts_with("ak_access_token=;"));
     }
 
@@ -835,7 +861,10 @@ mod tests {
         let json = r#"{"purpose": "download", "resource_path": "/artifacts/mylib/1.0.jar"}"#;
         let req: CreateTicketRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.purpose, "download");
-        assert_eq!(req.resource_path, Some("/artifacts/mylib/1.0.jar".to_string()));
+        assert_eq!(
+            req.resource_path,
+            Some("/artifacts/mylib/1.0.jar".to_string())
+        );
     }
 
     #[test]
