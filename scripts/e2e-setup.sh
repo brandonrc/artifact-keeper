@@ -1,13 +1,33 @@
 #!/bin/sh
 # Bootstrap script for E2E tests: creates admin token and test repositories
+#
+# Works in both Docker containers (docker-compose.test.yml) and on self-hosted
+# CI runners (ARC pods). Uses REGISTRY_URL env var with Docker-default fallback.
+#
+# Environment:
+#   REGISTRY_URL  - Backend URL (default: http://backend:8080)
+#   ADMIN_USER    - Admin username (default: admin)
+#   ADMIN_PASS    - Admin password (default: admin123)
 set -e
 
-apk add --no-cache curl jq >/dev/null 2>&1
+REGISTRY_URL="${REGISTRY_URL:-http://backend:8080}"
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASS="${ADMIN_PASS:-admin123}"
 
-echo "==> Logging in as admin..."
-TOKEN=$(curl -sf -X POST http://backend:8080/api/v1/auth/login \
+# Install deps only if missing (Alpine in Docker vs Ubuntu on ARC runners)
+if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  apk add --no-cache curl jq >/dev/null 2>&1 || sudo apt-get install -y -qq curl jq >/dev/null 2>&1 || true
+fi
+
+echo "==> Logging in as $ADMIN_USER at $REGISTRY_URL..."
+TOKEN=$(curl -sf -X POST "$REGISTRY_URL/api/v1/auth/login" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}' | jq -r '.access_token')
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" | jq -r '.access_token')
+
+if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+  echo "ERROR: Authentication failed"
+  exit 1
+fi
 
 echo "==> Creating test repositories..."
 for format in \
@@ -26,7 +46,7 @@ do
   KEY=$(echo "$format" | cut -d: -f1)
   NAME=$(echo "$format" | cut -d: -f2)
   FMT=$(echo "$format" | cut -d: -f3)
-  curl -sf -X POST http://backend:8080/api/v1/repositories \
+  curl -sf -X POST "$REGISTRY_URL/api/v1/repositories" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"key\":\"$KEY\",\"name\":\"$NAME\",\"format\":\"$FMT\",\"repo_type\":\"local\",\"is_public\":true}" \
@@ -44,7 +64,7 @@ do
   NAME=$(echo "$remote" | cut -d: -f2)
   FMT=$(echo "$remote" | cut -d: -f3)
   URL=$(echo "$remote" | cut -d: -f4-) # handles : in URLs
-  curl -sf -X POST http://backend:8080/api/v1/repositories \
+  curl -sf -X POST "$REGISTRY_URL/api/v1/repositories" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"key\":\"$KEY\",\"name\":\"$NAME\",\"format\":\"$FMT\",\"repo_type\":\"remote\",\"upstream_url\":\"$URL\",\"is_public\":true}" \
@@ -60,7 +80,7 @@ do
   KEY=$(echo "$local" | cut -d: -f1)
   NAME=$(echo "$local" | cut -d: -f2)
   FMT=$(echo "$local" | cut -d: -f3)
-  curl -sf -X POST http://backend:8080/api/v1/repositories \
+  curl -sf -X POST "$REGISTRY_URL/api/v1/repositories" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"key\":\"$KEY\",\"name\":\"$NAME\",\"format\":\"$FMT\",\"repo_type\":\"local\",\"is_public\":true}" \
@@ -76,7 +96,7 @@ do
   KEY=$(echo "$virtual" | cut -d: -f1)
   NAME=$(echo "$virtual" | cut -d: -f2)
   FMT=$(echo "$virtual" | cut -d: -f3)
-  curl -sf -X POST http://backend:8080/api/v1/repositories \
+  curl -sf -X POST "$REGISTRY_URL/api/v1/repositories" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"key\":\"$KEY\",\"name\":\"$NAME\",\"format\":\"$FMT\",\"repo_type\":\"virtual\",\"is_public\":true}" \
@@ -94,7 +114,7 @@ do
   VKEY=$(echo "$member" | cut -d: -f1)
   MKEY=$(echo "$member" | cut -d: -f2)
   PRI=$(echo "$member" | cut -d: -f3)
-  curl -sf -X POST "http://backend:8080/api/v1/repositories/$VKEY/members" \
+  curl -sf -X POST "$REGISTRY_URL/api/v1/repositories/$VKEY/members" \
     -H "Authorization: Bearer $TOKEN" \
     -H 'Content-Type: application/json' \
     -d "{\"member_key\":\"$MKEY\",\"priority\":$PRI}" \
@@ -103,5 +123,9 @@ do
 done
 
 echo "==> Setup complete"
-touch /tmp/.setup-done
-tail -f /dev/null
+
+# In Docker container mode, signal healthcheck and keep alive
+if [ -f /.dockerenv ] || [ -n "$DOCKER_CONTAINER" ]; then
+  touch /tmp/.setup-done
+  tail -f /dev/null
+fi

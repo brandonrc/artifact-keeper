@@ -113,33 +113,79 @@ jobs:
         run: cargo test --workspace --test '*' --verbose
 
   # ════════════════════════════════════════════════════════════════════════════
-  # SMOKE E2E (Every Push/PR) - Target: < 20 minutes
+  # SMOKE E2E (Every Push/PR) — self-contained via Docker-in-Docker on ARC
+  # Spins up fresh backend + postgres, runs native client tests, tears down
   # ════════════════════════════════════════════════════════════════════════════
 
   smoke-e2e:
     name: 🔥 Smoke E2E Tests
-    runs-on: ubuntu-latest
+    runs-on: ak-e2e-runners
     needs: [test-backend-unit]
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build backend image (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.backend
-          load: true
-          tags: artifact-keeper-backend:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Run smoke E2E tests (PyPI, npm, Cargo)
+      - name: Wait for Docker daemon
         run: |
-          docker compose -f docker-compose.test.yml --profile smoke up \
-            --abort-on-container-exit
+          echo "Waiting for DinD daemon..."
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker daemon ready"
+              docker version
+              break
+            fi
+            echo "  Attempt $i/30..."
+            sleep 2
+          done
+          docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon not available"; exit 1; }
+
+      - name: Install Docker Compose
+        run: |
+          DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+          mkdir -p "$DOCKER_CONFIG/cli-plugins"
+          curl -SL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" \
+            -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          docker compose version
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Pull backend image
+        run: |
+          docker pull ghcr.io/artifact-keeper/artifact-keeper-backend:dev
+          docker tag ghcr.io/artifact-keeper/artifact-keeper-backend:dev artifact-keeper-backend:test
+
+      - name: Start smoke E2E stack
+        run: docker compose -f docker-compose.test.yml --profile smoke up -d
+
+      - name: Wait for tests to complete
+        run: |
+          echo "Waiting for test containers to finish..."
+          timeout 480 docker wait e2e-test-pypi e2e-test-npm e2e-test-cargo || {
+            echo "ERROR: Tests timed out. Container statuses:"
+            docker ps -a --filter "name=e2e-test" --format "table {{.Names}}\t{{.Status}}"
+            echo ""
+            echo "Backend logs (last 50 lines):"
+            docker logs e2e-test-backend --tail 50 2>&1 || true
+            exit 1
+          }
+
+      - name: Show test results
+        if: always()
+        run: |
+          failed=false
+          for test in pypi npm cargo; do
+            container="e2e-test-${test}"
+            exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container" 2>/dev/null || echo "N/A")
+            echo ""
+            echo "═══════════════════════════════════════════"
+            echo "  ${test} — Exit Code: $exit_code"
+            echo "═══════════════════════════════════════════"
+            docker logs "$container" 2>&1 || true
+            if [ "$exit_code" != "0" ]; then failed=true; fi
+          done
+          if [ "$failed" = "true" ]; then exit 1; fi
 
       - name: Cleanup
         if: always()
