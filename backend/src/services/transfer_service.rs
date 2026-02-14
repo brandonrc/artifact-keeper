@@ -429,3 +429,298 @@ impl TransferService {
         Ok(sessions)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // SyncStatus enum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_status_equality() {
+        assert_eq!(SyncStatus::Pending, SyncStatus::Pending);
+        assert_eq!(SyncStatus::InProgress, SyncStatus::InProgress);
+        assert_eq!(SyncStatus::Completed, SyncStatus::Completed);
+        assert_eq!(SyncStatus::Failed, SyncStatus::Failed);
+        assert_eq!(SyncStatus::Cancelled, SyncStatus::Cancelled);
+        assert_ne!(SyncStatus::Pending, SyncStatus::Completed);
+        assert_ne!(SyncStatus::Failed, SyncStatus::Cancelled);
+    }
+
+    #[test]
+    fn test_sync_status_debug() {
+        assert_eq!(format!("{:?}", SyncStatus::Pending), "Pending");
+        assert_eq!(format!("{:?}", SyncStatus::InProgress), "InProgress");
+        assert_eq!(format!("{:?}", SyncStatus::Completed), "Completed");
+        assert_eq!(format!("{:?}", SyncStatus::Failed), "Failed");
+        assert_eq!(format!("{:?}", SyncStatus::Cancelled), "Cancelled");
+    }
+
+    #[test]
+    fn test_sync_status_clone_copy() {
+        let status = SyncStatus::InProgress;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
+
+    // -----------------------------------------------------------------------
+    // InitTransferRequest
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_init_transfer_request_default_chunk_size() {
+        let req = InitTransferRequest {
+            artifact_id: Uuid::new_v4(),
+            requesting_peer_id: Uuid::new_v4(),
+            chunk_size: None,
+        };
+        // The default chunk_size used in init_transfer is 1MB
+        let chunk_size = req.chunk_size.unwrap_or(1_048_576);
+        assert_eq!(chunk_size, 1_048_576);
+    }
+
+    #[test]
+    fn test_init_transfer_request_custom_chunk_size() {
+        let req = InitTransferRequest {
+            artifact_id: Uuid::new_v4(),
+            requesting_peer_id: Uuid::new_v4(),
+            chunk_size: Some(524_288), // 512KB
+        };
+        let chunk_size = req.chunk_size.unwrap_or(1_048_576);
+        assert_eq!(chunk_size, 524_288);
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk calculation logic (from init_transfer)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_count_calculation_exact_division() {
+        let total_size: i64 = 4_194_304; // 4 MB
+        let chunk_size: i32 = 1_048_576; // 1 MB
+        let total_chunks = ((total_size as f64) / (chunk_size as f64)).ceil() as i32;
+        assert_eq!(total_chunks, 4);
+    }
+
+    #[test]
+    fn test_chunk_count_calculation_non_exact_division() {
+        let total_size: i64 = 5_000_000; // ~4.77 MB
+        let chunk_size: i32 = 1_048_576; // 1 MB
+        let total_chunks = ((total_size as f64) / (chunk_size as f64)).ceil() as i32;
+        assert_eq!(total_chunks, 5); // ceil(4.77) = 5
+    }
+
+    #[test]
+    fn test_chunk_count_calculation_small_file() {
+        let total_size: i64 = 100; // 100 bytes
+        let chunk_size: i32 = 1_048_576; // 1 MB
+        let total_chunks = ((total_size as f64) / (chunk_size as f64)).ceil() as i32;
+        assert_eq!(total_chunks, 1);
+    }
+
+    #[test]
+    fn test_chunk_count_calculation_single_byte() {
+        let total_size: i64 = 1;
+        let chunk_size: i32 = 1_048_576;
+        let total_chunks = ((total_size as f64) / (chunk_size as f64)).ceil() as i32;
+        assert_eq!(total_chunks, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk byte offset and length calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_byte_ranges_exact() {
+        let total_size: i64 = 3_145_728; // 3 MB exactly
+        let chunk_size: i32 = 1_048_576; // 1 MB
+        let total_chunks = 3;
+
+        for i in 0..total_chunks {
+            let byte_offset = (i as i64) * (chunk_size as i64);
+            let byte_length = if i == total_chunks - 1 {
+                (total_size - byte_offset) as i32
+            } else {
+                chunk_size
+            };
+
+            match i {
+                0 => {
+                    assert_eq!(byte_offset, 0);
+                    assert_eq!(byte_length, 1_048_576);
+                }
+                1 => {
+                    assert_eq!(byte_offset, 1_048_576);
+                    assert_eq!(byte_length, 1_048_576);
+                }
+                2 => {
+                    assert_eq!(byte_offset, 2_097_152);
+                    assert_eq!(byte_length, 1_048_576);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_chunk_byte_ranges_non_exact() {
+        let total_size: i64 = 2_500_000;
+        let chunk_size: i32 = 1_048_576;
+        let total_chunks = ((total_size as f64) / (chunk_size as f64)).ceil() as i32;
+        assert_eq!(total_chunks, 3);
+
+        // Last chunk should be smaller
+        let last_offset = ((total_chunks - 1) as i64) * (chunk_size as i64);
+        let last_length = (total_size - last_offset) as i32;
+        assert_eq!(last_offset, 2_097_152);
+        assert_eq!(last_length, 402_848); // 2_500_000 - 2_097_152
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk bitmap bit counting (from update_chunk_availability)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_bitmap_count_all_set() {
+        let bitmap: Vec<u8> = vec![0xFF, 0xFF]; // 16 bits all set
+        let available_chunks: i32 = bitmap.iter().map(|b| b.count_ones() as i32).sum();
+        assert_eq!(available_chunks, 16);
+    }
+
+    #[test]
+    fn test_chunk_bitmap_count_none_set() {
+        let bitmap: Vec<u8> = vec![0x00, 0x00];
+        let available_chunks: i32 = bitmap.iter().map(|b| b.count_ones() as i32).sum();
+        assert_eq!(available_chunks, 0);
+    }
+
+    #[test]
+    fn test_chunk_bitmap_count_partial() {
+        let bitmap: Vec<u8> = vec![0b10101010, 0b01010101]; // 4 + 4 = 8 bits
+        let available_chunks: i32 = bitmap.iter().map(|b| b.count_ones() as i32).sum();
+        assert_eq!(available_chunks, 8);
+    }
+
+    #[test]
+    fn test_chunk_bitmap_count_single_byte() {
+        let bitmap: Vec<u8> = vec![0b11000001]; // 3 bits set
+        let available_chunks: i32 = bitmap.iter().map(|b| b.count_ones() as i32).sum();
+        assert_eq!(available_chunks, 3);
+    }
+
+    #[test]
+    fn test_chunk_bitmap_count_empty() {
+        let bitmap: Vec<u8> = vec![];
+        let available_chunks: i32 = bitmap.iter().map(|b| b.count_ones() as i32).sum();
+        assert_eq!(available_chunks, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ChunkManifestEntry serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chunk_manifest_entry_serialization() {
+        let entry = ChunkManifestEntry {
+            chunk_index: 0,
+            byte_offset: 0,
+            byte_length: 1_048_576,
+            checksum: "abc123".to_string(),
+            status: "completed".to_string(),
+            source_peer_id: Some(Uuid::nil()),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["chunk_index"], 0);
+        assert_eq!(json["byte_offset"], 0);
+        assert_eq!(json["byte_length"], 1_048_576);
+        assert_eq!(json["checksum"], "abc123");
+        assert_eq!(json["status"], "completed");
+    }
+
+    #[test]
+    fn test_chunk_manifest_entry_no_source_peer() {
+        let entry = ChunkManifestEntry {
+            chunk_index: 5,
+            byte_offset: 5_242_880,
+            byte_length: 500_000,
+            checksum: "".to_string(),
+            status: "pending".to_string(),
+            source_peer_id: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert!(json["source_peer_id"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerChunkInfo serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_chunk_info_serialization() {
+        let info = PeerChunkInfo {
+            peer_instance_id: Uuid::nil(),
+            available_chunks: 8,
+            total_chunks: 10,
+            chunk_bitmap: vec![0xFF, 0b11000000],
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["available_chunks"], 8);
+        assert_eq!(json["total_chunks"], 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // TransferSession struct construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_transfer_session_construction() {
+        let session = TransferSession {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            requesting_peer_id: Uuid::new_v4(),
+            total_size: 10_485_760,
+            chunk_size: 1_048_576,
+            total_chunks: 10,
+            completed_chunks: 5,
+            checksum_algo: "sha256".to_string(),
+            artifact_checksum: "deadbeef".to_string(),
+            status: SyncStatus::InProgress,
+            error_message: None,
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: None,
+        };
+        assert_eq!(session.total_chunks, 10);
+        assert_eq!(session.completed_chunks, 5);
+        assert_eq!(session.status, SyncStatus::InProgress);
+        assert!(session.error_message.is_none());
+        assert!(session.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_transfer_session_failed() {
+        let session = TransferSession {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            requesting_peer_id: Uuid::new_v4(),
+            total_size: 1000,
+            chunk_size: 500,
+            total_chunks: 2,
+            completed_chunks: 1,
+            checksum_algo: "sha256".to_string(),
+            artifact_checksum: "abc".to_string(),
+            status: SyncStatus::Failed,
+            error_message: Some("Connection timeout".to_string()),
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        };
+        assert_eq!(session.status, SyncStatus::Failed);
+        assert_eq!(
+            session.error_message.as_deref(),
+            Some("Connection timeout")
+        );
+    }
+}

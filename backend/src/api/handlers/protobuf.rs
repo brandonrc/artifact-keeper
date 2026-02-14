@@ -1811,3 +1811,490 @@ async fn get_resources(
         .body(Body::from(serde_json::to_string(&resp).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // connect_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_connect_error_returns_correct_status_and_body() {
+        let resp = connect_error(StatusCode::NOT_FOUND, "not_found", "thing missing");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_connect_error_internal_server_error() {
+        let resp = connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", "db down");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_connect_error_bad_request() {
+        let resp = connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "bad input");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        // "user:pass" in base64 = "dXNlcjpwYXNz"
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase_basic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_auth_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "useronly" in base64 = "dXNlcm9ubHk="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcm9ubHk="),
+        );
+        // Without a colon, splitn(2, ':') yields only one part, parts.next() for pass returns None
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        // "user:pa:ss" in base64 = "dXNlcjpwYTpzcw=="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_bearer_token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_token_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token-123"),
+        );
+        assert_eq!(
+            extract_bearer_token(&headers),
+            Some("my-token-123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bearer_token_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        assert_eq!(
+            extract_bearer_token(&headers),
+            Some("my-token".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_bearer_token_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_token_basic_auth() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_bearer_token(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // module_name_from_ref
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_from_ref_owner_and_module() {
+        let r = ModuleRef {
+            id: None,
+            owner: Some("buf".to_string()),
+            module: Some("validate".to_string()),
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "buf/validate");
+    }
+
+    #[test]
+    fn test_module_name_from_ref_id_only() {
+        let r = ModuleRef {
+            id: Some("some-uuid".to_string()),
+            owner: None,
+            module: None,
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "some-uuid");
+    }
+
+    #[test]
+    fn test_module_name_from_ref_no_fields() {
+        let r = ModuleRef {
+            id: None,
+            owner: None,
+            module: None,
+        };
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_owner_only() {
+        let r = ModuleRef {
+            id: None,
+            owner: Some("buf".to_string()),
+            module: None,
+        };
+        // Without module, falls to id check, id is None => error
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_module_only() {
+        let r = ModuleRef {
+            id: None,
+            owner: None,
+            module: Some("validate".to_string()),
+        };
+        assert!(module_name_from_ref(&r).is_err());
+    }
+
+    #[test]
+    fn test_module_name_from_ref_owner_module_and_id() {
+        // owner+module takes priority over id
+        let r = ModuleRef {
+            id: Some("some-id".to_string()),
+            owner: Some("buf".to_string()),
+            module: Some("validate".to_string()),
+        };
+        assert_eq!(module_name_from_ref(&r).unwrap(), "buf/validate");
+    }
+
+    // -----------------------------------------------------------------------
+    // module_name_from_resource_ref
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_name_from_resource_ref_owner_and_module() {
+        let r = ResourceRef {
+            id: None,
+            owner: Some("org".to_string()),
+            module: Some("pkg".to_string()),
+            label: None,
+        };
+        assert_eq!(module_name_from_resource_ref(&r).unwrap(), "org/pkg");
+    }
+
+    #[test]
+    fn test_module_name_from_resource_ref_id_only() {
+        let r = ResourceRef {
+            id: Some("id-123".to_string()),
+            owner: None,
+            module: None,
+            label: None,
+        };
+        assert_eq!(module_name_from_resource_ref(&r).unwrap(), "id-123");
+    }
+
+    #[test]
+    fn test_module_name_from_resource_ref_no_fields() {
+        let r = ResourceRef {
+            id: None,
+            owner: None,
+            module: None,
+            label: None,
+        };
+        assert!(module_name_from_resource_ref(&r).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_bundle + extract_files_from_bundle (round-trip)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_and_extract_bundle_round_trip() {
+        let files = vec![
+            UploadFile {
+                path: "hello.proto".to_string(),
+                content: base64::engine::general_purpose::STANDARD
+                    .encode(b"syntax = \"proto3\";"),
+            },
+            UploadFile {
+                path: "world.proto".to_string(),
+                content: base64::engine::general_purpose::STANDARD
+                    .encode(b"message World {}"),
+            },
+        ];
+
+        let bundle = build_bundle(&files).unwrap();
+        assert!(!bundle.is_empty());
+
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].path, "hello.proto");
+        assert_eq!(extracted[1].path, "world.proto");
+
+        // Verify content round-trip
+        let decoded0 = base64::engine::general_purpose::STANDARD
+            .decode(&extracted[0].content)
+            .unwrap();
+        assert_eq!(decoded0, b"syntax = \"proto3\";");
+
+        let decoded1 = base64::engine::general_purpose::STANDARD
+            .decode(&extracted[1].content)
+            .unwrap();
+        assert_eq!(decoded1, b"message World {}");
+    }
+
+    #[test]
+    fn test_build_bundle_empty_files() {
+        let files: Vec<UploadFile> = vec![];
+        let bundle = build_bundle(&files).unwrap();
+        // Should still produce a valid (empty) gzip tar
+        assert!(!bundle.is_empty());
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn test_build_bundle_invalid_base64() {
+        let files = vec![UploadFile {
+            path: "bad.proto".to_string(),
+            content: "not-valid-base64!!!".to_string(),
+        }];
+        assert!(build_bundle(&files).is_err());
+    }
+
+    #[test]
+    fn test_extract_files_from_bundle_invalid_gzip() {
+        let bad_data = b"this is not a gzip file";
+        assert!(extract_files_from_bundle(bad_data).is_err());
+    }
+
+    #[test]
+    fn test_build_bundle_single_file() {
+        let files = vec![UploadFile {
+            path: "single.proto".to_string(),
+            content: base64::engine::general_purpose::STANDARD.encode(b"content here"),
+        }];
+        let bundle = build_bundle(&files).unwrap();
+        let extracted = extract_files_from_bundle(&bundle).unwrap();
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].path, "single.proto");
+    }
+
+    // -----------------------------------------------------------------------
+    // Struct serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_module_ref_deserialization_camel_case() {
+        let json = r#"{"id":"123","owner":"buf","module":"validate"}"#;
+        let r: ModuleRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.id, Some("123".to_string()));
+        assert_eq!(r.owner, Some("buf".to_string()));
+        assert_eq!(r.module, Some("validate".to_string()));
+    }
+
+    #[test]
+    fn test_module_ref_deserialization_defaults() {
+        let json = r#"{}"#;
+        let r: ModuleRef = serde_json::from_str(json).unwrap();
+        assert!(r.id.is_none());
+        assert!(r.owner.is_none());
+        assert!(r.module.is_none());
+    }
+
+    #[test]
+    fn test_get_modules_request_empty() {
+        let json = r#"{}"#;
+        let r: GetModulesRequest = serde_json::from_str(json).unwrap();
+        assert!(r.module_refs.is_empty());
+    }
+
+    #[test]
+    fn test_get_modules_request_with_refs() {
+        let json = r#"{"moduleRefs":[{"owner":"a","module":"b"}]}"#;
+        let r: GetModulesRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.module_refs.len(), 1);
+        assert_eq!(r.module_refs[0].owner, Some("a".to_string()));
+    }
+
+    #[test]
+    fn test_get_modules_response_serialization() {
+        let resp = GetModulesResponse {
+            modules: vec![ModuleInfo {
+                id: "id-1".to_string(),
+                owner_id: "owner-1".to_string(),
+                name: "test/module".to_string(),
+                create_time: "2024-01-01T00:00:00Z".to_string(),
+                update_time: "2024-01-01T00:00:00Z".to_string(),
+                state: "ACTIVE".to_string(),
+                default_label_name: "main".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"ownerId\":\"owner-1\""));
+        assert!(json.contains("\"defaultLabelName\":\"main\""));
+    }
+
+    #[test]
+    fn test_commit_info_serialization() {
+        let ci = CommitInfo {
+            id: "commit-1".to_string(),
+            create_time: "2024-01-01T00:00:00Z".to_string(),
+            owner_id: "owner-1".to_string(),
+            module_id: "mod-1".to_string(),
+            digest: CommitDigest {
+                digest_type: "sha256".to_string(),
+                value: "abc123".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&ci).unwrap();
+        assert!(json.contains("\"createTime\""));
+        assert!(json.contains("\"ownerId\""));
+        assert!(json.contains("\"moduleId\""));
+        assert!(json.contains("\"type\":\"sha256\""));
+    }
+
+    #[test]
+    fn test_list_commits_request_defaults() {
+        let json = r#"{}"#;
+        let r: ListCommitsRequest = serde_json::from_str(json).unwrap();
+        assert!(r.owner.is_none());
+        assert!(r.module.is_none());
+        assert!(r.page_size.is_none());
+        assert!(r.page_token.is_none());
+    }
+
+    #[test]
+    fn test_upload_request_empty() {
+        let json = r#"{}"#;
+        let r: UploadRequest = serde_json::from_str(json).unwrap();
+        assert!(r.contents.is_empty());
+    }
+
+    #[test]
+    fn test_download_response_serialization() {
+        let resp = DownloadResponse {
+            contents: vec![DownloadContent {
+                commit: CommitInfo {
+                    id: "c1".to_string(),
+                    create_time: "2024-01-01T00:00:00Z".to_string(),
+                    owner_id: "o1".to_string(),
+                    module_id: "m1".to_string(),
+                    digest: CommitDigest {
+                        digest_type: "sha256".to_string(),
+                        value: "hash".to_string(),
+                    },
+                },
+                files: vec![DownloadFile {
+                    path: "file.proto".to_string(),
+                    content: "Y29udGVudA==".to_string(),
+                }],
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"contents\""));
+        assert!(json.contains("file.proto"));
+    }
+
+    #[test]
+    fn test_graph_edge_serialization() {
+        let edge = GraphEdge {
+            from_commit_id: "from".to_string(),
+            to_commit_id: "to".to_string(),
+        };
+        let json = serde_json::to_string(&edge).unwrap();
+        assert!(json.contains("\"fromCommitId\":\"from\""));
+        assert!(json.contains("\"toCommitId\":\"to\""));
+    }
+
+    #[test]
+    fn test_resource_ref_deserialization() {
+        let json = r#"{"id":"id1","owner":"org","module":"mod","label":"v1"}"#;
+        let r: ResourceRef = serde_json::from_str(json).unwrap();
+        assert_eq!(r.id, Some("id1".to_string()));
+        assert_eq!(r.label, Some("v1".to_string()));
+    }
+
+    #[test]
+    fn test_label_info_serialization() {
+        let li = LabelInfo {
+            id: "label-1".to_string(),
+            name: "main".to_string(),
+            commit_id: "commit-1".to_string(),
+            create_time: "2024-01-01T00:00:00Z".to_string(),
+            update_time: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&li).unwrap();
+        assert!(json.contains("\"commitId\":\"commit-1\""));
+    }
+
+    #[test]
+    fn test_create_label_value_deserialization() {
+        let json = r#"{"owner":"org","module":"mod","name":"v1","commitId":"abc"}"#;
+        let v: CreateLabelValue = serde_json::from_str(json).unwrap();
+        assert_eq!(v.owner, Some("org".to_string()));
+        assert_eq!(v.name, "v1");
+        assert_eq!(v.commit_id, "abc");
+    }
+}

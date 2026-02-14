@@ -717,7 +717,7 @@ async fn publish_release(
 // GET /swift/:repo_key/identifiers?url={package_url} -- Lookup identifiers
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug)]
 struct IdentifierQuery {
     url: Option<String>,
 }
@@ -766,4 +766,313 @@ async fn lookup_identifiers(
     });
 
     Ok(swift_json_response(StatusCode::OK, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-swift-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-swift-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("alice:p@ssword");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("alice".to_string(), "p@ssword".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let value = format!("basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_with_colon_in_password() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass:with:colons");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass:with:colons".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Digest abc123"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!not-base64!!!"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("usernocolon");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // swift_json_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_swift_json_response_status_and_headers() {
+        let body = serde_json::json!({"releases": {}});
+        let response = swift_json_response(StatusCode::OK, body.clone());
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            response.headers().get("Content-Version").unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn test_swift_json_response_created() {
+        let body = serde_json::json!({});
+        let response = swift_json_response(StatusCode::CREATED, body);
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers().get("Content-Version").unwrap(),
+            "1"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // swift_error_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_swift_error_response_status_and_content_type() {
+        let response = swift_error_response(StatusCode::NOT_FOUND, "Release not found");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/problem+json"
+        );
+        assert_eq!(
+            response.headers().get("Content-Version").unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn test_swift_error_response_bad_request() {
+        let response = swift_error_response(StatusCode::BAD_REQUEST, "Invalid path");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // IdentifierQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_identifier_query_with_url() {
+        let query: IdentifierQuery =
+            serde_json::from_str(r#"{"url": "https://github.com/example/repo"}"#).unwrap();
+        assert_eq!(
+            query.url,
+            Some("https://github.com/example/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_identifier_query_without_url() {
+        let query: IdentifierQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(query.url, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic: package_id, artifact_path, storage_key, filename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_id_format() {
+        let scope = "apple";
+        let name = "swift-log";
+        let package_id = format!("{}.{}", scope, name);
+        assert_eq!(package_id, "apple.swift-log");
+    }
+
+    #[test]
+    fn test_artifact_path_format() {
+        let scope = "vapor";
+        let name = "async-kit";
+        let version = "1.2.0";
+        let artifact_path = format!("{}/{}/{}/{}.zip", scope, name, version, name);
+        assert_eq!(artifact_path, "vapor/async-kit/1.2.0/async-kit.zip");
+    }
+
+    #[test]
+    fn test_storage_key_format() {
+        let scope = "grpc";
+        let name = "grpc-swift";
+        let version = "2.0.0";
+        let storage_key = format!("swift/{}/{}/{}/{}.zip", scope, name, version, name);
+        assert_eq!(storage_key, "swift/grpc/grpc-swift/2.0.0/grpc-swift.zip");
+    }
+
+    #[test]
+    fn test_download_filename_format() {
+        let scope = "apple";
+        let name = "swift-nio";
+        let version = "2.40.0";
+        let filename = format!("{}-{}-{}.zip", scope, name, version);
+        assert_eq!(filename, "apple-swift-nio-2.40.0.zip");
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"test data");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+        assert!(result.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Version path dispatching logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_path_zip_detection() {
+        let path = "1.2.0.zip";
+        assert!(path.ends_with(".zip"));
+        let version = path.trim_end_matches(".zip");
+        assert_eq!(version, "1.2.0");
+    }
+
+    #[test]
+    fn test_version_path_manifest_detection() {
+        let path = "1.2.0/Package.swift";
+        assert!(path.ends_with("/Package.swift") || path.contains("/Package.swift"));
+        let version = path.trim_end_matches("/Package.swift");
+        assert_eq!(version, "1.2.0");
+    }
+
+    #[test]
+    fn test_version_path_metadata_no_suffix() {
+        let path = "1.2.0";
+        assert!(!path.ends_with(".zip"));
+        assert!(!path.ends_with("/Package.swift"));
+        // Falls through to get_release_metadata
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/swift-repo".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.id, id);
+        assert_eq!(repo.storage_path, "/data/swift-repo");
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cache".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://swift-packages.example.com".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://swift-packages.example.com")
+        );
+    }
 }

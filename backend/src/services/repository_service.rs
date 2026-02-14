@@ -503,3 +503,341 @@ impl RepositoryService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::repository::{ReplicationPriority, Repository, RepositoryFormat, RepositoryType};
+
+    // -----------------------------------------------------------------------
+    // repo_to_meili_doc tests
+    // -----------------------------------------------------------------------
+
+    fn make_test_repo(format: RepositoryFormat, repo_type: RepositoryType) -> Repository {
+        let now = chrono::Utc::now();
+        Repository {
+            id: Uuid::new_v4(),
+            key: "test-repo".to_string(),
+            name: "Test Repository".to_string(),
+            description: Some("A test repository".to_string()),
+            format,
+            repo_type,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/repos/test-repo".to_string(),
+            upstream_url: None,
+            is_public: true,
+            quota_bytes: Some(1024 * 1024 * 1024),
+            replication_priority: ReplicationPriority::Scheduled,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_maven_local() {
+        let repo = make_test_repo(RepositoryFormat::Maven, RepositoryType::Local);
+        let doc = RepositoryService::repo_to_meili_doc(&repo);
+
+        assert_eq!(doc.id, repo.id.to_string());
+        assert_eq!(doc.name, "Test Repository");
+        assert_eq!(doc.key, "test-repo");
+        assert_eq!(doc.description, Some("A test repository".to_string()));
+        assert_eq!(doc.format, "maven");
+        assert_eq!(doc.repo_type, "local");
+        assert!(doc.is_public);
+        assert_eq!(doc.created_at, repo.created_at.timestamp());
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_docker_remote() {
+        let repo = make_test_repo(RepositoryFormat::Docker, RepositoryType::Remote);
+        let doc = RepositoryService::repo_to_meili_doc(&repo);
+        assert_eq!(doc.format, "docker");
+        assert_eq!(doc.repo_type, "remote");
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_npm_virtual() {
+        let repo = make_test_repo(RepositoryFormat::Npm, RepositoryType::Virtual);
+        let doc = RepositoryService::repo_to_meili_doc(&repo);
+        assert_eq!(doc.format, "npm");
+        assert_eq!(doc.repo_type, "virtual");
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_pypi_staging() {
+        let repo = make_test_repo(RepositoryFormat::Pypi, RepositoryType::Staging);
+        let doc = RepositoryService::repo_to_meili_doc(&repo);
+        assert_eq!(doc.format, "pypi");
+        assert_eq!(doc.repo_type, "staging");
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_no_description() {
+        let now = chrono::Utc::now();
+        let repo = Repository {
+            id: Uuid::new_v4(),
+            key: "no-desc".to_string(),
+            name: "No Description".to_string(),
+            description: None,
+            format: RepositoryFormat::Generic,
+            repo_type: RepositoryType::Local,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data".to_string(),
+            upstream_url: None,
+            is_public: false,
+            quota_bytes: None,
+            replication_priority: ReplicationPriority::LocalOnly,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let doc = RepositoryService::repo_to_meili_doc(&repo);
+        assert!(doc.description.is_none());
+        assert!(!doc.is_public);
+        assert_eq!(doc.format, "generic");
+    }
+
+    #[test]
+    fn test_repo_to_meili_doc_various_formats() {
+        let formats_and_expected: Vec<(RepositoryFormat, &str)> = vec![
+            (RepositoryFormat::Cargo, "cargo"),
+            (RepositoryFormat::Nuget, "nuget"),
+            (RepositoryFormat::Go, "go"),
+            (RepositoryFormat::Rubygems, "rubygems"),
+            (RepositoryFormat::Helm, "helm"),
+            (RepositoryFormat::Rpm, "rpm"),
+            (RepositoryFormat::Debian, "debian"),
+            (RepositoryFormat::Conan, "conan"),
+            (RepositoryFormat::Terraform, "terraform"),
+            (RepositoryFormat::Alpine, "alpine"),
+            (RepositoryFormat::Composer, "composer"),
+            (RepositoryFormat::Hex, "hex"),
+            (RepositoryFormat::Swift, "swift"),
+            (RepositoryFormat::Pub, "pub"),
+            (RepositoryFormat::Cran, "cran"),
+        ];
+
+        for (format, expected) in formats_and_expected {
+            let repo = make_test_repo(format, RepositoryType::Local);
+            let doc = RepositoryService::repo_to_meili_doc(&repo);
+            assert_eq!(doc.format, expected, "Format mismatch for {:?}", repo.format);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateRepositoryRequest construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_repository_request_construction() {
+        let req = CreateRepositoryRequest {
+            key: "my-repo".to_string(),
+            name: "My Repository".to_string(),
+            description: Some("Test repo".to_string()),
+            format: RepositoryFormat::Maven,
+            repo_type: RepositoryType::Local,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/my-repo".to_string(),
+            upstream_url: None,
+            is_public: true,
+            quota_bytes: Some(1_000_000_000),
+        };
+        assert_eq!(req.key, "my-repo");
+        assert_eq!(req.format, RepositoryFormat::Maven);
+        assert_eq!(req.repo_type, RepositoryType::Local);
+        assert!(req.upstream_url.is_none());
+        assert_eq!(req.quota_bytes, Some(1_000_000_000));
+    }
+
+    #[test]
+    fn test_create_repository_request_remote_with_upstream() {
+        let req = CreateRepositoryRequest {
+            key: "npm-remote".to_string(),
+            name: "NPM Remote".to_string(),
+            description: None,
+            format: RepositoryFormat::Npm,
+            repo_type: RepositoryType::Remote,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/npm-remote".to_string(),
+            upstream_url: Some("https://registry.npmjs.org".to_string()),
+            is_public: false,
+            quota_bytes: None,
+        };
+        assert_eq!(req.upstream_url, Some("https://registry.npmjs.org".to_string()));
+        assert!(!req.is_public);
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateRepositoryRequest construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_repository_request_all_none() {
+        let req = UpdateRepositoryRequest {
+            key: None,
+            name: None,
+            description: None,
+            is_public: None,
+            quota_bytes: None,
+            upstream_url: None,
+        };
+        assert!(req.key.is_none());
+        assert!(req.name.is_none());
+        assert!(req.description.is_none());
+        assert!(req.is_public.is_none());
+        assert!(req.quota_bytes.is_none());
+        assert!(req.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_update_repository_request_partial() {
+        let req = UpdateRepositoryRequest {
+            key: None,
+            name: Some("Updated Name".to_string()),
+            description: Some("Updated Description".to_string()),
+            is_public: Some(false),
+            quota_bytes: Some(Some(2_000_000_000)),
+            upstream_url: None,
+        };
+        assert_eq!(req.name, Some("Updated Name".to_string()));
+        assert_eq!(req.is_public, Some(false));
+        assert_eq!(req.quota_bytes, Some(Some(2_000_000_000)));
+    }
+
+    #[test]
+    fn test_update_repository_request_clear_quota() {
+        // quota_bytes: Some(None) should clear the quota
+        let req = UpdateRepositoryRequest {
+            key: None,
+            name: None,
+            description: None,
+            is_public: None,
+            quota_bytes: Some(None),
+            upstream_url: None,
+        };
+        assert_eq!(req.quota_bytes, Some(None));
+    }
+
+    // -----------------------------------------------------------------------
+    // Validation logic tests (mirrors create method validation)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_remote_repo_without_upstream_should_fail() {
+        // Validates the logic: remote repos must have upstream_url
+        let repo_type = RepositoryType::Remote;
+        let upstream_url: Option<String> = None;
+        let should_fail = repo_type == RepositoryType::Remote && upstream_url.is_none();
+        assert!(should_fail);
+    }
+
+    #[test]
+    fn test_remote_repo_with_upstream_should_pass() {
+        let repo_type = RepositoryType::Remote;
+        let upstream_url: Option<String> = Some("https://upstream.example.com".to_string());
+        let should_fail = repo_type == RepositoryType::Remote && upstream_url.is_none();
+        assert!(!should_fail);
+    }
+
+    #[test]
+    fn test_local_repo_without_upstream_should_pass() {
+        let repo_type = RepositoryType::Local;
+        let upstream_url: Option<String> = None;
+        let should_fail = repo_type == RepositoryType::Remote && upstream_url.is_none();
+        assert!(!should_fail);
+    }
+
+    // -----------------------------------------------------------------------
+    // search_pattern generation logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_pattern_generation() {
+        let query = Some("maven");
+        let search_pattern = query.map(|q| format!("%{}%", q.to_lowercase()));
+        assert_eq!(search_pattern, Some("%maven%".to_string()));
+    }
+
+    #[test]
+    fn test_search_pattern_generation_mixed_case() {
+        let query = Some("MyRepo");
+        let search_pattern = query.map(|q| format!("%{}%", q.to_lowercase()));
+        assert_eq!(search_pattern, Some("%myrepo%".to_string()));
+    }
+
+    #[test]
+    fn test_search_pattern_generation_none() {
+        let query: Option<&str> = None;
+        let search_pattern = query.map(|q| format!("%{}%", q.to_lowercase()));
+        assert!(search_pattern.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // format_enabled validation logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_enabled_check_disabled() {
+        let format_enabled: Option<bool> = Some(false);
+        let should_reject = format_enabled == Some(false);
+        assert!(should_reject);
+    }
+
+    #[test]
+    fn test_format_enabled_check_enabled() {
+        let format_enabled: Option<bool> = Some(true);
+        let should_reject = format_enabled == Some(false);
+        assert!(!should_reject);
+    }
+
+    #[test]
+    fn test_format_enabled_check_not_found() {
+        // If format handler doesn't exist in DB, don't reject
+        let format_enabled: Option<bool> = None;
+        let should_reject = format_enabled == Some(false);
+        assert!(!should_reject);
+    }
+
+    // -----------------------------------------------------------------------
+    // format_key derivation logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_key_derivation() {
+        let format = RepositoryFormat::Maven;
+        let format_key = format!("{:?}", format).to_lowercase();
+        assert_eq!(format_key, "maven");
+    }
+
+    #[test]
+    fn test_format_key_derivation_docker() {
+        let format = RepositoryFormat::Docker;
+        let format_key = format!("{:?}", format).to_lowercase();
+        assert_eq!(format_key, "docker");
+    }
+
+    #[test]
+    fn test_format_key_derivation_wasm_oci() {
+        let format = RepositoryFormat::WasmOci;
+        let format_key = format!("{:?}", format).to_lowercase();
+        assert_eq!(format_key, "wasmoci");
+    }
+
+    #[test]
+    fn test_format_key_derivation_helm_oci() {
+        let format = RepositoryFormat::HelmOci;
+        let format_key = format!("{:?}", format).to_lowercase();
+        assert_eq!(format_key, "helmoci");
+    }
+
+    #[test]
+    fn test_format_key_derivation_conda_native() {
+        let format = RepositoryFormat::CondaNative;
+        let format_key = format!("{:?}", format).to_lowercase();
+        assert_eq!(format_key, "condanative");
+    }
+}

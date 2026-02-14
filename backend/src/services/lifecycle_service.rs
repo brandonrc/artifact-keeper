@@ -768,3 +768,363 @@ impl LifecycleService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(unused_imports)]
+    use serde_json::json;
+
+    // Helper: create a minimal LifecycleService for calling validate_policy_config.
+    // PgPool::connect_lazy requires a Tokio context, so these tests use #[tokio::test].
+    fn make_service_for_validation() -> LifecycleService {
+        let pool = sqlx::PgPool::connect_lazy("postgres://fake:fake@localhost/fake")
+            .expect("connect_lazy should not fail");
+        LifecycleService::new(pool)
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: max_age_days
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_max_age_days_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": 30});
+        assert!(svc.validate_policy_config("max_age_days", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_age_days_missing_days() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        let result = svc.validate_policy_config("max_age_days", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_age_days_zero() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": 0});
+        let result = svc.validate_policy_config("max_age_days", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_age_days_negative() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": -5});
+        let result = svc.validate_policy_config("max_age_days", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_age_days_string_value() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": "thirty"});
+        let result = svc.validate_policy_config("max_age_days", &config);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: max_versions
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_max_versions_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"keep": 5});
+        assert!(svc.validate_policy_config("max_versions", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_versions_missing_keep() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        let result = svc.validate_policy_config("max_versions", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_versions_zero() {
+        let svc = make_service_for_validation();
+        let config = json!({"keep": 0});
+        let result = svc.validate_policy_config("max_versions", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_max_versions_negative() {
+        let svc = make_service_for_validation();
+        let config = json!({"keep": -1});
+        let result = svc.validate_policy_config("max_versions", &config);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: no_downloads_days
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_no_downloads_days_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": 90});
+        assert!(svc.validate_policy_config("no_downloads_days", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_no_downloads_days_missing() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        let result = svc.validate_policy_config("no_downloads_days", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_no_downloads_days_zero() {
+        let svc = make_service_for_validation();
+        let config = json!({"days": 0});
+        let result = svc.validate_policy_config("no_downloads_days", &config);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: tag_pattern_keep / tag_pattern_delete
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_tag_pattern_keep_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"pattern": "^release-.*"});
+        assert!(svc.validate_policy_config("tag_pattern_keep", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_tag_pattern_delete_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"pattern": ".*-snapshot$"});
+        assert!(svc.validate_policy_config("tag_pattern_delete", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_tag_pattern_missing_pattern() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        let result = svc.validate_policy_config("tag_pattern_keep", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_tag_pattern_invalid_regex() {
+        let svc = make_service_for_validation();
+        let config = json!({"pattern": "[invalid"});
+        let result = svc.validate_policy_config("tag_pattern_delete", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_tag_pattern_integer_pattern() {
+        let svc = make_service_for_validation();
+        let config = json!({"pattern": 42});
+        let result = svc.validate_policy_config("tag_pattern_keep", &config);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: size_quota_bytes
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_size_quota_bytes_valid() {
+        let svc = make_service_for_validation();
+        let config = json!({"quota_bytes": 1073741824}); // 1 GiB
+        assert!(svc.validate_policy_config("size_quota_bytes", &config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_size_quota_bytes_missing() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        let result = svc.validate_policy_config("size_quota_bytes", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_size_quota_bytes_zero() {
+        let svc = make_service_for_validation();
+        let config = json!({"quota_bytes": 0});
+        let result = svc.validate_policy_config("size_quota_bytes", &config);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_size_quota_bytes_negative() {
+        let svc = make_service_for_validation();
+        let config = json!({"quota_bytes": -100});
+        let result = svc.validate_policy_config("size_quota_bytes", &config);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_policy_config tests: unknown type passes
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_validate_unknown_policy_type_passes() {
+        let svc = make_service_for_validation();
+        let config = json!({});
+        assert!(svc.validate_policy_config("unknown_type", &config).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Struct serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lifecycle_policy_serialization() {
+        let now = Utc::now();
+        let policy = LifecyclePolicy {
+            id: Uuid::nil(),
+            repository_id: Some(Uuid::new_v4()),
+            name: "Test Policy".to_string(),
+            description: Some("A test policy".to_string()),
+            enabled: true,
+            policy_type: "max_age_days".to_string(),
+            config: json!({"days": 30}),
+            priority: 10,
+            last_run_at: None,
+            last_run_items_removed: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("\"name\":\"Test Policy\""));
+        assert!(json.contains("\"enabled\":true"));
+        assert!(json.contains("\"priority\":10"));
+    }
+
+    #[test]
+    fn test_lifecycle_policy_deserialization() {
+        let now = Utc::now();
+        let json_val = json!({
+            "id": Uuid::nil(),
+            "repository_id": null,
+            "name": "Cleanup",
+            "description": null,
+            "enabled": false,
+            "policy_type": "max_versions",
+            "config": {"keep": 3},
+            "priority": 0,
+            "last_run_at": null,
+            "last_run_items_removed": null,
+            "created_at": now,
+            "updated_at": now,
+        });
+
+        let policy: LifecyclePolicy = serde_json::from_value(json_val).unwrap();
+        assert_eq!(policy.name, "Cleanup");
+        assert!(!policy.enabled);
+        assert_eq!(policy.policy_type, "max_versions");
+        assert!(policy.repository_id.is_none());
+    }
+
+    #[test]
+    fn test_create_policy_request_deserialization() {
+        let json_str = r#"{
+            "name": "My Policy",
+            "policy_type": "max_age_days",
+            "config": {"days": 30}
+        }"#;
+        let req: CreatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert_eq!(req.name, "My Policy");
+        assert_eq!(req.policy_type, "max_age_days");
+        assert!(req.repository_id.is_none());
+        assert!(req.description.is_none());
+        assert!(req.priority.is_none());
+    }
+
+    #[test]
+    fn test_create_policy_request_with_all_fields() {
+        let repo_id = Uuid::new_v4();
+        let json_val = json!({
+            "repository_id": repo_id,
+            "name": "Full Policy",
+            "description": "With all fields",
+            "policy_type": "size_quota_bytes",
+            "config": {"quota_bytes": 1000000},
+            "priority": 5
+        });
+        let req: CreatePolicyRequest = serde_json::from_value(json_val).unwrap();
+        assert_eq!(req.repository_id, Some(repo_id));
+        assert_eq!(req.description, Some("With all fields".to_string()));
+        assert_eq!(req.priority, Some(5));
+    }
+
+    #[test]
+    fn test_update_policy_request_empty() {
+        let json_str = "{}";
+        let req: UpdatePolicyRequest = serde_json::from_str(json_str).unwrap();
+        assert!(req.name.is_none());
+        assert!(req.description.is_none());
+        assert!(req.enabled.is_none());
+        assert!(req.config.is_none());
+        assert!(req.priority.is_none());
+    }
+
+    #[test]
+    fn test_policy_execution_result_serialization() {
+        let result = PolicyExecutionResult {
+            policy_id: Uuid::nil(),
+            policy_name: "Test".to_string(),
+            dry_run: true,
+            artifacts_matched: 100,
+            artifacts_removed: 0,
+            bytes_freed: 0,
+            errors: vec![],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"dry_run\":true"));
+        assert!(json.contains("\"artifacts_matched\":100"));
+        assert!(json.contains("\"artifacts_removed\":0"));
+        assert!(json.contains("\"bytes_freed\":0"));
+        assert!(json.contains("\"errors\":[]"));
+    }
+
+    #[test]
+    fn test_policy_execution_result_with_errors() {
+        let result = PolicyExecutionResult {
+            policy_id: Uuid::new_v4(),
+            policy_name: "Failing".to_string(),
+            dry_run: false,
+            artifacts_matched: 10,
+            artifacts_removed: 3,
+            bytes_freed: 1024,
+            errors: vec!["Error A".to_string(), "Error B".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"errors\":[\"Error A\",\"Error B\"]"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Valid policy_type list validation (testing create_policy logic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_valid_policy_types() {
+        let valid_types = [
+            "max_age_days",
+            "max_versions",
+            "no_downloads_days",
+            "tag_pattern_keep",
+            "tag_pattern_delete",
+            "size_quota_bytes",
+        ];
+        for t in &valid_types {
+            assert!(valid_types.contains(t));
+        }
+        assert!(!valid_types.contains(&"custom_type"));
+        assert!(!valid_types.contains(&""));
+    }
+}

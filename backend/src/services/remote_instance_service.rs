@@ -102,3 +102,62 @@ impl RemoteInstanceService {
         Ok((url, api_key))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // RemoteInstanceResponse construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_remote_instance_response_construction() {
+        let resp = RemoteInstanceResponse {
+            id: Uuid::new_v4(),
+            name: "production-registry".to_string(),
+            url: "https://registry.example.com".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(resp.name, "production-registry");
+        assert_eq!(resp.url, "https://registry.example.com");
+    }
+
+    #[test]
+    fn test_remote_instance_response_serialization() {
+        let resp = RemoteInstanceResponse {
+            id: Uuid::nil(),
+            name: "staging".to_string(),
+            url: "https://staging.registry.example.com".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "staging");
+        assert_eq!(json["url"], "https://staging.registry.example.com");
+        assert!(!json["id"].is_null());
+        assert!(!json["created_at"].is_null());
+    }
+
+    #[test]
+    fn test_remote_instance_response_debug() {
+        let resp = RemoteInstanceResponse {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            url: "http://localhost:8080".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("RemoteInstanceResponse"));
+        assert!(debug_str.contains("test"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RemoteInstanceService is a unit struct (no fields)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_remote_instance_service_is_unit_struct() {
+        // RemoteInstanceService has no fields -- it uses static methods
+        let _service = RemoteInstanceService;
+    }
+}

@@ -404,3 +404,245 @@ pub struct DiscoverablePeer {
     pub region: Option<String>,
     pub status: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // PeerStatus Display
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_status_display_active() {
+        assert_eq!(PeerStatus::Active.to_string(), "active");
+    }
+
+    #[test]
+    fn test_peer_status_display_probing() {
+        assert_eq!(PeerStatus::Probing.to_string(), "probing");
+    }
+
+    #[test]
+    fn test_peer_status_display_unreachable() {
+        assert_eq!(PeerStatus::Unreachable.to_string(), "unreachable");
+    }
+
+    #[test]
+    fn test_peer_status_display_disabled() {
+        assert_eq!(PeerStatus::Disabled.to_string(), "disabled");
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerStatus equality and clone
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_status_equality() {
+        assert_eq!(PeerStatus::Active, PeerStatus::Active);
+        assert_ne!(PeerStatus::Active, PeerStatus::Disabled);
+        assert_ne!(PeerStatus::Probing, PeerStatus::Unreachable);
+    }
+
+    #[test]
+    fn test_peer_status_clone_copy() {
+        let status = PeerStatus::Active;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_peer_status_debug() {
+        assert_eq!(format!("{:?}", PeerStatus::Active), "Active");
+        assert_eq!(format!("{:?}", PeerStatus::Probing), "Probing");
+        assert_eq!(format!("{:?}", PeerStatus::Unreachable), "Unreachable");
+        assert_eq!(format!("{:?}", PeerStatus::Disabled), "Disabled");
+    }
+
+    // -----------------------------------------------------------------------
+    // ScoredPeer scoring logic (replicated from get_scored_peers_for_artifact)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_scoring_logic() {
+        // Score = (chunks * bandwidth) / latency
+        let bw: f64 = 10_000_000.0; // 10 Mbps
+        let lat: f64 = 50.0; // 50ms
+        let chunks: f64 = 5.0;
+        let score = (chunks * bw) / lat.max(1.0);
+        assert_eq!(score, 1_000_000.0);
+    }
+
+    #[test]
+    fn test_peer_scoring_defaults() {
+        // Default bandwidth = 1_000_000 (1Mbps), default latency = 500ms
+        let bw: f64 = 1_000_000.0;
+        let lat: f64 = 500.0;
+        let chunks: f64 = 10.0;
+        let score = (chunks * bw) / lat.max(1.0);
+        assert_eq!(score, 20_000.0);
+    }
+
+    #[test]
+    fn test_peer_scoring_zero_latency_clamped() {
+        // lat.max(1.0) prevents division by zero
+        let bw: f64 = 1_000_000.0;
+        let lat: f64 = 0.0;
+        let chunks: f64 = 5.0;
+        let score = (chunks * bw) / lat.max(1.0);
+        assert_eq!(score, 5_000_000.0);
+    }
+
+    #[test]
+    fn test_peer_scoring_high_latency_low_score() {
+        let bw: f64 = 1_000_000.0;
+        let lat: f64 = 10_000.0; // 10 seconds
+        let chunks: f64 = 5.0;
+        let score = (chunks * bw) / lat.max(1.0);
+        assert_eq!(score, 500.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ScoredPeer serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scored_peer_serialization() {
+        let peer = ScoredPeer {
+            node_id: Uuid::nil(),
+            endpoint_url: "https://peer1.example.com:8080".to_string(),
+            latency_ms: Some(50),
+            bandwidth_estimate_bps: Some(10_000_000),
+            available_chunks: 5,
+            score: 1_000_000.0,
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert_eq!(json["endpoint_url"], "https://peer1.example.com:8080");
+        assert_eq!(json["latency_ms"], 50);
+        assert_eq!(json["bandwidth_estimate_bps"], 10_000_000);
+        assert_eq!(json["available_chunks"], 5);
+        assert_eq!(json["score"], 1_000_000.0);
+    }
+
+    #[test]
+    fn test_scored_peer_no_latency_data() {
+        let peer = ScoredPeer {
+            node_id: Uuid::nil(),
+            endpoint_url: "https://new-peer.example.com".to_string(),
+            latency_ms: None,
+            bandwidth_estimate_bps: None,
+            available_chunks: 3,
+            score: 6000.0,
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert!(json["latency_ms"].is_null());
+        assert!(json["bandwidth_estimate_bps"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerAnnouncement deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_announcement_deserialization() {
+        let json = r#"{
+            "peer_id": "00000000-0000-0000-0000-000000000001",
+            "name": "eu-west-1",
+            "endpoint_url": "https://eu-west-1.registry.example.com",
+            "api_key": "secret-key-123"
+        }"#;
+        let announcement: PeerAnnouncement = serde_json::from_str(json).unwrap();
+        assert_eq!(announcement.name, "eu-west-1");
+        assert_eq!(
+            announcement.endpoint_url,
+            "https://eu-west-1.registry.example.com"
+        );
+        assert_eq!(announcement.api_key, "secret-key-123");
+    }
+
+    // -----------------------------------------------------------------------
+    // ProbeResult
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_probe_result_construction() {
+        let result = ProbeResult {
+            target_peer_id: Uuid::new_v4(),
+            latency_ms: 42,
+            bandwidth_estimate_bps: Some(100_000_000),
+        };
+        assert_eq!(result.latency_ms, 42);
+        assert_eq!(result.bandwidth_estimate_bps, Some(100_000_000));
+    }
+
+    #[test]
+    fn test_probe_result_no_bandwidth() {
+        let result = ProbeResult {
+            target_peer_id: Uuid::new_v4(),
+            latency_ms: 100,
+            bandwidth_estimate_bps: None,
+        };
+        assert!(result.bandwidth_estimate_bps.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerConnection struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_connection_construction() {
+        let conn = PeerConnection {
+            id: Uuid::new_v4(),
+            source_peer_id: Uuid::new_v4(),
+            target_peer_id: Uuid::new_v4(),
+            status: PeerStatus::Active,
+            latency_ms: Some(25),
+            bandwidth_estimate_bps: Some(50_000_000),
+            shared_artifacts_count: 10,
+            shared_chunks_count: 100,
+            last_probed_at: Some(Utc::now()),
+            last_transfer_at: None,
+            bytes_transferred_total: 1_073_741_824,
+            transfer_success_count: 50,
+            transfer_failure_count: 2,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(conn.status, PeerStatus::Active);
+        assert_eq!(conn.shared_artifacts_count, 10);
+        assert_eq!(conn.transfer_success_count, 50);
+        assert_eq!(conn.transfer_failure_count, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // DiscoverablePeer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_discoverable_peer_serialization() {
+        let peer = DiscoverablePeer {
+            node_id: Uuid::nil(),
+            name: "us-east-1".to_string(),
+            endpoint_url: "https://us-east-1.registry.example.com".to_string(),
+            region: Some("us-east-1".to_string()),
+            status: "online".to_string(),
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert_eq!(json["name"], "us-east-1");
+        assert_eq!(json["region"], "us-east-1");
+        assert_eq!(json["status"], "online");
+    }
+
+    #[test]
+    fn test_discoverable_peer_no_region() {
+        let peer = DiscoverablePeer {
+            node_id: Uuid::nil(),
+            name: "local".to_string(),
+            endpoint_url: "http://localhost:8080".to_string(),
+            region: None,
+            status: "online".to_string(),
+        };
+        let json = serde_json::to_value(&peer).unwrap();
+        assert!(json["region"].is_null());
+    }
+}

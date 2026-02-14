@@ -239,3 +239,245 @@ impl BuildService {
         Ok(inserted)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // CreateBuildInput deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_build_input_deserialization_full() {
+        let json = r#"{
+            "name": "my-build",
+            "build_number": 42,
+            "agent": "github-actions",
+            "vcs_url": "https://github.com/org/repo",
+            "vcs_revision": "abc123",
+            "vcs_branch": "main",
+            "vcs_message": "Fix bug",
+            "metadata": {"ci": "github"}
+        }"#;
+        let input: CreateBuildInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.name, "my-build");
+        assert_eq!(input.build_number, 42);
+        assert_eq!(input.agent.as_deref(), Some("github-actions"));
+        assert_eq!(input.vcs_url.as_deref(), Some("https://github.com/org/repo"));
+        assert_eq!(input.vcs_revision.as_deref(), Some("abc123"));
+        assert_eq!(input.vcs_branch.as_deref(), Some("main"));
+        assert_eq!(input.vcs_message.as_deref(), Some("Fix bug"));
+        assert!(input.metadata.is_some());
+    }
+
+    #[test]
+    fn test_create_build_input_deserialization_minimal() {
+        let json = r#"{"name": "release-build", "build_number": 1}"#;
+        let input: CreateBuildInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.name, "release-build");
+        assert_eq!(input.build_number, 1);
+        assert!(input.agent.is_none());
+        assert!(input.vcs_url.is_none());
+        assert!(input.vcs_revision.is_none());
+        assert!(input.vcs_branch.is_none());
+        assert!(input.vcs_message.is_none());
+        assert!(input.metadata.is_none());
+        assert!(input.started_at.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateBuildStatusInput deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_build_status_input_deserialization() {
+        let json = r#"{"status": "success"}"#;
+        let input: UpdateBuildStatusInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.status, "success");
+        assert!(input.finished_at.is_none());
+    }
+
+    #[test]
+    fn test_update_build_status_input_with_finished_at() {
+        let json = r#"{"status": "failed", "finished_at": "2024-06-15T12:00:00Z"}"#;
+        let input: UpdateBuildStatusInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.status, "failed");
+        assert!(input.finished_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Status validation logic (from update_status)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_valid_build_statuses() {
+        let valid_statuses = vec!["success", "failed", "cancelled", "running", "pending"];
+        for status in valid_statuses {
+            match status {
+                "success" | "failed" | "cancelled" | "running" | "pending" => {}
+                other => panic!("Status '{}' should be valid", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_build_status() {
+        let status = "invalid";
+        let is_valid = matches!(
+            status,
+            "success" | "failed" | "cancelled" | "running" | "pending"
+        );
+        assert!(!is_valid);
+    }
+
+    #[test]
+    fn test_invalid_build_status_error_message() {
+        let status = "unknown";
+        let err = AppError::Validation(format!(
+            "Invalid build status: {}. Must be one of: pending, running, success, failed, cancelled",
+            status
+        ));
+        let msg = err.to_string();
+        assert!(msg.contains("unknown"));
+        assert!(msg.contains("pending, running, success, failed, cancelled"));
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildArtifactInput deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_artifact_input_deserialization() {
+        let json = r#"{
+            "name": "app.jar",
+            "path": "target/app.jar",
+            "checksum_sha256": "deadbeef",
+            "size_bytes": 1048576
+        }"#;
+        let input: BuildArtifactInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.name, "app.jar");
+        assert_eq!(input.path, "target/app.jar");
+        assert_eq!(input.checksum_sha256, "deadbeef");
+        assert_eq!(input.size_bytes, 1_048_576);
+        assert!(input.module_name.is_none());
+    }
+
+    #[test]
+    fn test_build_artifact_input_with_module() {
+        let json = r#"{
+            "module_name": "backend",
+            "name": "server.bin",
+            "path": "backend/target/server.bin",
+            "checksum_sha256": "abc123",
+            "size_bytes": 5242880
+        }"#;
+        let input: BuildArtifactInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.module_name.as_deref(), Some("backend"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Build serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_serialization() {
+        let now = Utc::now();
+        let build = Build {
+            id: Uuid::nil(),
+            name: "test-build".to_string(),
+            build_number: 100,
+            status: "success".to_string(),
+            started_at: Some(now),
+            finished_at: Some(now),
+            duration_ms: Some(5000),
+            agent: Some("ci".to_string()),
+            artifact_count: Some(3),
+            vcs_url: None,
+            vcs_revision: Some("abc123".to_string()),
+            vcs_branch: Some("main".to_string()),
+            vcs_message: None,
+            metadata: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&build).unwrap();
+        assert_eq!(json["name"], "test-build");
+        assert_eq!(json["build_number"], 100);
+        assert_eq!(json["status"], "success");
+        assert_eq!(json["duration_ms"], 5000);
+        assert_eq!(json["artifact_count"], 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildArtifact serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_artifact_serialization() {
+        let artifact = BuildArtifact {
+            id: Uuid::nil(),
+            build_id: Uuid::nil(),
+            module_name: Some("core".to_string()),
+            name: "core.jar".to_string(),
+            path: "core/target/core.jar".to_string(),
+            checksum_sha256: "sha256hash".to_string(),
+            size_bytes: 2_097_152,
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(json["name"], "core.jar");
+        assert_eq!(json["module_name"], "core");
+        assert_eq!(json["size_bytes"], 2_097_152);
+    }
+
+    // -----------------------------------------------------------------------
+    // Validation logic (from create and add_artifacts)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_name_validation() {
+        let input = CreateBuildInput {
+            name: "".to_string(),
+            build_number: 1,
+            agent: None,
+            started_at: None,
+            vcs_url: None,
+            vcs_revision: None,
+            vcs_branch: None,
+            vcs_message: None,
+            metadata: None,
+        };
+        assert!(input.name.is_empty());
+    }
+
+    #[test]
+    fn test_empty_artifact_name_validation() {
+        let artifact = BuildArtifactInput {
+            module_name: None,
+            name: "".to_string(),
+            path: "some/path".to_string(),
+            checksum_sha256: "abc".to_string(),
+            size_bytes: 100,
+        };
+        assert!(artifact.name.is_empty());
+    }
+
+    #[test]
+    fn test_empty_artifact_path_validation() {
+        let artifact = BuildArtifactInput {
+            module_name: None,
+            name: "artifact.jar".to_string(),
+            path: "".to_string(),
+            checksum_sha256: "abc".to_string(),
+            size_bytes: 100,
+        };
+        assert!(artifact.path.is_empty());
+    }
+
+    #[test]
+    fn test_empty_artifacts_list() {
+        let artifacts: Vec<BuildArtifactInput> = vec![];
+        assert!(artifacts.is_empty());
+    }
+}

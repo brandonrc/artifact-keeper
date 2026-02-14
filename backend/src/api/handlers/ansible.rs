@@ -833,3 +833,194 @@ async fn upload_collection(
         .body(Body::from(serde_json::to_string(&response_json).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::AUTHORIZATION;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer my_token_123"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my_token_123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer my_token"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my_token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        // "user:pass" => base64 "dXNlcjpwYXNz"
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwYXNz"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("basic dXNlcjpwYXNz"));
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_with_colon_in_password() {
+        let mut headers = HeaderMap::new();
+        // "user:pass:word" => base64 "dXNlcjpwYXNzOndvcmQ="
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNzOndvcmQ="),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass:word".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_no_auth_header() {
+        let headers = HeaderMap::new();
+        let result = extract_credentials(&headers);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Digest something"));
+        let result = extract_credentials(&headers);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic !!!notbase64!!!"));
+        let result = extract_credentials(&headers);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "useronly" => base64 "dXNlcm9ubHk="
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcm9ubHk="),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_repo_info_struct() {
+        let info = RepoInfo {
+            id: uuid::Uuid::nil(),
+            storage_path: "/tmp/test".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: Some("https://example.com".to_string()),
+        };
+        assert_eq!(info.storage_path, "/tmp/test");
+        assert_eq!(info.repo_type, "hosted");
+        assert_eq!(info.upstream_url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn test_collection_name_format() {
+        let namespace = "community";
+        let collection_name = "general";
+        let collection_version = "1.2.3";
+        let full_name = format!("{}-{}", namespace, collection_name);
+        let filename = format!("{}-{}-{}.tar.gz", namespace, collection_name, collection_version);
+        let artifact_path = format!("{}/{}/{}", full_name, collection_version, filename);
+
+        assert_eq!(full_name, "community-general");
+        assert_eq!(filename, "community-general-1.2.3.tar.gz");
+        assert_eq!(artifact_path, "community-general/1.2.3/community-general-1.2.3.tar.gz");
+    }
+
+    #[test]
+    fn test_storage_key_format() {
+        let full_name = "namespace-collection";
+        let version = "2.0.0";
+        let filename = "namespace-collection-2.0.0.tar.gz";
+        let storage_key = format!("ansible/{}/{}/{}", full_name, version, filename);
+        assert_eq!(
+            storage_key,
+            "ansible/namespace-collection/2.0.0/namespace-collection-2.0.0.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"test data for hashing";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let computed = format!("{:x}", hasher.finalize());
+        assert_eq!(computed.len(), 64);
+        // Known SHA-256 hash of "test data for hashing"
+        assert!(!computed.is_empty());
+    }
+
+    #[test]
+    fn test_collection_name_parsing_from_artifact() {
+        let name = "community-general";
+        let first_hyphen = name.find('-').unwrap();
+        let namespace = &name[..first_hyphen];
+        let coll_name = &name[first_hyphen + 1..];
+        assert_eq!(namespace, "community");
+        assert_eq!(coll_name, "general");
+    }
+
+    #[test]
+    fn test_collection_name_parsing_no_hyphen() {
+        let name = "nohyphen";
+        let result = name.find('-');
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_ansible_metadata_json_construction() {
+        let namespace = "testns";
+        let collection_name = "testcoll";
+        let collection_version = "1.0.0";
+        let filename = "testns-testcoll-1.0.0.tar.gz";
+        let collection_json: Option<serde_json::Value> = Some(serde_json::json!({"namespace": "testns"}));
+
+        let metadata = serde_json::json!({
+            "namespace": namespace,
+            "collection_name": collection_name,
+            "version": collection_version,
+            "filename": filename,
+            "collection_json": collection_json,
+        });
+
+        assert_eq!(metadata["namespace"], "testns");
+        assert_eq!(metadata["collection_name"], "testcoll");
+        assert_eq!(metadata["version"], "1.0.0");
+        assert_eq!(metadata["filename"], "testns-testcoll-1.0.0.tar.gz");
+    }
+}

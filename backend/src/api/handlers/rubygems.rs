@@ -820,6 +820,354 @@ async fn dependencies(
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-rubygems-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-rubygems-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let headers = make_basic_header("gem-user", "gem-pass");
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("gem-user".to_string(), "gem-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        assert_eq!(
+            extract_credentials(&headers),
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_none() {
+        assert!(extract_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_priority() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-api-key"),
+        );
+        // Bearer should be tried first
+        let result = extract_credentials(&headers);
+        assert_eq!(result.unwrap().0, "token");
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // gzip_compress
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gzip_compress_empty() {
+        let result = gzip_compress(b"");
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty()); // gzip header exists even for empty
+    }
+
+    #[test]
+    fn test_gzip_compress_data() {
+        let data = b"hello world, this is some test data for gzip compression";
+        let result = gzip_compress(data);
+        assert!(result.is_ok());
+        let compressed = result.unwrap();
+        // Compressed data should start with gzip magic bytes
+        assert!(compressed.len() >= 2);
+        assert_eq!(compressed[0], 0x1f);
+        assert_eq!(compressed[1], 0x8b);
+    }
+
+    #[test]
+    fn test_gzip_compress_roundtrip() {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let original = b"RubyGems spec data [\"rails\", \"7.0.0\", \"ruby\"]";
+        let compressed = gzip_compress(original).unwrap();
+
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    // -----------------------------------------------------------------------
+    // DependencyQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dependency_query_empty() {
+        let q: DependencyQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.gems.is_none());
+    }
+
+    #[test]
+    fn test_dependency_query_with_gems() {
+        let q: DependencyQuery =
+            serde_json::from_str(r#"{"gems":"rails,sinatra,rack"}"#).unwrap();
+        assert_eq!(q.gems, Some("rails,sinatra,rack".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gem name parsing (strip .json suffix)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gem_name_strip_json() {
+        let name = "rails.json";
+        let gem_name = name.strip_suffix(".json").unwrap_or(name);
+        assert_eq!(gem_name, "rails");
+    }
+
+    #[test]
+    fn test_gem_name_no_json() {
+        let name = "rails";
+        let gem_name = name.strip_suffix(".json").unwrap_or(name);
+        assert_eq!(gem_name, "rails");
+    }
+
+    // -----------------------------------------------------------------------
+    // Gem filename construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gem_filename_no_platform() {
+        let gem_name = "rails";
+        let gem_version = "7.0.0";
+        let platform: Option<String> = None;
+        let filename = if let Some(ref p) = platform {
+            format!("{}-{}-{}.gem", gem_name, gem_version, p)
+        } else {
+            format!("{}-{}.gem", gem_name, gem_version)
+        };
+        assert_eq!(filename, "rails-7.0.0.gem");
+    }
+
+    #[test]
+    fn test_gem_filename_with_platform() {
+        let gem_name = "nokogiri";
+        let gem_version = "1.16.0";
+        let platform = Some("x86_64-linux".to_string());
+        let filename = if let Some(ref p) = platform {
+            format!("{}-{}-{}.gem", gem_name, gem_version, p)
+        } else {
+            format!("{}-{}.gem", gem_name, gem_version)
+        };
+        assert_eq!(filename, "nokogiri-1.16.0-x86_64-linux.gem");
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact path and storage key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rubygems_artifact_path() {
+        let gem_name = "sinatra";
+        let gem_version = "3.0.0";
+        let filename = format!("{}-{}.gem", gem_name, gem_version);
+        let artifact_path = format!("{}/{}/{}", gem_name, gem_version, filename);
+        assert_eq!(artifact_path, "sinatra/3.0.0/sinatra-3.0.0.gem");
+    }
+
+    #[test]
+    fn test_rubygems_storage_key() {
+        let gem_name = "sinatra";
+        let gem_version = "3.0.0";
+        let filename = format!("{}-{}.gem", gem_name, gem_version);
+        let storage_key = format!("rubygems/{}/{}/{}", gem_name, gem_version, filename);
+        assert_eq!(
+            storage_key,
+            "rubygems/sinatra/3.0.0/sinatra-3.0.0.gem"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let info = RepoInfo {
+            id,
+            storage_path: "/data/rubygems".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: Some("https://rubygems.org".to_string()),
+        };
+        assert_eq!(info.id, id);
+        assert_eq!(info.repo_type, "hosted");
+        assert_eq!(
+            info.upstream_url,
+            Some("https://rubygems.org".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256() {
+        let data = b"gem file content";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gem URI format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gem_uri() {
+        let repo_key = "gems-hosted";
+        let gem_filename = "rails-7.0.0.gem";
+        let gem_uri = format!("/gems/{}/gems/{}", repo_key, gem_filename);
+        assert_eq!(gem_uri, "/gems/gems-hosted/gems/rails-7.0.0.gem");
+    }
+
+    // -----------------------------------------------------------------------
+    // Dependency parsing logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dependency_gem_names_parsing() {
+        let gems_str = "rails,sinatra,rack";
+        let gem_names: Vec<&str> = gems_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(gem_names, vec!["rails", "sinatra", "rack"]);
+    }
+
+    #[test]
+    fn test_dependency_gem_names_empty() {
+        let gems_str = "";
+        let gem_names: Vec<&str> = gems_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(gem_names.is_empty());
+    }
+
+    #[test]
+    fn test_dependency_gem_names_with_spaces() {
+        let gems_str = " rails , sinatra , rack ";
+        let gem_names: Vec<&str> = gems_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(gem_names, vec!["rails", "sinatra", "rack"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Filename trimming (download_gem path)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filename_trim_leading_slash() {
+        let gem_file = "/rails-7.0.0.gem";
+        let filename = gem_file.trim_start_matches('/');
+        assert_eq!(filename, "rails-7.0.0.gem");
+    }
+
+    #[test]
+    fn test_filename_no_leading_slash() {
+        let gem_file = "rails-7.0.0.gem";
+        let filename = gem_file.trim_start_matches('/');
+        assert_eq!(filename, "rails-7.0.0.gem");
+    }
+
+    // -----------------------------------------------------------------------
+    // Specs format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_specs_json_format() {
+        let specs: Vec<serde_json::Value> = vec![
+            serde_json::json!(["rails", "7.0.0", "ruby"]),
+            serde_json::json!(["sinatra", "3.0.0", "ruby"]),
+        ];
+        let json_bytes = serde_json::to_vec(&specs).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_slice(&json_bytes).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0][0], "rails");
+        assert_eq!(parsed[0][1], "7.0.0");
+        assert_eq!(parsed[0][2], "ruby");
+    }
+}
+
 fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;

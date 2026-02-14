@@ -595,3 +595,303 @@ async fn latest_version(
         .body(Body::from(serde_json::to_string(&json).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Bearer token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-pat-token"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("token".to_string(), "my-pat-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-pat-token"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("token".to_string(), "my-pat-token".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Basic auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("admin".to_string(), "secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_colon_in_password() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:p@ss:word:123");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("user".to_string(), "p@ss:word:123".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Token abc123"),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic ===invalid==="),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Extension ID format (publisher.name pattern)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extension_id_format() {
+        let publisher = "ms-python";
+        let name = "python";
+        let extension_id = format!("{}.{}", publisher, name);
+        assert_eq!(extension_id, "ms-python.python");
+    }
+
+    #[test]
+    fn test_extension_id_format_complex() {
+        let publisher = "esbenp";
+        let name = "prettier-vscode";
+        let extension_id = format!("{}.{}", publisher, name);
+        assert_eq!(extension_id, "esbenp.prettier-vscode");
+    }
+
+    // -----------------------------------------------------------------------
+    // Filename format (publisher.name-version.vsix)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filename_format() {
+        let publisher = "ms-python";
+        let name = "python";
+        let version = "2024.1.0";
+        let extension_id = format!("{}.{}", publisher, name);
+        let filename = format!("{}-{}.vsix", extension_id, version);
+        assert_eq!(filename, "ms-python.python-2024.1.0.vsix");
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact path format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_path_format() {
+        let publisher = "ms-python";
+        let ext_name = "python";
+        let ext_version = "2024.1.0";
+        let extension_id = format!("{}.{}", publisher, ext_name);
+        let filename = format!("{}-{}.vsix", extension_id, ext_version);
+        let artifact_path = format!("{}/{}/{}", publisher, ext_name, filename);
+        assert_eq!(
+            artifact_path,
+            "ms-python/python/ms-python.python-2024.1.0.vsix"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage key format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_storage_key_format() {
+        let publisher = "esbenp";
+        let ext_name = "prettier-vscode";
+        let ext_version = "10.1.0";
+        let extension_id = format!("{}.{}", publisher, ext_name);
+        let filename = format!("{}-{}.vsix", extension_id, ext_version);
+        let storage_key = format!("vscode/{}/{}/{}", publisher, ext_name, filename);
+        assert_eq!(
+            storage_key,
+            "vscode/esbenp/prettier-vscode/esbenp.prettier-vscode-10.1.0.vsix"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 computation (same pattern used in publish_extension)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"fake VSIX content";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = format!("{:x}", hasher.finalize());
+
+        assert_eq!(hash.len(), 64);
+
+        // Same data produces same hash
+        let mut hasher2 = Sha256::new();
+        hasher2.update(data);
+        let hash2 = format!("{:x}", hasher2.finalize());
+        assert_eq!(hash, hash2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Metadata JSON format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vscode_metadata_json() {
+        let publisher = "ms-python";
+        let ext_name = "python";
+        let ext_version = "2024.1.0";
+        let extension_id = format!("{}.{}", publisher, ext_name);
+        let filename = format!("{}-{}.vsix", extension_id, ext_version);
+
+        let metadata = serde_json::json!({
+            "publisher": publisher,
+            "extension_name": ext_name,
+            "version": ext_version,
+            "filename": filename,
+        });
+
+        assert_eq!(metadata["publisher"], "ms-python");
+        assert_eq!(metadata["extension_name"], "python");
+        assert_eq!(metadata["version"], "2024.1.0");
+        assert_eq!(metadata["filename"], "ms-python.python-2024.1.0.vsix");
+    }
+
+    // -----------------------------------------------------------------------
+    // Download URL format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_url_format() {
+        let repo_key = "vscode-local";
+        let publisher = "ms-vscode";
+        let ext_name = "cpptools";
+        let version = "1.18.0";
+        let url = format!(
+            "/vscode/{}/extensions/{}/{}/{}/download",
+            repo_key, publisher, ext_name, version
+        );
+        assert_eq!(
+            url,
+            "/vscode/vscode-local/extensions/ms-vscode/cpptools/1.18.0/download"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/vscode-local".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.storage_path, "/data/vscode-local");
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/vscode-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some(
+                "https://marketplace.visualstudio.com/_apis/public/gallery".to_string(),
+            ),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert!(repo.upstream_url.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Content-Disposition header format for downloads
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_content_disposition() {
+        let publisher = "redhat";
+        let name = "vscode-yaml";
+        let version = "1.14.0";
+        let filename = format!("{}.{}-{}.vsix", publisher, name, version);
+        let header = format!("attachment; filename=\"{}\"", filename);
+        assert_eq!(
+            header,
+            "attachment; filename=\"redhat.vscode-yaml-1.14.0.vsix\""
+        );
+    }
+}

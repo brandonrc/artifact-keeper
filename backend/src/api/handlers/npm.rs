@@ -853,6 +853,410 @@ async fn publish_package(
 // Proxy helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let headers = make_basic_header("npm-user", "npm-pass");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("npm-user".to_string(), "npm-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        assert_eq!(
+            extract_basic_credentials(&headers),
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_missing() {
+        assert!(extract_basic_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_bearer_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_bearer_credentials_valid() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("npmuser:npmpass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", encoded)).unwrap(),
+        );
+        let result = extract_bearer_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("npmuser".to_string(), "npmpass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_bearer_credentials_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("bearer {}", encoded)).unwrap(),
+        );
+        let result = extract_bearer_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_bearer_credentials_not_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer not-valid-base64!!!!"),
+        );
+        // Invalid base64 should return None
+        assert!(extract_bearer_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_credentials_missing() {
+        assert!(extract_bearer_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_bearer_credentials_no_colon() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("justtoken");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", encoded)).unwrap(),
+        );
+        assert!(extract_bearer_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_npm_tarball_urls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_basic() {
+        let mut json = serde_json::json!({
+            "name": "express",
+            "versions": {
+                "4.18.2": {
+                    "name": "express",
+                    "version": "4.18.2",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/express/-/express-4.18.2.tgz",
+                        "integrity": "sha512-abc"
+                    }
+                }
+            }
+        });
+
+        rewrite_npm_tarball_urls(&mut json, "http://localhost:8080", "npm-remote");
+
+        let tarball = json["versions"]["4.18.2"]["dist"]["tarball"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            tarball,
+            "http://localhost:8080/npm/npm-remote/express/-/express-4.18.2.tgz"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_scoped_package() {
+        let mut json = serde_json::json!({
+            "name": "@angular/core",
+            "versions": {
+                "17.0.0": {
+                    "name": "@angular/core",
+                    "version": "17.0.0",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/@angular/core/-/core-17.0.0.tgz"
+                    }
+                }
+            }
+        });
+
+        rewrite_npm_tarball_urls(&mut json, "https://my.registry.com", "npm-main");
+
+        let tarball = json["versions"]["17.0.0"]["dist"]["tarball"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            tarball,
+            "https://my.registry.com/npm/npm-main/@angular/core/-/core-17.0.0.tgz"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_no_versions() {
+        let mut json = serde_json::json!({
+            "name": "empty-pkg"
+        });
+        // Should not panic
+        rewrite_npm_tarball_urls(&mut json, "http://localhost", "repo");
+        // JSON unchanged
+        assert!(json.get("versions").is_none());
+    }
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_no_dist() {
+        let mut json = serde_json::json!({
+            "versions": {
+                "1.0.0": {
+                    "name": "no-dist",
+                    "version": "1.0.0"
+                }
+            }
+        });
+        // Should not panic
+        rewrite_npm_tarball_urls(&mut json, "http://localhost", "repo");
+    }
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_no_tarball_field() {
+        let mut json = serde_json::json!({
+            "versions": {
+                "1.0.0": {
+                    "name": "no-tarball",
+                    "version": "1.0.0",
+                    "dist": {
+                        "integrity": "sha512-abc"
+                    }
+                }
+            }
+        });
+        // Should not panic or modify anything
+        rewrite_npm_tarball_urls(&mut json, "http://localhost", "repo");
+    }
+
+    #[test]
+    fn test_rewrite_npm_tarball_urls_multiple_versions() {
+        let mut json = serde_json::json!({
+            "name": "lodash",
+            "versions": {
+                "4.17.20": {
+                    "name": "lodash",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz"
+                    }
+                },
+                "4.17.21": {
+                    "name": "lodash",
+                    "dist": {
+                        "tarball": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+                    }
+                }
+            }
+        });
+
+        rewrite_npm_tarball_urls(&mut json, "http://local:8080", "npm");
+
+        let t1 = json["versions"]["4.17.20"]["dist"]["tarball"]
+            .as_str()
+            .unwrap();
+        let t2 = json["versions"]["4.17.21"]["dist"]["tarball"]
+            .as_str()
+            .unwrap();
+        assert!(t1.starts_with("http://local:8080/npm/npm/lodash/-/"));
+        assert!(t2.starts_with("http://local:8080/npm/npm/lodash/-/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/npm".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert!(info.upstream_url.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tarball filename generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tarball_filename_unscoped() {
+        let package_name = "express";
+        let version = "4.18.2";
+        let filename = format!("{}-{}.tgz", package_name, version);
+        assert_eq!(filename, "express-4.18.2.tgz");
+    }
+
+    #[test]
+    fn test_tarball_filename_scoped() {
+        let package_name = "@angular/core";
+        let version = "17.0.0";
+        let tarball_filename = if package_name.starts_with('@') {
+            let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
+            format!("{}-{}.tgz", short_name, version)
+        } else {
+            format!("{}-{}.tgz", package_name, version)
+        };
+        assert_eq!(tarball_filename, "core-17.0.0.tgz");
+    }
+
+    #[test]
+    fn test_tarball_filename_scoped_no_slash() {
+        let package_name = "@oddpackage";
+        let version = "1.0.0";
+        let tarball_filename = if package_name.starts_with('@') {
+            let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
+            format!("{}-{}.tgz", short_name, version)
+        } else {
+            format!("{}-{}.tgz", package_name, version)
+        };
+        // rsplit('/') returns the entire string when no '/' is found
+        assert_eq!(tarball_filename, "@oddpackage-1.0.0.tgz");
+    }
+
+    // -----------------------------------------------------------------------
+    // Scoped package name construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scoped_package_name() {
+        let scope = "babel";
+        let package = "core";
+        let full_name = format!("@{}/{}", scope, package);
+        assert_eq!(full_name, "@babel/core");
+    }
+
+    // -----------------------------------------------------------------------
+    // Path/storage key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_npm_artifact_path() {
+        let package_name = "express";
+        let version = "4.18.2";
+        let tarball_filename = format!("{}-{}.tgz", package_name, version);
+        let artifact_path = format!("{}/{}/{}", package_name, version, tarball_filename);
+        assert_eq!(artifact_path, "express/4.18.2/express-4.18.2.tgz");
+    }
+
+    #[test]
+    fn test_npm_storage_key() {
+        let package_name = "@vue/compiler-core";
+        let version = "3.4.0";
+        let tarball_filename = "compiler-core-3.4.0.tgz";
+        let storage_key = format!("npm/{}/{}/{}", package_name, version, tarball_filename);
+        assert_eq!(
+            storage_key,
+            "npm/@vue/compiler-core/3.4.0/compiler-core-3.4.0.tgz"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_deterministic() {
+        let data = b"npm package tarball data";
+        let mut h1 = Sha256::new();
+        h1.update(data);
+        let c1 = format!("{:x}", h1.finalize());
+
+        let mut h2 = Sha256::new();
+        h2.update(data);
+        let c2 = format!("{:x}", h2.finalize());
+
+        assert_eq!(c1, c2);
+        assert_eq!(c1.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Hex to bytes conversion (used for integrity field)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hex_to_bytes_and_integrity() {
+        let hex = "abcdef0123456789";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+            .collect();
+        assert_eq!(bytes, vec![0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89]);
+
+        let integrity = format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        assert!(integrity.starts_with("sha256-"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tarball URL building
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tarball_url() {
+        let base_url = "http://localhost:8080";
+        let repo_key = "npm-hosted";
+        let package_name = "express";
+        let filename = "express-4.18.2.tgz";
+        let url = format!(
+            "{}/npm/{}/{}/-/{}",
+            base_url, repo_key, package_name, filename
+        );
+        assert_eq!(
+            url,
+            "http://localhost:8080/npm/npm-hosted/express/-/express-4.18.2.tgz"
+        );
+    }
+}
+
 /// Rewrite tarball URLs in npm metadata JSON to point to our local instance.
 /// npm metadata contains `versions.{ver}.dist.tarball` pointing to the upstream registry.
 /// We rewrite those to point to `{base_url}/npm/{repo_key}/{package}/-/{filename}`.

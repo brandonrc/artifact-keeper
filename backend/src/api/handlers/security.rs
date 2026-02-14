@@ -1024,3 +1024,324 @@ async fn list_repo_scans(
     ))
 )]
 pub struct SecurityApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // DashboardResponse construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dashboard_response_construction() {
+        let resp = DashboardResponse {
+            repos_with_scanning: 10,
+            total_scans: 100,
+            total_findings: 50,
+            critical_findings: 5,
+            high_findings: 15,
+            policy_violations_blocked: 3,
+            repos_grade_a: 6,
+            repos_grade_f: 1,
+        };
+        assert_eq!(resp.repos_with_scanning, 10);
+        assert_eq!(resp.total_scans, 100);
+        assert_eq!(resp.total_findings, 50);
+        assert_eq!(resp.critical_findings, 5);
+        assert_eq!(resp.high_findings, 15);
+        assert_eq!(resp.policy_violations_blocked, 3);
+        assert_eq!(resp.repos_grade_a, 6);
+        assert_eq!(resp.repos_grade_f, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // ScanResponse::from_scan
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_response_from_scan() {
+        let now = chrono::Utc::now();
+        let scan = ScanResult {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            scan_type: "trivy".to_string(),
+            status: "completed".to_string(),
+            findings_count: 10,
+            critical_count: 2,
+            high_count: 3,
+            medium_count: 4,
+            low_count: 1,
+            info_count: 0,
+            scanner_version: Some("0.50.0".to_string()),
+            error_message: None,
+            started_at: Some(now),
+            completed_at: Some(now),
+            created_at: now,
+        };
+
+        let artifact_name = Some("my-artifact".to_string());
+        let artifact_version = Some("1.0.0".to_string());
+
+        let resp = ScanResponse::from_scan(scan.clone(), artifact_name, artifact_version);
+
+        assert_eq!(resp.id, scan.id);
+        assert_eq!(resp.artifact_id, scan.artifact_id);
+        assert_eq!(resp.repository_id, scan.repository_id);
+        assert_eq!(resp.scan_type, "trivy");
+        assert_eq!(resp.status, "completed");
+        assert_eq!(resp.findings_count, 10);
+        assert_eq!(resp.critical_count, 2);
+        assert_eq!(resp.high_count, 3);
+        assert_eq!(resp.medium_count, 4);
+        assert_eq!(resp.low_count, 1);
+        assert_eq!(resp.info_count, 0);
+        assert_eq!(resp.scanner_version, Some("0.50.0".to_string()));
+        assert_eq!(resp.error_message, None);
+        assert_eq!(resp.artifact_name, Some("my-artifact".to_string()));
+        assert_eq!(resp.artifact_version, Some("1.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_scan_response_from_scan_no_artifact_info() {
+        let now = chrono::Utc::now();
+        let scan = ScanResult {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            scan_type: "vulnerability".to_string(),
+            status: "failed".to_string(),
+            findings_count: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            info_count: 0,
+            scanner_version: None,
+            error_message: Some("Scanner not available".to_string()),
+            started_at: None,
+            completed_at: None,
+            created_at: now,
+        };
+
+        let resp = ScanResponse::from_scan(scan, None, None);
+        assert_eq!(resp.artifact_name, None);
+        assert_eq!(resp.artifact_version, None);
+        assert_eq!(resp.error_message, Some("Scanner not available".to_string()));
+        assert_eq!(resp.status, "failed");
+    }
+
+    // -----------------------------------------------------------------------
+    // Request/response serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trigger_scan_request_serde_artifact_only() {
+        let id = Uuid::new_v4();
+        let json = serde_json::json!({ "artifact_id": id });
+        let req: TriggerScanRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.artifact_id, Some(id));
+        assert_eq!(req.repository_id, None);
+    }
+
+    #[test]
+    fn test_trigger_scan_request_serde_repo_only() {
+        let id = Uuid::new_v4();
+        let json = serde_json::json!({ "repository_id": id });
+        let req: TriggerScanRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.artifact_id, None);
+        assert_eq!(req.repository_id, Some(id));
+    }
+
+    #[test]
+    fn test_create_policy_request_serde() {
+        let json = serde_json::json!({
+            "name": "strict-policy",
+            "max_severity": "high",
+            "block_unscanned": true,
+            "block_on_fail": true,
+        });
+        let req: CreatePolicyRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "strict-policy");
+        assert_eq!(req.max_severity, "high");
+        assert!(req.block_unscanned);
+        assert!(req.block_on_fail);
+        assert!(!req.require_signature); // serde default
+        assert_eq!(req.repository_id, None);
+        assert_eq!(req.min_staging_hours, None);
+        assert_eq!(req.max_artifact_age_days, None);
+    }
+
+    #[test]
+    fn test_create_policy_request_with_all_fields() {
+        let repo_id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "name": "full-policy",
+            "repository_id": repo_id,
+            "max_severity": "critical",
+            "block_unscanned": false,
+            "block_on_fail": false,
+            "min_staging_hours": 24,
+            "max_artifact_age_days": 90,
+            "require_signature": true,
+        });
+        let req: CreatePolicyRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "full-policy");
+        assert_eq!(req.repository_id, Some(repo_id));
+        assert!(req.require_signature);
+        assert_eq!(req.min_staging_hours, Some(24));
+        assert_eq!(req.max_artifact_age_days, Some(90));
+    }
+
+    #[test]
+    fn test_update_policy_request_serde() {
+        let json = serde_json::json!({
+            "name": "updated-policy",
+            "max_severity": "medium",
+            "block_unscanned": false,
+            "block_on_fail": true,
+            "is_enabled": false,
+        });
+        let req: UpdatePolicyRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "updated-policy");
+        assert!(!req.is_enabled);
+        assert!(!req.require_signature); // serde default
+    }
+
+    #[test]
+    fn test_acknowledge_request_serde() {
+        let json = serde_json::json!({ "reason": "False positive" });
+        let req: AcknowledgeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.reason, "False positive");
+    }
+
+    // -----------------------------------------------------------------------
+    // ListScansQuery defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_scans_query_all_none() {
+        let json = serde_json::json!({});
+        let query: ListScansQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.page, None);
+        assert_eq!(query.per_page, None);
+        assert_eq!(query.status, None);
+        assert_eq!(query.repository_id, None);
+        assert_eq!(query.artifact_id, None);
+    }
+
+    #[test]
+    fn test_list_scans_query_with_values() {
+        let id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "repository_id": id,
+            "status": "completed",
+            "page": 2,
+            "per_page": 50,
+        });
+        let query: ListScansQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.repository_id, Some(id));
+        assert_eq!(query.status, Some("completed".to_string()));
+        assert_eq!(query.page, Some(2));
+        assert_eq!(query.per_page, Some(50));
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination offset calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_defaults() {
+        let page = None::<i64>.unwrap_or(1);
+        let per_page = None::<i64>.unwrap_or(20).min(100);
+        let offset = (page - 1) * per_page;
+        assert_eq!(page, 1);
+        assert_eq!(per_page, 20);
+        assert_eq!(offset, 0);
+    }
+
+    #[test]
+    fn test_pagination_page_2() {
+        let page = Some(2i64).unwrap_or(1);
+        let per_page = Some(50i64).unwrap_or(20).min(100);
+        let offset = (page - 1) * per_page;
+        assert_eq!(offset, 50);
+    }
+
+    #[test]
+    fn test_pagination_per_page_capped() {
+        let per_page = Some(200i64).unwrap_or(20).min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // ScoreResponse construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_score_response_construction() {
+        let now = chrono::Utc::now();
+        let resp = ScoreResponse {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            score: 85,
+            grade: "A".to_string(),
+            total_findings: 5,
+            critical_count: 0,
+            high_count: 1,
+            medium_count: 2,
+            low_count: 2,
+            acknowledged_count: 1,
+            last_scan_at: Some(now),
+            calculated_at: now,
+        };
+        assert_eq!(resp.score, 85);
+        assert_eq!(resp.grade, "A");
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoSecurityResponse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_security_response_with_no_config_or_score() {
+        let resp = RepoSecurityResponse {
+            config: None,
+            score: None,
+        };
+        assert!(resp.config.is_none());
+        assert!(resp.score.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialization round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dashboard_response_serialization() {
+        let resp = DashboardResponse {
+            repos_with_scanning: 5,
+            total_scans: 10,
+            total_findings: 20,
+            critical_findings: 1,
+            high_findings: 3,
+            policy_violations_blocked: 0,
+            repos_grade_a: 4,
+            repos_grade_f: 0,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"repos_with_scanning\":5"));
+        assert!(json.contains("\"total_scans\":10"));
+    }
+
+    #[test]
+    fn test_trigger_scan_response_serialization() {
+        let resp = TriggerScanResponse {
+            message: "Scan queued".to_string(),
+            artifacts_queued: 42,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"artifacts_queued\":42"));
+    }
+}

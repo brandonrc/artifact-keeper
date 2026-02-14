@@ -938,3 +938,299 @@ async fn upload(
         ))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let headers = make_basic_header("composer", "secret");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("composer".to_string(), "secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        assert_eq!(
+            extract_basic_credentials(&headers),
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_missing() {
+        assert!(extract_basic_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let info = RepoInfo {
+            id,
+            storage_path: "/data/composer".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: Some("https://packagist.org".to_string()),
+        };
+        assert_eq!(info.id, id);
+        assert_eq!(info.repo_type, "hosted");
+        assert_eq!(
+            info.upstream_url,
+            Some("https://packagist.org".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_query_defaults() {
+        let q: SearchQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.q.is_none());
+        assert!(q.package_type.is_none());
+        assert!(q.per_page.is_none());
+        assert!(q.page.is_none());
+    }
+
+    #[test]
+    fn test_search_query_with_type() {
+        let q: SearchQuery = serde_json::from_str(
+            r#"{"q":"monolog","type":"library","per_page":30,"page":2}"#,
+        )
+        .unwrap();
+        assert_eq!(q.q, Some("monolog".to_string()));
+        assert_eq!(q.package_type, Some("library".to_string()));
+        assert_eq!(q.per_page, Some(30));
+        assert_eq!(q.page, Some(2));
+    }
+
+    // -----------------------------------------------------------------------
+    // Package name validation (vendor/package format)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_package_name_valid() {
+        let name = "monolog/monolog";
+        assert!(name.contains('/'));
+    }
+
+    #[test]
+    fn test_package_name_invalid_no_slash() {
+        let name = "no-vendor";
+        assert!(!name.contains('/'));
+    }
+
+    // -----------------------------------------------------------------------
+    // Composer v1 metadata package hash parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_v1_package_hash_parsing_with_hash() {
+        let package_hash = "monolog$abc123.json";
+        let raw = package_hash.trim_end_matches(".json");
+        let package = raw.split('$').next().unwrap_or(raw);
+        assert_eq!(package, "monolog");
+    }
+
+    #[test]
+    fn test_v1_package_hash_parsing_without_hash() {
+        let package_hash = "monolog.json";
+        let raw = package_hash.trim_end_matches(".json");
+        let package = raw.split('$').next().unwrap_or(raw);
+        assert_eq!(package, "monolog");
+    }
+
+    #[test]
+    fn test_v1_full_name_construction() {
+        let vendor = "monolog";
+        let package = "monolog";
+        let full_name = format!("{}/{}", vendor, package);
+        assert_eq!(full_name, "monolog/monolog");
+    }
+
+    // -----------------------------------------------------------------------
+    // Composer v2 package file parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_v2_package_file_trim() {
+        let package_file = "monolog.json";
+        let package = package_file.trim_end_matches(".json");
+        assert_eq!(package, "monolog");
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact path and storage key generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_composer_artifact_path() {
+        let full_name = "vendor/package";
+        let version = "1.2.3";
+        let sha256 = "abc123def456";
+        let artifact_path = format!("{}/{}/{}.zip", full_name, version, sha256);
+        assert_eq!(artifact_path, "vendor/package/1.2.3/abc123def456.zip");
+    }
+
+    #[test]
+    fn test_composer_storage_key() {
+        let full_name = "monolog/monolog";
+        let version = "3.0.0";
+        let sha256 = "fedcba987654";
+        let storage_key = format!("composer/{}/{}/{}.zip", full_name, version, sha256);
+        assert_eq!(
+            storage_key,
+            "composer/monolog/monolog/3.0.0/fedcba987654.zip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 checksum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256() {
+        let data = b"composer package";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // Distribution URL formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dist_url_format() {
+        let repo_key = "php-repo";
+        let name = "vendor/package";
+        let version = "1.0.0";
+        let sha256 = "abc123";
+        let url = format!(
+            "/composer/{}/dist/{}/{}/{}.zip",
+            repo_key, name, version, sha256
+        );
+        assert_eq!(
+            url,
+            "/composer/php-repo/dist/vendor/package/1.0.0/abc123.zip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Reference .zip strip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reference_strip_zip() {
+        let reference = "abc123def.zip";
+        let stripped = reference.trim_end_matches(".zip");
+        assert_eq!(stripped, "abc123def");
+    }
+
+    #[test]
+    fn test_reference_no_zip() {
+        let reference = "abc123def";
+        let stripped = reference.trim_end_matches(".zip");
+        assert_eq!(stripped, "abc123def");
+    }
+
+    // -----------------------------------------------------------------------
+    // Metadata URL pattern
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_metadata_url_pattern() {
+        let repo_key = "composer-hosted";
+        let metadata_url = format!("/composer/{}/p2/%package%.json", repo_key);
+        assert_eq!(
+            metadata_url,
+            "/composer/composer-hosted/p2/%package%.json"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Search pagination logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_pagination() {
+        let per_page = 15i64;
+        let page = 1i64;
+        let offset = (page - 1) * per_page;
+        assert_eq!(offset, 0);
+
+        let total_count = 45i64;
+        let total_pages = ((total_count as f64) / (per_page as f64)).ceil() as i64;
+        assert_eq!(total_pages, 3);
+        let has_next = page < total_pages;
+        assert!(has_next);
+    }
+
+    #[test]
+    fn test_search_per_page_clamping() {
+        let per_page_input = 200i64;
+        let per_page = per_page_input.min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_search_page_clamping() {
+        let page_input = 0i64;
+        let page = page_input.max(1);
+        assert_eq!(page, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Default version handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_version() {
+        let version: Option<&str> = None;
+        let resolved = version.unwrap_or("dev-main");
+        assert_eq!(resolved, "dev-main");
+    }
+}

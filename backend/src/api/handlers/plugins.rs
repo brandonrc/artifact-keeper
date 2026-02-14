@@ -1112,3 +1112,551 @@ pub async fn install_from_local(
     ))
 )]
 pub struct PluginsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // parse_status
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_status_active() {
+        assert_eq!(parse_status("active"), Some(PluginStatus::Active));
+    }
+
+    #[test]
+    fn test_parse_status_disabled() {
+        assert_eq!(parse_status("disabled"), Some(PluginStatus::Disabled));
+    }
+
+    #[test]
+    fn test_parse_status_error() {
+        assert_eq!(parse_status("error"), Some(PluginStatus::Error));
+    }
+
+    #[test]
+    fn test_parse_status_case_insensitive() {
+        assert_eq!(parse_status("ACTIVE"), Some(PluginStatus::Active));
+        assert_eq!(parse_status("Disabled"), Some(PluginStatus::Disabled));
+        assert_eq!(parse_status("ERROR"), Some(PluginStatus::Error));
+    }
+
+    #[test]
+    fn test_parse_status_unknown() {
+        assert_eq!(parse_status("running"), None);
+        assert_eq!(parse_status(""), None);
+        assert_eq!(parse_status("inactive"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_type_format_handler() {
+        assert_eq!(parse_type("format_handler"), Some(PluginType::FormatHandler));
+    }
+
+    #[test]
+    fn test_parse_type_storage_backend() {
+        assert_eq!(parse_type("storage_backend"), Some(PluginType::StorageBackend));
+    }
+
+    #[test]
+    fn test_parse_type_authentication() {
+        assert_eq!(parse_type("authentication"), Some(PluginType::Authentication));
+    }
+
+    #[test]
+    fn test_parse_type_authorization() {
+        assert_eq!(parse_type("authorization"), Some(PluginType::Authorization));
+    }
+
+    #[test]
+    fn test_parse_type_webhook() {
+        assert_eq!(parse_type("webhook"), Some(PluginType::Webhook));
+    }
+
+    #[test]
+    fn test_parse_type_custom() {
+        assert_eq!(parse_type("custom"), Some(PluginType::Custom));
+    }
+
+    #[test]
+    fn test_parse_type_case_insensitive() {
+        assert_eq!(parse_type("FORMAT_HANDLER"), Some(PluginType::FormatHandler));
+        assert_eq!(parse_type("Storage_Backend"), Some(PluginType::StorageBackend));
+        assert_eq!(parse_type("WEBHOOK"), Some(PluginType::Webhook));
+    }
+
+    #[test]
+    fn test_parse_type_unknown() {
+        assert_eq!(parse_type("handler"), None);
+        assert_eq!(parse_type(""), None);
+        assert_eq!(parse_type("formathandler"), None); // no underscore
+        assert_eq!(parse_type("plugin"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginStatus serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_status_serialize() {
+        let json = serde_json::to_string(&PluginStatus::Active).unwrap();
+        assert_eq!(json, "\"active\"");
+
+        let json = serde_json::to_string(&PluginStatus::Disabled).unwrap();
+        assert_eq!(json, "\"disabled\"");
+
+        let json = serde_json::to_string(&PluginStatus::Error).unwrap();
+        assert_eq!(json, "\"error\"");
+    }
+
+    #[test]
+    fn test_plugin_status_deserialize() {
+        let status: PluginStatus = serde_json::from_str("\"active\"").unwrap();
+        assert_eq!(status, PluginStatus::Active);
+
+        let status: PluginStatus = serde_json::from_str("\"disabled\"").unwrap();
+        assert_eq!(status, PluginStatus::Disabled);
+
+        let status: PluginStatus = serde_json::from_str("\"error\"").unwrap();
+        assert_eq!(status, PluginStatus::Error);
+    }
+
+    #[test]
+    fn test_plugin_status_deserialize_invalid() {
+        let result = serde_json::from_str::<PluginStatus>("\"running\"");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginType serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_type_serialize() {
+        assert_eq!(
+            serde_json::to_string(&PluginType::FormatHandler).unwrap(),
+            "\"format_handler\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PluginType::StorageBackend).unwrap(),
+            "\"storage_backend\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PluginType::Authentication).unwrap(),
+            "\"authentication\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PluginType::Authorization).unwrap(),
+            "\"authorization\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PluginType::Webhook).unwrap(),
+            "\"webhook\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PluginType::Custom).unwrap(),
+            "\"custom\""
+        );
+    }
+
+    #[test]
+    fn test_plugin_type_deserialize() {
+        let t: PluginType = serde_json::from_str("\"format_handler\"").unwrap();
+        assert_eq!(t, PluginType::FormatHandler);
+
+        let t: PluginType = serde_json::from_str("\"storage_backend\"").unwrap();
+        assert_eq!(t, PluginType::StorageBackend);
+
+        let t: PluginType = serde_json::from_str("\"webhook\"").unwrap();
+        assert_eq!(t, PluginType::Webhook);
+    }
+
+    #[test]
+    fn test_plugin_type_deserialize_invalid() {
+        let result = serde_json::from_str::<PluginType>("\"handler\"");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // ListPluginsQuery serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_plugins_query_deserialize_empty() {
+        let q: ListPluginsQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.status.is_none());
+        assert!(q.plugin_type.is_none());
+    }
+
+    #[test]
+    fn test_list_plugins_query_deserialize_with_values() {
+        let q: ListPluginsQuery = serde_json::from_str(
+            r#"{"status": "active", "type": "webhook"}"#,
+        )
+        .unwrap();
+        assert_eq!(q.status.as_deref(), Some("active"));
+        assert_eq!(q.plugin_type.as_deref(), Some("webhook"));
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginManifest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_manifest_deserialize_minimal() {
+        let json = r#"{
+            "name": "my-plugin",
+            "version": "1.0.0",
+            "display_name": "My Plugin",
+            "plugin_type": "webhook"
+        }"#;
+        let m: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.name, "my-plugin");
+        assert_eq!(m.version, "1.0.0");
+        assert_eq!(m.display_name, "My Plugin");
+        assert_eq!(m.plugin_type, "webhook");
+        assert!(m.description.is_none());
+        assert!(m.author.is_none());
+        assert!(m.homepage.is_none());
+        assert!(m.config_schema.is_none());
+    }
+
+    #[test]
+    fn test_plugin_manifest_deserialize_full() {
+        let json = r#"{
+            "name": "my-plugin",
+            "version": "2.0.0",
+            "display_name": "My Plugin",
+            "description": "A test plugin",
+            "author": "Test Author",
+            "homepage": "https://example.com",
+            "plugin_type": "format_handler",
+            "config_schema": {"type": "object"}
+        }"#;
+        let m: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.name, "my-plugin");
+        assert_eq!(m.version, "2.0.0");
+        assert_eq!(m.description.as_deref(), Some("A test plugin"));
+        assert_eq!(m.author.as_deref(), Some("Test Author"));
+        assert_eq!(m.homepage.as_deref(), Some("https://example.com"));
+        assert_eq!(m.plugin_type, "format_handler");
+        assert!(m.config_schema.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // InstallFromGitRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_install_from_git_request_minimal() {
+        let json = r#"{"url": "https://github.com/org/repo.git"}"#;
+        let r: InstallFromGitRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.url, "https://github.com/org/repo.git");
+        assert!(r.git_ref.is_none());
+    }
+
+    #[test]
+    fn test_install_from_git_request_with_ref() {
+        let json = r#"{"url": "https://github.com/org/repo.git", "ref": "v1.0.0"}"#;
+        let r: InstallFromGitRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.url, "https://github.com/org/repo.git");
+        assert_eq!(r.git_ref.as_deref(), Some("v1.0.0"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestFormatRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_test_format_request_defaults() {
+        let json = r#"{"path": "test.whl", "content": "data"}"#;
+        let r: TestFormatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.path, "test.whl");
+        assert_eq!(r.content, "data");
+        assert!(!r.base64); // default is false
+    }
+
+    #[test]
+    fn test_test_format_request_with_base64() {
+        let json = r#"{"path": "test.whl", "content": "aGVsbG8=", "base64": true}"#;
+        let r: TestFormatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.path, "test.whl");
+        assert_eq!(r.content, "aGVsbG8=");
+        assert!(r.base64);
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdatePluginConfigRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_plugin_config_request() {
+        let json = r#"{"config": {"key": "value", "count": 42}}"#;
+        let r: UpdatePluginConfigRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.config["key"], "value");
+        assert_eq!(r.config["count"], 42);
+    }
+
+    // -----------------------------------------------------------------------
+    // InstallFromLocalRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_install_from_local_request() {
+        let json = r#"{"path": "/opt/plugins/my-plugin"}"#;
+        let r: InstallFromLocalRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(r.path, "/opt/plugins/my-plugin");
+    }
+
+    // -----------------------------------------------------------------------
+    // EventsQuery serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_events_query_empty() {
+        let q: EventsQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.limit.is_none());
+    }
+
+    #[test]
+    fn test_events_query_with_limit() {
+        let q: EventsQuery = serde_json::from_str(r#"{"limit": 50}"#).unwrap();
+        assert_eq!(q.limit, Some(50));
+    }
+
+    // -----------------------------------------------------------------------
+    // UninstallQuery serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_uninstall_query_empty() {
+        let q: UninstallQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.force.is_none());
+    }
+
+    #[test]
+    fn test_uninstall_query_with_force() {
+        let q: UninstallQuery = serde_json::from_str(r#"{"force": true}"#).unwrap();
+        assert_eq!(q.force, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // ListFormatsQuery serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_formats_query_empty() {
+        let q: ListFormatsQuery = serde_json::from_str("{}").unwrap();
+        assert!(q.handler_type.is_none());
+        assert!(q.enabled.is_none());
+    }
+
+    #[test]
+    fn test_list_formats_query_with_values() {
+        let q: ListFormatsQuery =
+            serde_json::from_str(r#"{"type": "core", "enabled": true}"#).unwrap();
+        assert_eq!(q.handler_type.as_deref(), Some("core"));
+        assert_eq!(q.enabled, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginResponse construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_response_construction() {
+        let id = Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let resp = PluginResponse {
+            id,
+            name: "test-plugin".to_string(),
+            version: "1.0.0".to_string(),
+            display_name: "Test Plugin".to_string(),
+            description: Some("A test plugin".to_string()),
+            author: Some("Author".to_string()),
+            homepage: None,
+            status: "active".to_string(),
+            plugin_type: "webhook".to_string(),
+            config_schema: None,
+            installed_at: now,
+            enabled_at: Some(now),
+        };
+        assert_eq!(resp.name, "test-plugin");
+        assert_eq!(resp.version, "1.0.0");
+        assert_eq!(resp.status, "active");
+        assert_eq!(resp.plugin_type, "webhook");
+
+        // Verify it serializes to valid JSON
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "test-plugin");
+        assert_eq!(json["version"], "1.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginInstallResponse construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_install_response_serialization() {
+        let resp = PluginInstallResponse {
+            plugin_id: Uuid::new_v4(),
+            name: "unity-format".to_string(),
+            version: "0.1.0".to_string(),
+            format_key: "unity".to_string(),
+            message: "Plugin installed successfully".to_string(),
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "unity-format");
+        assert_eq!(json["version"], "0.1.0");
+        assert_eq!(json["format_key"], "unity");
+        assert_eq!(json["message"], "Plugin installed successfully");
+    }
+
+    // -----------------------------------------------------------------------
+    // TestFormatResponse / TestMetadata serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_test_format_response_valid() {
+        let resp = TestFormatResponse {
+            valid: true,
+            validation_error: None,
+            metadata: Some(TestMetadata {
+                path: "packages/my-pkg-1.0.0.tar.gz".to_string(),
+                version: Some("1.0.0".to_string()),
+                content_type: "application/gzip".to_string(),
+                size_bytes: 12345,
+            }),
+            parse_error: None,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], true);
+        assert!(json["validation_error"].is_null());
+        assert_eq!(json["metadata"]["path"], "packages/my-pkg-1.0.0.tar.gz");
+        assert_eq!(json["metadata"]["version"], "1.0.0");
+        assert_eq!(json["metadata"]["size_bytes"], 12345);
+    }
+
+    #[test]
+    fn test_test_format_response_with_error() {
+        let resp = TestFormatResponse {
+            valid: false,
+            validation_error: Some("Invalid format".to_string()),
+            metadata: None,
+            parse_error: None,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], false);
+        assert_eq!(json["validation_error"], "Invalid format");
+        assert!(json["metadata"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginConfigResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_config_response_serialization() {
+        let resp = PluginConfigResponse {
+            plugin_id: Uuid::new_v4(),
+            config: serde_json::json!({"max_size": 1024, "enabled": true}),
+            schema: Some(serde_json::json!({"type": "object"})),
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["config"]["max_size"], 1024);
+        assert_eq!(json["config"]["enabled"], true);
+        assert_eq!(json["schema"]["type"], "object");
+    }
+
+    // -----------------------------------------------------------------------
+    // WasmPluginResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_plugin_response_serialization() {
+        let now = chrono::Utc::now();
+        let resp = WasmPluginResponse {
+            id: Uuid::new_v4(),
+            name: "unity-format".to_string(),
+            version: "0.1.0".to_string(),
+            display_name: "Unity Package Format".to_string(),
+            description: Some("Handles Unity .unitypackage files".to_string()),
+            author: Some("Test Author".to_string()),
+            homepage: None,
+            license: Some("MIT".to_string()),
+            status: "active".to_string(),
+            plugin_type: "formathandler".to_string(),
+            source_type: "git".to_string(),
+            source_url: Some("https://github.com/example/unity-format".to_string()),
+            source_ref: Some("v0.1.0".to_string()),
+            capabilities: Some(serde_json::json!(["upload", "download", "search"])),
+            resource_limits: Some(serde_json::json!({"max_memory_mb": 256})),
+            installed_at: now,
+            enabled_at: Some(now),
+            updated_at: now,
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "unity-format");
+        assert_eq!(json["license"], "MIT");
+        assert_eq!(json["source_type"], "git");
+        assert_eq!(json["source_ref"], "v0.1.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_list_response_serialization() {
+        let now = chrono::Utc::now();
+        let resp = PluginListResponse {
+            items: vec![
+                PluginResponse {
+                    id: Uuid::new_v4(),
+                    name: "plugin-a".to_string(),
+                    version: "1.0.0".to_string(),
+                    display_name: "Plugin A".to_string(),
+                    description: None,
+                    author: None,
+                    homepage: None,
+                    status: "active".to_string(),
+                    plugin_type: "webhook".to_string(),
+                    config_schema: None,
+                    installed_at: now,
+                    enabled_at: None,
+                },
+                PluginResponse {
+                    id: Uuid::new_v4(),
+                    name: "plugin-b".to_string(),
+                    version: "2.0.0".to_string(),
+                    display_name: "Plugin B".to_string(),
+                    description: Some("B".to_string()),
+                    author: None,
+                    homepage: None,
+                    status: "disabled".to_string(),
+                    plugin_type: "custom".to_string(),
+                    config_schema: None,
+                    installed_at: now,
+                    enabled_at: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&resp).unwrap();
+        let items = json["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["name"], "plugin-a");
+        assert_eq!(items[1]["name"], "plugin-b");
+    }
+}

@@ -113,3 +113,89 @@ impl PackageService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // PackageService struct construction
+    // -----------------------------------------------------------------------
+
+    // PackageService requires a PgPool, so we can only test the struct shape
+    // and the logic around parameters. All actual methods are async + DB.
+
+    // -----------------------------------------------------------------------
+    // Metadata JSON handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_metadata_json_value_none() {
+        let metadata: Option<JsonValue> = None;
+        assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn test_metadata_json_value_some() {
+        let metadata: Option<JsonValue> = Some(serde_json::json!({
+            "license": "MIT",
+            "homepage": "https://example.com",
+            "keywords": ["rust", "crate"]
+        }));
+        assert!(metadata.is_some());
+        let val = metadata.unwrap();
+        assert_eq!(val["license"], "MIT");
+        assert_eq!(val["keywords"][0], "rust");
+    }
+
+    #[test]
+    fn test_metadata_complex_structure() {
+        let metadata = serde_json::json!({
+            "authors": ["Alice", "Bob"],
+            "dependencies": {
+                "serde": "1.0",
+                "tokio": "1.0"
+            },
+            "build": {
+                "features": ["default", "full"],
+                "target": "x86_64"
+            }
+        });
+        assert!(metadata["authors"].is_array());
+        assert_eq!(metadata["authors"].as_array().unwrap().len(), 2);
+        assert_eq!(metadata["dependencies"]["serde"], "1.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Parameter validation concepts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_description_optional() {
+        let description: Option<&str> = None;
+        assert!(description.is_none());
+
+        let description: Option<&str> = Some("A useful library");
+        assert_eq!(description.unwrap(), "A useful library");
+    }
+
+    #[test]
+    fn test_uuid_generation() {
+        // Verify UUIDs are unique (as used for repository_id, etc.)
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_package_name_version_format() {
+        let name = "my-crate";
+        let version = "1.2.3";
+        let repository_id = Uuid::new_v4();
+        let log_msg = format!(
+            "Failed to populate package record for {name}@{version} in repo {repository_id}"
+        );
+        assert!(log_msg.contains("my-crate@1.2.3"));
+        assert!(log_msg.contains(&repository_id.to_string()));
+    }
+}

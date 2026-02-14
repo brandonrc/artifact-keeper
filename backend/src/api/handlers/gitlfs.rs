@@ -1031,6 +1031,470 @@ async fn verify_locks(
 // POST /lfs/:repo_key/locks/:id/unlock - Delete lock
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_auth() {
+        let headers = make_basic_header("git-user", "git-pass");
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("git-user".to_string(), "git-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-lfs-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-lfs-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_none() {
+        let headers = HeaderMap::new();
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("justusername");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_colon_in_password() {
+        let headers = make_basic_header("user", "pa:ss:wd");
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pa:ss:wd".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_oid
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_oid_valid() {
+        let oid = "a" .repeat(64);
+        assert!(validate_oid(&oid).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oid_valid_hex() {
+        let oid = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        assert_eq!(oid.len(), 64);
+        assert!(validate_oid(oid).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oid_too_short() {
+        let oid = "abc123";
+        assert!(validate_oid(oid).is_err());
+    }
+
+    #[test]
+    fn test_validate_oid_too_long() {
+        let oid = "a".repeat(65);
+        assert!(validate_oid(&oid).is_err());
+    }
+
+    #[test]
+    fn test_validate_oid_non_hex() {
+        let oid = "g".repeat(64);
+        assert!(validate_oid(&oid).is_err());
+    }
+
+    #[test]
+    fn test_validate_oid_mixed_case_hex() {
+        let oid = "ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789";
+        assert_eq!(oid.len(), 64);
+        assert!(validate_oid(oid).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oid_empty() {
+        assert!(validate_oid("").is_err());
+    }
+
+    #[test]
+    fn test_validate_oid_with_spaces() {
+        let oid = format!("{} ", "a".repeat(63));
+        assert!(validate_oid(&oid).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // LFS content type constant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lfs_content_type() {
+        assert_eq!(LFS_CONTENT_TYPE, "application/vnd.git-lfs+json");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_base_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_base_url_default() {
+        let headers = HeaderMap::new();
+        let url = build_base_url(&headers, "my-repo");
+        assert_eq!(url, "http://localhost/lfs/my-repo");
+    }
+
+    #[test]
+    fn test_build_base_url_with_host_and_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("git.example.com"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let url = build_base_url(&headers, "my-lfs");
+        assert_eq!(url, "https://git.example.com/lfs/my-lfs");
+    }
+
+    #[test]
+    fn test_build_base_url_host_only() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("example.com:8080"));
+        let url = build_base_url(&headers, "repo");
+        assert_eq!(url, "http://example.com:8080/lfs/repo");
+    }
+
+    // -----------------------------------------------------------------------
+    // lfs_json_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lfs_json_response() {
+        let data = serde_json::json!({"key": "value"});
+        let response = lfs_json_response(StatusCode::OK, &data);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            LFS_CONTENT_TYPE
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // lfs_error_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lfs_error_response() {
+        let response = lfs_error_response(StatusCode::NOT_FOUND, "Object not found");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            LFS_CONTENT_TYPE
+        );
+    }
+
+    #[test]
+    fn test_lfs_error_response_unauthorized() {
+        let response = lfs_error_response(StatusCode::UNAUTHORIZED, "Auth required");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // BatchRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_batch_request_deserialization() {
+        let json = r#"{
+            "operation": "download",
+            "transfers": ["basic"],
+            "objects": [
+                {"oid": "abc123", "size": 1024}
+            ]
+        }"#;
+        let req: BatchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.operation, "download");
+        assert_eq!(req.transfers, vec!["basic"]);
+        assert_eq!(req.objects.len(), 1);
+        assert_eq!(req.objects[0].oid, "abc123");
+        assert_eq!(req.objects[0].size, 1024);
+    }
+
+    #[test]
+    fn test_batch_request_empty_transfers() {
+        let json = r#"{
+            "operation": "upload",
+            "objects": [{"oid": "def456", "size": 512}]
+        }"#;
+        let req: BatchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.operation, "upload");
+        assert!(req.transfers.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // BatchResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_batch_response_serialization() {
+        let response = BatchResponse {
+            transfer: "basic".to_string(),
+            objects: vec![BatchResponseObject {
+                oid: "abcdef".to_string(),
+                size: 1024,
+                authenticated: Some(true),
+                actions: None,
+                error: None,
+            }],
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["transfer"], "basic");
+        assert_eq!(json["objects"][0]["oid"], "abcdef");
+        assert_eq!(json["objects"][0]["authenticated"], true);
+        // actions and error should be skipped when None
+        assert!(json["objects"][0].get("actions").is_none());
+        assert!(json["objects"][0].get("error").is_none());
+    }
+
+    #[test]
+    fn test_batch_response_with_actions() {
+        let response = BatchResponseObject {
+            oid: "test_oid".to_string(),
+            size: 2048,
+            authenticated: Some(true),
+            actions: Some(BatchActions {
+                download: Some(BatchAction {
+                    href: "https://example.com/download".to_string(),
+                    header: serde_json::json!({}),
+                    expires_in: 3600,
+                }),
+                upload: None,
+                verify: None,
+            }),
+            error: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(
+            json["actions"]["download"]["href"],
+            "https://example.com/download"
+        );
+        assert_eq!(json["actions"]["download"]["expires_in"], 3600);
+        assert!(json["actions"].get("upload").is_none());
+    }
+
+    #[test]
+    fn test_batch_response_with_error() {
+        let response = BatchResponseObject {
+            oid: "err_oid".to_string(),
+            size: 0,
+            authenticated: None,
+            actions: None,
+            error: Some(LfsError {
+                code: 404,
+                message: "Not found".to_string(),
+            }),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["error"]["code"], 404);
+        assert_eq!(json["error"]["message"], "Not found");
+    }
+
+    // -----------------------------------------------------------------------
+    // VerifyRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_verify_request_deserialization() {
+        let json = r#"{"oid":"abc123","size":1024}"#;
+        let req: VerifyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.oid, "abc123");
+        assert_eq!(req.size, 1024);
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateLockRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_lock_request() {
+        let json = r#"{"path":"models/big-model.bin","ref":{"name":"refs/heads/main"}}"#;
+        let req: CreateLockRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.path, "models/big-model.bin");
+        assert_eq!(req.lock_ref.unwrap().name, "refs/heads/main");
+    }
+
+    #[test]
+    fn test_create_lock_request_no_ref() {
+        let json = r#"{"path":"data/file.txt"}"#;
+        let req: CreateLockRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.path, "data/file.txt");
+        assert!(req.lock_ref.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // UnlockRequest deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unlock_request_force() {
+        let json = r#"{"force":true}"#;
+        let req: UnlockRequest = serde_json::from_str(json).unwrap();
+        assert!(req.force);
+    }
+
+    #[test]
+    fn test_unlock_request_default() {
+        let json = r#"{}"#;
+        let req: UnlockRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.force);
+    }
+
+    // -----------------------------------------------------------------------
+    // LockInfo / LockResponse / LockListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lock_response_serialization() {
+        let response = LockResponse {
+            lock: LockInfo {
+                id: "lock-1".to_string(),
+                path: "images/large.bin".to_string(),
+                locked_at: "2024-01-01T00:00:00Z".to_string(),
+                owner: LockOwner {
+                    name: "alice".to_string(),
+                },
+            },
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["lock"]["id"], "lock-1");
+        assert_eq!(json["lock"]["path"], "images/large.bin");
+        assert_eq!(json["lock"]["owner"]["name"], "alice");
+    }
+
+    #[test]
+    fn test_lock_list_response_empty() {
+        let response = LockListResponse {
+            locks: vec![],
+            next_cursor: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["locks"].as_array().unwrap().len(), 0);
+        assert!(json.get("next_cursor").is_none());
+    }
+
+    #[test]
+    fn test_verify_locks_response() {
+        let response = VerifyLocksResponse {
+            ours: vec![LockInfo {
+                id: "1".to_string(),
+                path: "a.bin".to_string(),
+                locked_at: "2024-01-01T00:00:00Z".to_string(),
+                owner: LockOwner {
+                    name: "me".to_string(),
+                },
+            }],
+            theirs: vec![],
+            next_cursor: None,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["ours"].as_array().unwrap().len(), 1);
+        assert_eq!(json["theirs"].as_array().unwrap().len(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage key formatting
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lfs_storage_key_format() {
+        let oid = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let storage_key = format!("gitlfs/{}/{}", &oid[..2], oid);
+        assert_eq!(
+            storage_key,
+            "gitlfs/ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
+    }
+
+    #[test]
+    fn test_lfs_artifact_path_format() {
+        let oid = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let artifact_path = format!("lfs/objects/{}/{}", &oid[..2], oid);
+        assert!(artifact_path.starts_with("lfs/objects/ab/"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let info = RepoInfo {
+            id,
+            storage_path: "/data/lfs".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert!(info.upstream_url.is_none());
+    }
+}
+
 async fn delete_lock(
     State(state): State<SharedState>,
     Path((repo_key, lock_id)): Path<(String, String)>,

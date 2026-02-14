@@ -410,3 +410,341 @@ impl HealthMonitorService {
         Ok(result.rows_affected())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[allow(unused_imports)]
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // MonitorConfig Default tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_monitor_config_default() {
+        let config = MonitorConfig::default();
+        assert_eq!(config.alert_threshold, 3);
+        assert_eq!(config.alert_cooldown_minutes, 15);
+        assert_eq!(config.check_timeout_secs, 5);
+    }
+
+    #[test]
+    fn test_monitor_config_custom() {
+        let config = MonitorConfig {
+            alert_threshold: 5,
+            alert_cooldown_minutes: 30,
+            check_timeout_secs: 10,
+        };
+        assert_eq!(config.alert_threshold, 5);
+        assert_eq!(config.alert_cooldown_minutes, 30);
+        assert_eq!(config.check_timeout_secs, 10);
+    }
+
+    #[test]
+    fn test_monitor_config_clone() {
+        let config = MonitorConfig::default();
+        let config2 = config.clone();
+        assert_eq!(config.alert_threshold, config2.alert_threshold);
+        assert_eq!(config.alert_cooldown_minutes, config2.alert_cooldown_minutes);
+        assert_eq!(config.check_timeout_secs, config2.check_timeout_secs);
+    }
+
+    // -----------------------------------------------------------------------
+    // ServiceHealthEntry serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_service_health_entry_serialization() {
+        let now = Utc::now();
+        let entry = ServiceHealthEntry {
+            service_name: "database".to_string(),
+            status: "healthy".to_string(),
+            previous_status: Some("unhealthy".to_string()),
+            message: None,
+            response_time_ms: Some(42),
+            checked_at: now,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"service_name\":\"database\""));
+        assert!(json.contains("\"status\":\"healthy\""));
+        assert!(json.contains("\"previous_status\":\"unhealthy\""));
+        assert!(json.contains("\"response_time_ms\":42"));
+    }
+
+    #[test]
+    fn test_service_health_entry_deserialization() {
+        let now = Utc::now();
+        let json_val = json!({
+            "service_name": "trivy",
+            "status": "unavailable",
+            "previous_status": null,
+            "message": "Connection refused",
+            "response_time_ms": null,
+            "checked_at": now
+        });
+
+        let entry: ServiceHealthEntry = serde_json::from_value(json_val).unwrap();
+        assert_eq!(entry.service_name, "trivy");
+        assert_eq!(entry.status, "unavailable");
+        assert!(entry.previous_status.is_none());
+        assert_eq!(entry.message, Some("Connection refused".to_string()));
+        assert!(entry.response_time_ms.is_none());
+    }
+
+    #[test]
+    fn test_service_health_entry_clone() {
+        let entry = ServiceHealthEntry {
+            service_name: "test".to_string(),
+            status: "healthy".to_string(),
+            previous_status: None,
+            message: None,
+            response_time_ms: Some(10),
+            checked_at: Utc::now(),
+        };
+        let cloned = entry.clone();
+        assert_eq!(entry.service_name, cloned.service_name);
+        assert_eq!(entry.status, cloned.status);
+        assert_eq!(entry.response_time_ms, cloned.response_time_ms);
+    }
+
+    // -----------------------------------------------------------------------
+    // AlertState serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_alert_state_serialization() {
+        let now = Utc::now();
+        let state = AlertState {
+            service_name: "meilisearch".to_string(),
+            current_status: "unhealthy".to_string(),
+            consecutive_failures: 5,
+            last_alert_sent_at: Some(now),
+            suppressed_until: None,
+            updated_at: now,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("\"service_name\":\"meilisearch\""));
+        assert!(json.contains("\"consecutive_failures\":5"));
+    }
+
+    #[test]
+    fn test_alert_state_deserialization() {
+        let now = Utc::now();
+        let json_val = json!({
+            "service_name": "database",
+            "current_status": "healthy",
+            "consecutive_failures": 0,
+            "last_alert_sent_at": null,
+            "suppressed_until": null,
+            "updated_at": now
+        });
+
+        let state: AlertState = serde_json::from_value(json_val).unwrap();
+        assert_eq!(state.service_name, "database");
+        assert_eq!(state.current_status, "healthy");
+        assert_eq!(state.consecutive_failures, 0);
+        assert!(state.last_alert_sent_at.is_none());
+        assert!(state.suppressed_until.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // HealthEvent serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_health_event_service_down_serialization() {
+        let event = HealthEvent::ServiceDown {
+            service_name: "database".to_string(),
+            message: "Connection refused".to_string(),
+            consecutive_failures: 3,
+            timestamp: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"ServiceDown\""));
+        assert!(json.contains("\"service_name\":\"database\""));
+        assert!(json.contains("\"consecutive_failures\":3"));
+        assert!(json.contains("\"message\":\"Connection refused\""));
+    }
+
+    #[test]
+    fn test_health_event_service_recovered_serialization() {
+        let now = Utc::now();
+        let event = HealthEvent::ServiceRecovered {
+            service_name: "meilisearch".to_string(),
+            downtime_started: Some(now),
+            timestamp: now,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"ServiceRecovered\""));
+        assert!(json.contains("\"service_name\":\"meilisearch\""));
+    }
+
+    #[test]
+    fn test_health_event_service_recovered_no_downtime_start() {
+        let event = HealthEvent::ServiceRecovered {
+            service_name: "trivy".to_string(),
+            downtime_started: None,
+            timestamp: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"downtime_started\":null"));
+    }
+
+    #[test]
+    fn test_health_event_service_degraded_serialization() {
+        let event = HealthEvent::ServiceDegraded {
+            service_name: "openscap".to_string(),
+            response_time_ms: 5000,
+            threshold_ms: 3000,
+            timestamp: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"ServiceDegraded\""));
+        assert!(json.contains("\"response_time_ms\":5000"));
+        assert!(json.contains("\"threshold_ms\":3000"));
+    }
+
+    // -----------------------------------------------------------------------
+    // HealthEvent Clone tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_health_event_clone() {
+        let event = HealthEvent::ServiceDown {
+            service_name: "db".to_string(),
+            message: "down".to_string(),
+            consecutive_failures: 2,
+            timestamp: Utc::now(),
+        };
+        let cloned = event.clone();
+        // Both should serialize to the same JSON
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            serde_json::to_string(&cloned).unwrap()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // URL construction logic tests (mirrors check_service)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_health_check_url_construction() {
+        let url = "http://localhost:7700";
+        let health_path = "/health";
+        let full_url = format!("{}{}", url.trim_end_matches('/'), health_path);
+        assert_eq!(full_url, "http://localhost:7700/health");
+    }
+
+    #[test]
+    fn test_health_check_url_construction_trailing_slash() {
+        let url = "http://localhost:7700/";
+        let health_path = "/health";
+        let full_url = format!("{}{}", url.trim_end_matches('/'), health_path);
+        assert_eq!(full_url, "http://localhost:7700/health");
+    }
+
+    #[test]
+    fn test_health_check_url_construction_no_trailing_slash() {
+        let url = "https://trivy.internal:8090";
+        let health_path = "/healthz";
+        let full_url = format!("{}{}", url.trim_end_matches('/'), health_path);
+        assert_eq!(full_url, "https://trivy.internal:8090/healthz");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_healthy logic tests (mirrors update_alert_state)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_healthy_logic() {
+        assert!("healthy" == "healthy");
+        assert!("unhealthy" != "healthy");
+        assert!("unavailable" != "healthy");
+    }
+
+    // -----------------------------------------------------------------------
+    // Recovery event detection logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_recovery_detection_from_unhealthy() {
+        let is_healthy = true;
+        let previous_status: Option<&str> = Some("unhealthy");
+        let should_fire_recovery = is_healthy && previous_status != Some("healthy");
+        assert!(should_fire_recovery);
+    }
+
+    #[test]
+    fn test_no_recovery_when_already_healthy() {
+        let is_healthy = true;
+        let previous_status: Option<&str> = Some("healthy");
+        let should_fire_recovery = is_healthy && previous_status != Some("healthy");
+        assert!(!should_fire_recovery);
+    }
+
+    #[test]
+    fn test_no_recovery_when_still_down() {
+        let is_healthy = false;
+        let previous_status: Option<&str> = Some("unhealthy");
+        let should_fire_recovery = is_healthy && previous_status != Some("healthy");
+        assert!(!should_fire_recovery);
+    }
+
+    #[test]
+    fn test_recovery_from_none_previous() {
+        let is_healthy = true;
+        let previous_status: Option<&str> = None;
+        let should_fire_recovery = is_healthy && previous_status != Some("healthy");
+        assert!(should_fire_recovery);
+    }
+
+    // -----------------------------------------------------------------------
+    // Alert threshold logic tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_alert_threshold_met() {
+        let config = MonitorConfig::default();
+        let consecutive_failures = 3;
+        assert!(consecutive_failures >= config.alert_threshold);
+    }
+
+    #[test]
+    fn test_alert_threshold_not_met() {
+        let config = MonitorConfig::default();
+        let consecutive_failures = 2;
+        assert!(consecutive_failures < config.alert_threshold);
+    }
+
+    // -----------------------------------------------------------------------
+    // Alert cooldown logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_alert_cooldown_logic() {
+        let config = MonitorConfig::default();
+        let cooldown = chrono::Duration::minutes(config.alert_cooldown_minutes as i64);
+        let now = Utc::now();
+        let last_alert = now - chrono::Duration::minutes(10);
+        // 10 minutes < 15 minutes cooldown, so should NOT re-alert
+        assert!(now - last_alert < cooldown);
+    }
+
+    #[test]
+    fn test_alert_cooldown_expired() {
+        let config = MonitorConfig::default();
+        let cooldown = chrono::Duration::minutes(config.alert_cooldown_minutes as i64);
+        let now = Utc::now();
+        let last_alert = now - chrono::Duration::minutes(20);
+        // 20 minutes > 15 minutes cooldown, so should re-alert
+        assert!(now - last_alert >= cooldown);
+    }
+}

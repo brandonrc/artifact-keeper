@@ -1776,4 +1776,443 @@ mod tests {
         let path = plugins_dir.join(format!("{}.wasm", "test-plugin"));
         assert_eq!(path, PathBuf::from("/tmp/plugins/test-plugin.wasm"));
     }
+
+    // -----------------------------------------------------------------------
+    // PluginInstallResult construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_install_result_fields() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::new_v4(),
+            name: "test-plugin".to_string(),
+            version: "1.0.0".to_string(),
+            format_key: "test-format".to_string(),
+        };
+        assert_eq!(result.name, "test-plugin");
+        assert_eq!(result.version, "1.0.0");
+        assert_eq!(result.format_key, "test-format");
+    }
+
+    #[test]
+    fn test_plugin_install_result_clone() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::new_v4(),
+            name: "my-plugin".to_string(),
+            version: "2.0.0".to_string(),
+            format_key: "my-format".to_string(),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.plugin_id, result.plugin_id);
+        assert_eq!(cloned.name, result.name);
+        assert_eq!(cloned.version, result.version);
+        assert_eq!(cloned.format_key, result.format_key);
+    }
+
+    // -----------------------------------------------------------------------
+    // TestMetadata construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_test_metadata_with_version() {
+        let meta = TestMetadata {
+            path: "com/example/test.jar".to_string(),
+            version: Some("1.0.0".to_string()),
+            content_type: "application/java-archive".to_string(),
+            size_bytes: 12345,
+        };
+        assert_eq!(meta.path, "com/example/test.jar");
+        assert_eq!(meta.version, Some("1.0.0".to_string()));
+        assert_eq!(meta.content_type, "application/java-archive");
+        assert_eq!(meta.size_bytes, 12345);
+    }
+
+    #[test]
+    fn test_test_metadata_without_version() {
+        let meta = TestMetadata {
+            path: "generic/file.bin".to_string(),
+            version: None,
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 0,
+        };
+        assert_eq!(meta.version, None);
+        assert_eq!(meta.size_bytes, 0);
+    }
+
+    #[test]
+    fn test_test_metadata_clone() {
+        let meta = TestMetadata {
+            path: "/test".to_string(),
+            version: Some("1.0".to_string()),
+            content_type: "text/plain".to_string(),
+            size_bytes: 100,
+        };
+        let cloned = meta.clone();
+        assert_eq!(cloned.path, meta.path);
+        assert_eq!(cloned.version, meta.version);
+    }
+
+    // -----------------------------------------------------------------------
+    // Manifest validation through WasmPluginService (validate_manifest)
+    // Tests exercise the service method's error mapping.
+    // We construct manifests programmatically and call validate() directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_manifest_valid() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = r#"
+[plugin]
+name = "test-plugin"
+version = "1.0.0"
+
+[format]
+key = "test-format"
+display_name = "Test Format"
+extensions = [".test"]
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_name_maps_to_validation_error() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "INVALID"
+version = "1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidPluginName(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_version() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "not-a-version"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidVersion(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_format_key() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[format]
+key = "INVALID_KEY"
+display_name = "Test"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidFormatKey(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_missing_display_name() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[format]
+key = "valid-key"
+display_name = ""
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::MissingDisplayName)
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_memory_limits() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+min_memory_mb = 256
+max_memory_mb = 64
+timeout_secs = 5
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidMemoryLimits { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_invalid_timeout() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 0
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidTimeout(0))
+        ));
+    }
+
+    #[test]
+    fn test_validate_manifest_timeout_over_300() {
+        use crate::models::plugin_manifest::{ManifestValidationError, PluginManifest};
+
+        let toml = r#"
+[plugin]
+name = "valid-name"
+version = "1.0.0"
+
+[requirements]
+timeout_secs = 500
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let result = manifest.validate();
+        assert!(matches!(
+            result,
+            Err(ManifestValidationError::InvalidTimeout(500))
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // wasm_path with various inputs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wasm_path_with_hyphens() {
+        let plugins_dir = PathBuf::from("/opt/plugins");
+        let path = plugins_dir.join(format!("{}.wasm", "my-complex-plugin-name"));
+        assert_eq!(
+            path,
+            PathBuf::from("/opt/plugins/my-complex-plugin-name.wasm")
+        );
+    }
+
+    #[test]
+    fn test_wasm_path_with_numbers() {
+        let plugins_dir = PathBuf::from("/data/plugins");
+        let path = plugins_dir.join(format!("{}.wasm", "plugin123"));
+        assert_eq!(path, PathBuf::from("/data/plugins/plugin123.wasm"));
+    }
+
+    #[test]
+    fn test_wasm_path_empty_plugin_name() {
+        let plugins_dir = PathBuf::from("/tmp/plugins");
+        let path = plugins_dir.join(format!("{}.wasm", ""));
+        assert_eq!(path, PathBuf::from("/tmp/plugins/.wasm"));
+    }
+
+    // -----------------------------------------------------------------------
+    // plugins_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugins_dir_path() {
+        let plugins_dir = PathBuf::from("/var/lib/artifact-keeper/plugins");
+        assert_eq!(
+            plugins_dir.to_string_lossy(),
+            "/var/lib/artifact-keeper/plugins"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FormatHandlerType comparisons (used in delete_format_handler)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_handler_type_core_comparison() {
+        use crate::models::format_handler::FormatHandlerType;
+        assert_eq!(FormatHandlerType::Core, FormatHandlerType::Core);
+        assert_ne!(FormatHandlerType::Core, FormatHandlerType::Wasm);
+    }
+
+    #[test]
+    fn test_format_handler_type_wasm_comparison() {
+        use crate::models::format_handler::FormatHandlerType;
+        assert_eq!(FormatHandlerType::Wasm, FormatHandlerType::Wasm);
+        assert_ne!(FormatHandlerType::Wasm, FormatHandlerType::Core);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginSourceType and PluginStatus (used in reload_plugin, uninstall_plugin)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_source_type_equality() {
+        assert_eq!(PluginSourceType::WasmGit, PluginSourceType::WasmGit);
+        assert_eq!(PluginSourceType::WasmZip, PluginSourceType::WasmZip);
+        assert_eq!(PluginSourceType::WasmLocal, PluginSourceType::WasmLocal);
+        assert_eq!(PluginSourceType::Core, PluginSourceType::Core);
+        assert_ne!(PluginSourceType::Core, PluginSourceType::WasmGit);
+    }
+
+    #[test]
+    fn test_plugin_status_equality() {
+        assert_eq!(PluginStatus::Active, PluginStatus::Active);
+        assert_eq!(PluginStatus::Disabled, PluginStatus::Disabled);
+        assert_ne!(PluginStatus::Active, PluginStatus::Disabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // PluginManifest parsing and conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_to_capabilities() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = r#"
+[plugin]
+name = "cap-test"
+version = "1.0.0"
+
+[capabilities]
+parse_metadata = true
+generate_index = true
+validate_artifact = false
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let caps = manifest.to_capabilities();
+        assert!(caps.parse_metadata);
+        assert!(caps.generate_index);
+        assert!(!caps.validate_artifact);
+    }
+
+    #[test]
+    fn test_manifest_to_resource_limits() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = r#"
+[plugin]
+name = "limits-test"
+version = "1.0.0"
+
+[requirements]
+max_memory_mb = 256
+timeout_secs = 30
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let limits = manifest.to_resource_limits();
+        assert_eq!(limits.memory_mb, 256);
+        assert_eq!(limits.timeout_secs, 30);
+        assert_eq!(limits.fuel, 30 * 100_000_000);
+    }
+
+    #[test]
+    fn test_manifest_format_key_extraction() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = r#"
+[plugin]
+name = "format-test"
+version = "1.0.0"
+
+[format]
+key = "my-format"
+display_name = "My Format"
+extensions = [".mf", ".myformat"]
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        let format_key = manifest.format.as_ref().map(|f| f.key.clone());
+        assert_eq!(format_key, Some("my-format".to_string()));
+
+        let extensions = &manifest.format.as_ref().unwrap().extensions;
+        assert_eq!(extensions.len(), 2);
+        assert_eq!(extensions[0], ".mf");
+        assert_eq!(extensions[1], ".myformat");
+    }
+
+    #[test]
+    fn test_manifest_without_format_section() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = r#"
+[plugin]
+name = "no-format"
+version = "1.0.0"
+"#;
+        let manifest = PluginManifest::from_toml(toml).unwrap();
+        assert!(manifest.format.is_none());
+        let format_key = manifest.format.as_ref().map(|f| f.key.clone());
+        assert_eq!(format_key, None);
+    }
+
+    #[test]
+    fn test_manifest_from_toml_invalid() {
+        use crate::models::plugin_manifest::PluginManifest;
+
+        let toml = "this is not valid toml [[[";
+        let result = PluginManifest::from_toml(toml);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Clone + Debug derive tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_plugin_install_result_debug() {
+        let result = PluginInstallResult {
+            plugin_id: Uuid::nil(),
+            name: "debug-test".to_string(),
+            version: "0.1.0".to_string(),
+            format_key: "debug-format".to_string(),
+        };
+        let debug_output = format!("{:?}", result);
+        assert!(debug_output.contains("debug-test"));
+        assert!(debug_output.contains("0.1.0"));
+    }
+
+    #[test]
+    fn test_test_metadata_debug() {
+        let meta = TestMetadata {
+            path: "debug/path".to_string(),
+            version: None,
+            content_type: "text/plain".to_string(),
+            size_bytes: 42,
+        };
+        let debug_output = format!("{:?}", meta);
+        assert!(debug_output.contains("debug/path"));
+        assert!(debug_output.contains("42"));
+    }
 }

@@ -780,3 +780,164 @@ async fn publish_module(
         .body(Body::from(serde_json::to_string(&response_json).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::header::AUTHORIZATION;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer token123"));
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "token123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer token123"));
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("token".to_string(), "token123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwYXNz"));
+        let result = extract_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_none() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_parse_owner_name_valid() {
+        let result = parse_owner_name("puppetlabs-stdlib");
+        assert!(result.is_ok());
+        let (owner, name) = result.unwrap();
+        assert_eq!(owner, "puppetlabs");
+        assert_eq!(name, "stdlib");
+    }
+
+    #[test]
+    fn test_parse_owner_name_multiple_hyphens() {
+        let result = parse_owner_name("puppetlabs-my-module");
+        assert!(result.is_ok());
+        let (owner, name) = result.unwrap();
+        assert_eq!(owner, "puppetlabs");
+        assert_eq!(name, "my-module");
+    }
+
+    #[test]
+    fn test_parse_owner_name_no_hyphen() {
+        let result = parse_owner_name("nohyphen");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_owner_name_empty_owner() {
+        let result = parse_owner_name("-name");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_owner_name_empty_name() {
+        let result = parse_owner_name("owner-");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_owner_name_version_valid() {
+        let result = parse_owner_name_version("puppetlabs-stdlib-1.2.3");
+        assert!(result.is_ok());
+        let (owner, name, version) = result.unwrap();
+        assert_eq!(owner, "puppetlabs");
+        assert_eq!(name, "stdlib");
+        assert_eq!(version, "1.2.3");
+    }
+
+    #[test]
+    fn test_parse_owner_name_version_complex_name() {
+        let result = parse_owner_name_version("myorg-my-complex-module-2.0.0");
+        assert!(result.is_ok());
+        let (owner, name, version) = result.unwrap();
+        assert_eq!(owner, "myorg");
+        assert_eq!(name, "my-complex-module");
+        assert_eq!(version, "2.0.0");
+    }
+
+    #[test]
+    fn test_parse_owner_name_version_no_hyphen() {
+        let result = parse_owner_name_version("nohyphen");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_owner_name_version_only_one_hyphen() {
+        let result = parse_owner_name_version("owner-rest");
+        // "rest" has no last_hyphen, since remainder="rest" and rfind('-') returns None
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_owner_name_version_empty_parts() {
+        let result = parse_owner_name_version("-name-version");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_puppet_module_slug_format() {
+        let owner = "puppetlabs";
+        let name = "apache";
+        let version = "5.0.0";
+        let slug = format!("{}-{}-{}", owner, name, version);
+        assert_eq!(slug, "puppetlabs-apache-5.0.0");
+    }
+
+    #[test]
+    fn test_puppet_filename_format() {
+        let owner = "puppetlabs";
+        let module_name = "ntp";
+        let module_version = "9.0.1";
+        let filename = format!("{}-{}-{}.tar.gz", owner, module_name, module_version);
+        assert_eq!(filename, "puppetlabs-ntp-9.0.1.tar.gz");
+    }
+
+    #[test]
+    fn test_puppet_storage_key_format() {
+        let full_name = "puppetlabs-ntp";
+        let module_version = "9.0.1";
+        let filename = "puppetlabs-ntp-9.0.1.tar.gz";
+        let storage_key = format!("puppet/{}/{}/{}", full_name, module_version, filename);
+        assert_eq!(
+            storage_key,
+            "puppet/puppetlabs-ntp/9.0.1/puppetlabs-ntp-9.0.1.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_puppet_metadata_json() {
+        let owner = "puppetlabs";
+        let module_name = "stdlib";
+        let module_version = "8.0.0";
+        let filename = "puppetlabs-stdlib-8.0.0.tar.gz";
+
+        let metadata = serde_json::json!({
+            "owner": owner,
+            "module_name": module_name,
+            "version": module_version,
+            "filename": filename,
+            "module_json": serde_json::json!(null),
+        });
+
+        assert_eq!(metadata["owner"], "puppetlabs");
+        assert_eq!(metadata["module_name"], "stdlib");
+    }
+}

@@ -587,3 +587,253 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     encoder.write_all(data)?;
     encoder.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Bearer token
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-token-123"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("token".to_string(), "my-token-123".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("token".to_string(), "my-token".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — Basic auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("alice:secret123");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("alice".to_string(), "secret123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("bob:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(creds, Some(("bob".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_colon_in_password() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:p:a:s:s");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        let creds = extract_credentials(&headers);
+        assert_eq!(
+            creds,
+            Some(("user".to_string(), "p:a:s:s".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_credentials — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Digest abc123"),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!not-valid-base64!!!"),
+        );
+        assert!(extract_credentials(&headers).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // gzip_compress
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gzip_compress_roundtrip() {
+        let original = b"Package: ggplot2\nVersion: 3.4.0\n\nPackage: dplyr\nVersion: 1.1.0\n";
+        let compressed = gzip_compress(original).unwrap();
+
+        // Compressed should be different from original (unless very small)
+        assert!(!compressed.is_empty());
+
+        // Decompress and verify roundtrip
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_gzip_compress_empty() {
+        let compressed = gzip_compress(b"").unwrap();
+        assert!(!compressed.is_empty()); // gzip header is still present
+
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        assert!(decompressed.is_empty());
+    }
+
+    #[test]
+    fn test_gzip_compress_large_input() {
+        // A larger input to verify compression actually shrinks it
+        let data = "Package: test\nVersion: 1.0.0\nDepends: R (>= 3.5.0)\n\n"
+            .repeat(100);
+        let compressed = gzip_compress(data.as_bytes()).unwrap();
+
+        // Compressed should be smaller than original for repetitive data
+        assert!(compressed.len() < data.len());
+
+        // Verify roundtrip
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        assert_eq!(decompressed, data.as_bytes());
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 computation (same pattern used in upload_package)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"test CRAN package data";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = format!("{:x}", hasher.finalize());
+
+        // SHA256 is always 64 hex chars
+        assert_eq!(hash.len(), 64);
+        // Same data must produce same hash
+        let mut hasher2 = Sha256::new();
+        hasher2.update(data);
+        let hash2 = format!("{:x}", hasher2.finalize());
+        assert_eq!(hash, hash2);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cran-local".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.storage_path, "/data/cran-local");
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cran-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://cloud.r-project.org".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://cloud.r-project.org")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific path and key patterns used in upload_package
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_path_format() {
+        let pkg_name = "ggplot2";
+        let pkg_version = "3.4.0";
+        let filename = "ggplot2_3.4.0.tar.gz";
+        let artifact_path = format!("{}/{}/{}", pkg_name, pkg_version, filename);
+        assert_eq!(artifact_path, "ggplot2/3.4.0/ggplot2_3.4.0.tar.gz");
+    }
+
+    #[test]
+    fn test_storage_key_format() {
+        let pkg_name = "dplyr";
+        let pkg_version = "1.1.0";
+        let filename = "dplyr_1.1.0.tar.gz";
+        let storage_key = format!("cran/{}/{}/{}", pkg_name, pkg_version, filename);
+        assert_eq!(storage_key, "cran/dplyr/1.1.0/dplyr_1.1.0.tar.gz");
+    }
+
+    #[test]
+    fn test_metadata_json_format() {
+        let pkg_name = "tidyr";
+        let pkg_version = "1.3.0";
+        let filename = "tidyr_1.3.0.tar.gz";
+        let metadata = serde_json::json!({
+            "name": pkg_name,
+            "version": pkg_version,
+            "filename": filename,
+            "is_binary": false,
+        });
+        assert_eq!(metadata["name"], "tidyr");
+        assert_eq!(metadata["version"], "1.3.0");
+        assert_eq!(metadata["is_binary"], false);
+    }
+}

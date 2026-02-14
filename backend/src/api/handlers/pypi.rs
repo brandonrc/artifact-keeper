@@ -1003,3 +1003,253 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // html_escape
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_html_escape_no_special_chars() {
+        assert_eq!(html_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_html_escape_ampersand() {
+        assert_eq!(html_escape("a & b"), "a &amp; b");
+    }
+
+    #[test]
+    fn test_html_escape_less_than() {
+        assert_eq!(html_escape("a < b"), "a &lt; b");
+    }
+
+    #[test]
+    fn test_html_escape_greater_than() {
+        assert_eq!(html_escape("a > b"), "a &gt; b");
+    }
+
+    #[test]
+    fn test_html_escape_quotes() {
+        assert_eq!(html_escape("a \"b\" c"), "a &quot;b&quot; c");
+    }
+
+    #[test]
+    fn test_html_escape_all_special() {
+        assert_eq!(
+            html_escape("<script>alert(\"x&y\")</script>"),
+            "&lt;script&gt;alert(&quot;x&amp;y&quot;)&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn test_html_escape_empty_string() {
+        assert_eq!(html_escape(""), "");
+    }
+
+    #[test]
+    fn test_html_escape_requires_python_version() {
+        assert_eq!(html_escape(">=3.7"), "&gt;=3.7");
+        assert_eq!(html_escape(">=3.7,<4.0"), "&gt;=3.7,&lt;4.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        // "user:pass" in base64 = "dXNlcjpwYXNz"
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        // "useronly" base64 = "dXNlcm9ubHk="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcm9ubHk="),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        // "user:pa:ss" base64 = "dXNlcjpwYTpzcw=="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_empty_password() {
+        let mut headers = HeaderMap::new();
+        // "user:" base64 = "dXNlcjo="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjo="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_metadata_from_wheel
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_metadata_from_wheel_with_valid_wheel() {
+        // Create a minimal valid zip with a METADATA file inside .dist-info
+        let buf = Vec::new();
+        let cursor = std::io::Cursor::new(buf);
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("mypackage-1.0.dist-info/METADATA", options)
+            .unwrap();
+        std::io::Write::write_all(&mut writer, b"Metadata-Version: 2.1\nName: mypackage\nVersion: 1.0\n").unwrap();
+        let cursor = writer.finish().unwrap();
+        let content = cursor.into_inner();
+
+        let result = extract_metadata_from_wheel(&content);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Metadata-Version: 2.1"));
+        assert!(text.contains("Name: mypackage"));
+    }
+
+    #[test]
+    fn test_extract_metadata_from_wheel_no_metadata_file() {
+        let buf = Vec::new();
+        let cursor = std::io::Cursor::new(buf);
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("some-other-file.txt", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"no metadata here").unwrap();
+        let cursor = writer.finish().unwrap();
+        let content = cursor.into_inner();
+
+        let result = extract_metadata_from_wheel(&content);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_metadata_from_wheel_invalid_zip() {
+        let content = b"not a zip file at all";
+        let result = extract_metadata_from_wheel(content);
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_metadata_from_sdist
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_metadata_from_sdist_with_pkg_info() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        // Build a tar.gz with a PKG-INFO file
+        let mut tar_builder = tar::Builder::new(Vec::new());
+        let pkg_info = b"Metadata-Version: 1.0\nName: mypackage\nVersion: 1.0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("mypackage-1.0/PKG-INFO").unwrap();
+        header.set_size(pkg_info.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder
+            .append(&header, &pkg_info[..])
+            .unwrap();
+        let tar_data = tar_builder.into_inner().unwrap();
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_data).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let result = extract_metadata_from_sdist(&gz_data);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Name: mypackage"));
+    }
+
+    #[test]
+    fn test_extract_metadata_from_sdist_no_pkg_info() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut tar_builder = tar::Builder::new(Vec::new());
+        let data = b"some other file content";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("mypackage-1.0/setup.py").unwrap();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder.append(&header, &data[..]).unwrap();
+        let tar_data = tar_builder.into_inner().unwrap();
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_data).unwrap();
+        let gz_data = gz.finish().unwrap();
+
+        let result = extract_metadata_from_sdist(&gz_data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_metadata_from_sdist_invalid_data() {
+        let result = extract_metadata_from_sdist(b"not a tar.gz");
+        assert!(result.is_none());
+    }
+}

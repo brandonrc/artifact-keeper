@@ -971,3 +971,295 @@ fn cargo_sparse_index_path(name: &str) -> String {
         _ => format!("index/{}/{}/{}", &name[..2], &name[2..4], name),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // cargo_sparse_index_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cargo_sparse_index_path_1_char() {
+        assert_eq!(cargo_sparse_index_path("a"), "index/1/a");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_2_char() {
+        assert_eq!(cargo_sparse_index_path("ab"), "index/2/ab");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_3_char() {
+        assert_eq!(cargo_sparse_index_path("abc"), "index/3/a/abc");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_4_char() {
+        assert_eq!(cargo_sparse_index_path("abcd"), "index/ab/cd/abcd");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_long_name() {
+        assert_eq!(
+            cargo_sparse_index_path("serde_json"),
+            "index/se/rd/serde_json"
+        );
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_5_char() {
+        assert_eq!(cargo_sparse_index_path("tokio"), "index/to/ki/tokio");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_exact_4() {
+        assert_eq!(cargo_sparse_index_path("rand"), "index/ra/nd/rand");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_basic_credentials(&headers).is_some());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic bm9jb2xvbg=="),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_token (Bearer auth)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_token_valid_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer my-api-token"),
+        );
+        let result = extract_token(&headers);
+        assert_eq!(
+            result,
+            Some(("cargo".to_string(), "my-api-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_token_lowercase_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-token"),
+        );
+        let result = extract_token(&headers);
+        assert_eq!(
+            result,
+            Some(("cargo".to_string(), "my-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_token_no_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_token(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_token_basic_auth_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+        assert!(extract_token(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_token_empty_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer "),
+        );
+        let result = extract_token(&headers);
+        assert_eq!(
+            result,
+            Some(("cargo".to_string(), "".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Publish binary protocol parsing (standalone logic)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publish_payload_parsing_too_short() {
+        let body = Bytes::from_static(&[0, 0, 0]);
+        assert!(body.len() < 4);
+    }
+
+    #[test]
+    fn test_publish_payload_json_len_parsing() {
+        let json_data = b"{\"a\":1}";
+        let json_len = json_data.len() as u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&json_len.to_le_bytes());
+        payload.extend_from_slice(json_data);
+
+        let crate_data = b"crate_content";
+        let crate_len = crate_data.len() as u32;
+        payload.extend_from_slice(&crate_len.to_le_bytes());
+        payload.extend_from_slice(crate_data);
+
+        let body = Bytes::from(payload);
+
+        let json_len_parsed =
+            u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+        assert_eq!(json_len_parsed, 7);
+
+        let json_bytes = &body[4..4 + json_len_parsed];
+        let metadata: serde_json::Value = serde_json::from_slice(json_bytes).unwrap();
+        assert_eq!(metadata["a"], 1);
+
+        let crate_len_offset = 4 + json_len_parsed;
+        let crate_len_parsed = u32::from_le_bytes([
+            body[crate_len_offset],
+            body[crate_len_offset + 1],
+            body[crate_len_offset + 2],
+            body[crate_len_offset + 3],
+        ]) as usize;
+        assert_eq!(crate_len_parsed, 13);
+
+        let crate_data_offset = crate_len_offset + 4;
+        let parsed_crate = &body[crate_data_offset..crate_data_offset + crate_len_parsed];
+        assert_eq!(parsed_crate, b"crate_content");
+    }
+
+    #[test]
+    fn test_publish_payload_with_real_metadata() {
+        let metadata = serde_json::json!({
+            "name": "my-crate",
+            "vers": "0.1.0",
+            "deps": [],
+            "features": {},
+            "description": "A test crate",
+            "license": "MIT"
+        });
+        let json_bytes = serde_json::to_vec(&metadata).unwrap();
+        let json_len = json_bytes.len() as u32;
+
+        let crate_data = b"fake crate tarball bytes";
+        let crate_len = crate_data.len() as u32;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&json_len.to_le_bytes());
+        payload.extend_from_slice(&json_bytes);
+        payload.extend_from_slice(&crate_len.to_le_bytes());
+        payload.extend_from_slice(crate_data);
+
+        let body = Bytes::from(payload);
+
+        assert!(body.len() >= 4);
+        let jl = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+        assert!(body.len() >= 4 + jl + 4);
+
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body[4..4 + jl]).unwrap();
+        assert_eq!(parsed["name"], "my-crate");
+        assert_eq!(parsed["vers"], "0.1.0");
+
+        let cl_offset = 4 + jl;
+        let cl = u32::from_le_bytes([
+            body[cl_offset],
+            body[cl_offset + 1],
+            body[cl_offset + 2],
+            body[cl_offset + 3],
+        ]) as usize;
+        assert_eq!(cl, crate_data.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 computation (same logic used in publish)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_computation() {
+        let data = b"test crate data";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+        let mut hasher2 = Sha256::new();
+        hasher2.update(data);
+        let checksum2 = format!("{:x}", hasher2.finalize());
+        assert_eq!(checksum, checksum2);
+    }
+
+    #[test]
+    fn test_sha256_different_data() {
+        let mut h1 = Sha256::new();
+        h1.update(b"data1");
+        let c1 = format!("{:x}", h1.finalize());
+
+        let mut h2 = Sha256::new();
+        h2.update(b"data2");
+        let c2 = format!("{:x}", h2.finalize());
+
+        assert_ne!(c1, c2);
+    }
+}

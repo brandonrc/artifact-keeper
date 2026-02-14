@@ -594,3 +594,369 @@ impl ScanResultService {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::security::{
+        DashboardSummary, Grade, RawFinding, ScanFinding, ScanResult, Severity,
+    };
+
+    // -----------------------------------------------------------------------
+    // ScanResult construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_result_construction() {
+        let result = ScanResult {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            scan_type: "dependency".to_string(),
+            status: "completed".to_string(),
+            findings_count: 10,
+            critical_count: 1,
+            high_count: 2,
+            medium_count: 3,
+            low_count: 3,
+            info_count: 1,
+            scanner_version: Some("trivy-0.50.0".to_string()),
+            error_message: None,
+            started_at: Some(chrono::Utc::now()),
+            completed_at: Some(chrono::Utc::now()),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(result.scan_type, "dependency");
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.findings_count, 10);
+        assert_eq!(result.critical_count, 1);
+        assert!(result.error_message.is_none());
+    }
+
+    #[test]
+    fn test_scan_result_serialization() {
+        let result = ScanResult {
+            id: Uuid::nil(),
+            artifact_id: Uuid::nil(),
+            repository_id: Uuid::nil(),
+            scan_type: "image".to_string(),
+            status: "running".to_string(),
+            findings_count: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            info_count: 0,
+            scanner_version: None,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["scan_type"], "image");
+        assert_eq!(json["status"], "running");
+        assert_eq!(json["findings_count"], 0);
+    }
+
+    #[test]
+    fn test_scan_result_failed_with_error() {
+        let result = ScanResult {
+            id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            scan_type: "malware".to_string(),
+            status: "failed".to_string(),
+            findings_count: 0,
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            info_count: 0,
+            scanner_version: None,
+            error_message: Some("Scanner timed out".to_string()),
+            started_at: Some(chrono::Utc::now()),
+            completed_at: Some(chrono::Utc::now()),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.error_message.as_deref(), Some("Scanner timed out"));
+    }
+
+    // -----------------------------------------------------------------------
+    // RawFinding construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_raw_finding_construction() {
+        let finding = RawFinding {
+            severity: Severity::Critical,
+            title: "CVE-2024-1234".to_string(),
+            description: Some("Remote code execution".to_string()),
+            cve_id: Some("CVE-2024-1234".to_string()),
+            affected_component: Some("openssl".to_string()),
+            affected_version: Some("1.0.2".to_string()),
+            fixed_version: Some("1.0.3".to_string()),
+            source: Some("trivy".to_string()),
+            source_url: Some("https://nvd.nist.gov/vuln/detail/CVE-2024-1234".to_string()),
+        };
+        assert_eq!(finding.severity, Severity::Critical);
+        assert_eq!(finding.title, "CVE-2024-1234");
+    }
+
+    #[test]
+    fn test_raw_finding_minimal() {
+        let finding = RawFinding {
+            severity: Severity::Info,
+            title: "Informational finding".to_string(),
+            description: None,
+            cve_id: None,
+            affected_component: None,
+            affected_version: None,
+            fixed_version: None,
+            source: None,
+            source_url: None,
+        };
+        assert_eq!(finding.severity, Severity::Info);
+        assert!(finding.description.is_none());
+    }
+
+    #[test]
+    fn test_raw_finding_severity_serialization_for_db() {
+        // The create_findings method serializes severity to JSON then extracts string
+        let severity = Severity::Critical;
+        let severity_str = serde_json::to_value(severity)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "info".to_string());
+        assert_eq!(severity_str, "critical");
+    }
+
+    #[test]
+    fn test_raw_finding_severity_serialization_high() {
+        let severity = Severity::High;
+        let severity_str = serde_json::to_value(severity)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "info".to_string());
+        assert_eq!(severity_str, "high");
+    }
+
+    #[test]
+    fn test_raw_finding_severity_serialization_medium() {
+        let severity = Severity::Medium;
+        let severity_str = serde_json::to_value(severity)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "info".to_string());
+        assert_eq!(severity_str, "medium");
+    }
+
+    #[test]
+    fn test_raw_finding_severity_serialization_low() {
+        let severity = Severity::Low;
+        let severity_str = serde_json::to_value(severity)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "info".to_string());
+        assert_eq!(severity_str, "low");
+    }
+
+    #[test]
+    fn test_raw_finding_severity_serialization_info() {
+        let severity = Severity::Info;
+        let severity_str = serde_json::to_value(severity)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "info".to_string());
+        assert_eq!(severity_str, "info");
+    }
+
+    // -----------------------------------------------------------------------
+    // ScanFinding construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_finding_construction() {
+        let finding = ScanFinding {
+            id: Uuid::new_v4(),
+            scan_result_id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            severity: "critical".to_string(),
+            title: "SQL Injection".to_string(),
+            description: Some("User input not sanitized".to_string()),
+            cve_id: Some("CVE-2024-5678".to_string()),
+            affected_component: Some("webapp".to_string()),
+            affected_version: Some("2.0".to_string()),
+            fixed_version: Some("2.1".to_string()),
+            source: Some("scanner".to_string()),
+            source_url: None,
+            is_acknowledged: false,
+            acknowledged_by: None,
+            acknowledged_reason: None,
+            acknowledged_at: None,
+            created_at: chrono::Utc::now(),
+        };
+        assert!(!finding.is_acknowledged);
+        assert_eq!(finding.severity, "critical");
+    }
+
+    #[test]
+    fn test_scan_finding_acknowledged() {
+        let user_id = Uuid::new_v4();
+        let finding = ScanFinding {
+            id: Uuid::new_v4(),
+            scan_result_id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            severity: "low".to_string(),
+            title: "Deprecated function used".to_string(),
+            description: None,
+            cve_id: None,
+            affected_component: None,
+            affected_version: None,
+            fixed_version: None,
+            source: None,
+            source_url: None,
+            is_acknowledged: true,
+            acknowledged_by: Some(user_id),
+            acknowledged_reason: Some("Accepted risk for legacy code".to_string()),
+            acknowledged_at: Some(chrono::Utc::now()),
+            created_at: chrono::Utc::now(),
+        };
+        assert!(finding.is_acknowledged);
+        assert_eq!(finding.acknowledged_by, Some(user_id));
+    }
+
+    // -----------------------------------------------------------------------
+    // DashboardSummary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dashboard_summary_construction() {
+        let summary = DashboardSummary {
+            repos_with_scanning: 5,
+            total_scans: 100,
+            total_findings: 250,
+            critical_findings: 3,
+            high_findings: 15,
+            policy_violations_blocked: 0,
+            repos_grade_a: 3,
+            repos_grade_f: 1,
+        };
+        assert_eq!(summary.repos_with_scanning, 5);
+        assert_eq!(summary.total_scans, 100);
+        assert_eq!(summary.critical_findings, 3);
+    }
+
+    #[test]
+    fn test_dashboard_summary_serialization() {
+        let summary = DashboardSummary {
+            repos_with_scanning: 10,
+            total_scans: 500,
+            total_findings: 1000,
+            critical_findings: 5,
+            high_findings: 20,
+            policy_violations_blocked: 0,
+            repos_grade_a: 7,
+            repos_grade_f: 0,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["repos_with_scanning"], 10);
+        assert_eq!(json["total_scans"], 500);
+        assert_eq!(json["repos_grade_a"], 7);
+        assert_eq!(json["policy_violations_blocked"], 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Security score calculation logic (from recalculate_score)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_security_score_calculation_no_findings() {
+        let critical = 0;
+        let high = 0;
+        let medium = 0;
+        let low = 0;
+
+        let penalty = critical * Severity::Critical.penalty_weight()
+            + high * Severity::High.penalty_weight()
+            + medium * Severity::Medium.penalty_weight()
+            + low * Severity::Low.penalty_weight();
+        let score = (100 - penalty).clamp(0, 100);
+        let grade = Grade::from_score(score);
+
+        assert_eq!(score, 100);
+        assert_eq!(grade, Grade::A);
+    }
+
+    #[test]
+    fn test_security_score_calculation_one_critical() {
+        let critical = 1;
+        let high = 0;
+        let medium = 0;
+        let low = 0;
+
+        let penalty = critical * Severity::Critical.penalty_weight()
+            + high * Severity::High.penalty_weight()
+            + medium * Severity::Medium.penalty_weight()
+            + low * Severity::Low.penalty_weight();
+        let score = (100 - penalty).clamp(0, 100);
+        let grade = Grade::from_score(score);
+
+        assert_eq!(penalty, 25);
+        assert_eq!(score, 75);
+        assert_eq!(grade, Grade::B);
+    }
+
+    #[test]
+    fn test_security_score_calculation_mixed() {
+        let critical = 1; // 25
+        let high = 2;     // 20
+        let medium = 5;   // 15
+        let low = 10;     // 10
+        // total penalty = 70
+
+        let penalty = critical * Severity::Critical.penalty_weight()
+            + high * Severity::High.penalty_weight()
+            + medium * Severity::Medium.penalty_weight()
+            + low * Severity::Low.penalty_weight();
+        let score = (100 - penalty).clamp(0, 100);
+        let grade = Grade::from_score(score);
+
+        assert_eq!(penalty, 70);
+        assert_eq!(score, 30);
+        assert_eq!(grade, Grade::D);
+    }
+
+    #[test]
+    fn test_security_score_clamped_to_zero() {
+        // Many critical findings -> penalty > 100
+        let critical = 5; // 125
+
+        let penalty = critical * Severity::Critical.penalty_weight();
+        let score = (100 - penalty).clamp(0, 100);
+        let grade = Grade::from_score(score);
+
+        assert_eq!(penalty, 125);
+        assert_eq!(score, 0);
+        assert_eq!(grade, Grade::F);
+    }
+
+    #[test]
+    fn test_security_score_grade_boundary_a() {
+        // Score = 90 -> Grade A
+        let high = 1; // penalty = 10
+        let penalty = high * Severity::High.penalty_weight();
+        let score = (100 - penalty).clamp(0, 100);
+        assert_eq!(score, 90);
+        assert_eq!(Grade::from_score(score), Grade::A);
+    }
+
+    #[test]
+    fn test_grade_as_char_to_string() {
+        // The recalculate_score method uses grade.as_char().to_string()
+        assert_eq!(Grade::A.as_char().to_string(), "A");
+        assert_eq!(Grade::B.as_char().to_string(), "B");
+        assert_eq!(Grade::F.as_char().to_string(), "F");
+    }
+}

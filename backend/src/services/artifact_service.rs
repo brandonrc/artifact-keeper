@@ -781,4 +781,163 @@ mod tests {
             "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // calculate_sha256: edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_calculate_sha256_empty_data() {
+        let hash = ArtifactService::calculate_sha256(b"");
+        // Known SHA-256 of empty string
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn test_calculate_sha256_binary_data() {
+        let data: Vec<u8> = (0..=255).collect();
+        let hash = ArtifactService::calculate_sha256(&data);
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_calculate_sha256_large_data() {
+        let data = vec![0u8; 1_000_000];
+        let hash = ArtifactService::calculate_sha256(&data);
+        assert_eq!(hash.len(), 64);
+        // Same data should yield same hash
+        let hash2 = ArtifactService::calculate_sha256(&data);
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_calculate_sha256_deterministic() {
+        let data = b"deterministic data";
+        let hash1 = ArtifactService::calculate_sha256(data);
+        let hash2 = ArtifactService::calculate_sha256(data);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_calculate_sha256_different_data_different_hash() {
+        let hash1 = ArtifactService::calculate_sha256(b"data A");
+        let hash2 = ArtifactService::calculate_sha256(b"data B");
+        assert_ne!(hash1, hash2);
+    }
+
+    // -----------------------------------------------------------------------
+    // storage_key_from_checksum: edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_storage_key_from_checksum_uses_first_four_chars() {
+        let checksum = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let key = ArtifactService::storage_key_from_checksum(checksum);
+        assert!(key.starts_with("ab/cd/"));
+        assert!(key.ends_with(checksum));
+    }
+
+    #[test]
+    fn test_storage_key_from_checksum_structure() {
+        let checksum = "0000000000000000000000000000000000000000000000000000000000000000";
+        let key = ArtifactService::storage_key_from_checksum(checksum);
+        assert_eq!(
+            key,
+            "00/00/0000000000000000000000000000000000000000000000000000000000000000"
+        );
+        // Verify the structure: prefix/prefix/full_checksum
+        let parts: Vec<&str> = key.split('/').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].len(), 2);
+        assert_eq!(parts[1].len(), 2);
+        assert_eq!(parts[2].len(), 64);
+    }
+
+    #[test]
+    fn test_storage_key_from_checksum_full_roundtrip() {
+        // Compute a SHA-256 and then derive a storage key
+        let data = b"roundtrip test";
+        let checksum = ArtifactService::calculate_sha256(data);
+        let key = ArtifactService::storage_key_from_checksum(&checksum);
+        // Key should contain the full checksum
+        assert!(key.contains(&checksum));
+        // First two dirs are derived from checksum prefix
+        assert!(key.starts_with(&format!("{}/{}/", &checksum[..2], &checksum[2..4])));
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactInfo conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_info_from_artifact_all_fields() {
+        use crate::services::plugin_service::ArtifactInfo;
+        use crate::models::artifact::Artifact;
+        use chrono::Utc;
+
+        let user_id = Uuid::new_v4();
+        let artifact = Artifact {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            path: "com/example/lib/1.0/lib-1.0.jar".to_string(),
+            name: "lib-1.0.jar".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 2048,
+            checksum_sha256: "sha256hash".to_string(),
+            checksum_md5: Some("md5hash".to_string()),
+            checksum_sha1: Some("sha1hash".to_string()),
+            content_type: "application/java-archive".to_string(),
+            storage_key: "sh/a2/sha256hash".to_string(),
+            is_deleted: false,
+            uploaded_by: Some(user_id),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let info = ArtifactInfo::from(&artifact);
+        assert_eq!(info.id, artifact.id);
+        assert_eq!(info.repository_id, artifact.repository_id);
+        assert_eq!(info.path, "com/example/lib/1.0/lib-1.0.jar");
+        assert_eq!(info.name, "lib-1.0.jar");
+        assert_eq!(info.version, Some("1.0".to_string()));
+        assert_eq!(info.size_bytes, 2048);
+        assert_eq!(info.checksum_sha256, "sha256hash");
+        assert_eq!(info.content_type, "application/java-archive");
+        assert_eq!(info.uploaded_by, Some(user_id));
+    }
+
+    #[test]
+    fn test_artifact_info_from_artifact_no_version_no_uploader() {
+        use crate::services::plugin_service::ArtifactInfo;
+        use crate::models::artifact::Artifact;
+        use chrono::Utc;
+
+        let artifact = Artifact {
+            id: Uuid::new_v4(),
+            repository_id: Uuid::new_v4(),
+            path: "generic/file.txt".to_string(),
+            name: "file.txt".to_string(),
+            version: None,
+            size_bytes: 0,
+            checksum_sha256: "empty".to_string(),
+            checksum_md5: None,
+            checksum_sha1: None,
+            content_type: "text/plain".to_string(),
+            storage_key: "em/pt/empty".to_string(),
+            is_deleted: false,
+            uploaded_by: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let info = ArtifactInfo::from(&artifact);
+        assert_eq!(info.version, None);
+        assert_eq!(info.uploaded_by, None);
+        assert_eq!(info.size_bytes, 0);
+    }
 }

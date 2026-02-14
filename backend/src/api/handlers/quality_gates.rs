@@ -969,3 +969,286 @@ async fn evaluate_gate(
     ))
 )]
 pub struct QualityGatesApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // default_true / default_warn
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_true() {
+        assert!(default_true());
+    }
+
+    #[test]
+    fn test_default_warn() {
+        assert_eq!(default_warn(), "warn");
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateGateRequest serde with defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_gate_request_minimal() {
+        let json = serde_json::json!({
+            "name": "basic-gate",
+        });
+        let req: CreateGateRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "basic-gate");
+        assert_eq!(req.repository_id, None);
+        assert_eq!(req.description, None);
+        assert_eq!(req.min_health_score, None);
+        assert_eq!(req.min_security_score, None);
+        assert_eq!(req.min_quality_score, None);
+        assert_eq!(req.min_metadata_score, None);
+        assert_eq!(req.max_critical_issues, None);
+        assert_eq!(req.max_high_issues, None);
+        assert_eq!(req.max_medium_issues, None);
+        assert!(req.required_checks.is_empty());
+        assert!(req.enforce_on_promotion); // default_true
+        assert!(!req.enforce_on_download); // default false
+        assert_eq!(req.action, "warn"); // default_warn
+    }
+
+    #[test]
+    fn test_create_gate_request_full() {
+        let repo_id = Uuid::new_v4();
+        let json = serde_json::json!({
+            "name": "strict-gate",
+            "repository_id": repo_id,
+            "description": "Strict quality gate",
+            "min_health_score": 80,
+            "min_security_score": 90,
+            "min_quality_score": 70,
+            "min_metadata_score": 60,
+            "max_critical_issues": 0,
+            "max_high_issues": 5,
+            "max_medium_issues": 20,
+            "required_checks": ["security", "license", "metadata"],
+            "enforce_on_promotion": false,
+            "enforce_on_download": true,
+            "action": "block",
+        });
+        let req: CreateGateRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, "strict-gate");
+        assert_eq!(req.repository_id, Some(repo_id));
+        assert_eq!(req.description, Some("Strict quality gate".to_string()));
+        assert_eq!(req.min_health_score, Some(80));
+        assert_eq!(req.min_security_score, Some(90));
+        assert_eq!(req.min_quality_score, Some(70));
+        assert_eq!(req.min_metadata_score, Some(60));
+        assert_eq!(req.max_critical_issues, Some(0));
+        assert_eq!(req.max_high_issues, Some(5));
+        assert_eq!(req.max_medium_issues, Some(20));
+        assert_eq!(req.required_checks, vec!["security", "license", "metadata"]);
+        assert!(!req.enforce_on_promotion);
+        assert!(req.enforce_on_download);
+        assert_eq!(req.action, "block");
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateGateRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_gate_request_all_none() {
+        let json = serde_json::json!({});
+        let req: UpdateGateRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, None);
+        assert_eq!(req.description, None);
+        assert_eq!(req.min_health_score, None);
+        assert_eq!(req.is_enabled, None);
+        assert_eq!(req.action, None);
+    }
+
+    #[test]
+    fn test_update_gate_request_partial() {
+        let json = serde_json::json!({
+            "name": "renamed-gate",
+            "is_enabled": false,
+            "action": "block",
+        });
+        let req: UpdateGateRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.name, Some("renamed-gate".to_string()));
+        assert_eq!(req.is_enabled, Some(false));
+        assert_eq!(req.action, Some("block".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // TriggerChecksRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trigger_checks_request_artifact() {
+        let id = Uuid::new_v4();
+        let json = serde_json::json!({ "artifact_id": id });
+        let req: TriggerChecksRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.artifact_id, Some(id));
+        assert_eq!(req.repository_id, None);
+    }
+
+    #[test]
+    fn test_trigger_checks_request_repo() {
+        let id = Uuid::new_v4();
+        let json = serde_json::json!({ "repository_id": id });
+        let req: TriggerChecksRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.artifact_id, None);
+        assert_eq!(req.repository_id, Some(id));
+    }
+
+    // -----------------------------------------------------------------------
+    // SuppressIssueRequest serde
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_suppress_issue_request() {
+        let json = serde_json::json!({ "reason": "Accepted risk" });
+        let req: SuppressIssueRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.reason, "Accepted risk");
+    }
+
+    // -----------------------------------------------------------------------
+    // Response struct construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_health_response_construction() {
+        let now = chrono::Utc::now();
+        let resp = ArtifactHealthResponse {
+            artifact_id: Uuid::new_v4(),
+            health_score: 85,
+            health_grade: "A".to_string(),
+            security_score: Some(90),
+            license_score: Some(100),
+            quality_score: Some(75),
+            metadata_score: Some(80),
+            total_issues: 5,
+            critical_issues: 0,
+            checks_passed: 4,
+            checks_total: 5,
+            last_checked_at: Some(now),
+            checks: vec![],
+        };
+        assert_eq!(resp.health_score, 85);
+        assert_eq!(resp.health_grade, "A");
+        assert_eq!(resp.security_score, Some(90));
+        assert_eq!(resp.critical_issues, 0);
+    }
+
+    #[test]
+    fn test_check_summary_construction() {
+        let cs = CheckSummary {
+            check_type: "security".to_string(),
+            score: Some(95),
+            passed: Some(true),
+            status: "completed".to_string(),
+            issues_count: 2,
+            completed_at: Some(chrono::Utc::now()),
+        };
+        assert_eq!(cs.check_type, "security");
+        assert_eq!(cs.score, Some(95));
+        assert_eq!(cs.passed, Some(true));
+        assert_eq!(cs.issues_count, 2);
+    }
+
+    #[test]
+    fn test_gate_violation_response_construction() {
+        let v = GateViolationResponse {
+            rule: "min_health_score".to_string(),
+            expected: ">= 80".to_string(),
+            actual: "65".to_string(),
+            message: "Health score 65 is below minimum 80".to_string(),
+        };
+        assert_eq!(v.rule, "min_health_score");
+        assert_eq!(v.expected, ">= 80");
+        assert_eq!(v.actual, "65");
+    }
+
+    // -----------------------------------------------------------------------
+    // Grade counting logic (from get_health_dashboard)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_grade_counting() {
+        let grades = vec!["A", "A", "B", "C", "F", "A"];
+        let (mut a, mut b, mut c, mut d, mut f) = (0i64, 0i64, 0i64, 0i64, 0i64);
+        for g in &grades {
+            match *g {
+                "A" => a += 1,
+                "B" => b += 1,
+                "C" => c += 1,
+                "D" => d += 1,
+                _ => f += 1,
+            }
+        }
+        assert_eq!(a, 3);
+        assert_eq!(b, 1);
+        assert_eq!(c, 1);
+        assert_eq!(d, 0);
+        assert_eq!(f, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // HealthDashboardResponse avg_health_score calculation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_avg_health_score_calculation() {
+        let scores: Vec<i64> = vec![80, 90, 70, 100];
+        let total_repositories = scores.len() as i64;
+        let avg = if total_repositories > 0 {
+            (scores.iter().sum::<i64>() / total_repositories) as i32
+        } else {
+            0
+        };
+        assert_eq!(avg, 85);
+    }
+
+    #[test]
+    fn test_avg_health_score_empty() {
+        let scores: Vec<i64> = vec![];
+        let total_repositories = scores.len() as i64;
+        let avg = if total_repositories > 0 {
+            (scores.iter().sum::<i64>() / total_repositories) as i32
+        } else {
+            0
+        };
+        assert_eq!(avg, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trigger_checks_response_serialization() {
+        let resp = TriggerChecksResponse {
+            message: "Queued for 5 artifacts".to_string(),
+            artifacts_queued: 5,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"artifacts_queued\":5"));
+    }
+
+    #[test]
+    fn test_health_dashboard_response_serialization() {
+        let resp = HealthDashboardResponse {
+            total_repositories: 3,
+            total_artifacts_evaluated: 100,
+            avg_health_score: 75,
+            repos_grade_a: 1,
+            repos_grade_b: 1,
+            repos_grade_c: 0,
+            repos_grade_d: 0,
+            repos_grade_f: 1,
+            repositories: vec![],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"total_repositories\":3"));
+        assert!(json.contains("\"avg_health_score\":75"));
+    }
+}

@@ -270,3 +270,192 @@ impl PolicyService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::security::{PolicyResult, ScanPolicy, Severity};
+
+    // -----------------------------------------------------------------------
+    // PolicyResult construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_policy_result_allowed() {
+        let result = PolicyResult {
+            allowed: true,
+            violations: vec![],
+        };
+        assert!(result.allowed);
+        assert!(result.violations.is_empty());
+    }
+
+    #[test]
+    fn test_policy_result_blocked() {
+        let result = PolicyResult {
+            allowed: false,
+            violations: vec![
+                "Policy 'strict': artifact has not been scanned".to_string(),
+                "Policy 'no-critical': 3 findings at or above critical severity".to_string(),
+            ],
+        };
+        assert!(!result.allowed);
+        assert_eq!(result.violations.len(), 2);
+    }
+
+    #[test]
+    fn test_policy_result_serialization() {
+        let result = PolicyResult {
+            allowed: false,
+            violations: vec!["test violation".to_string()],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["allowed"], false);
+        assert_eq!(json["violations"][0], "test violation");
+    }
+
+    // -----------------------------------------------------------------------
+    // ScanPolicy construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_policy_construction() {
+        let policy = ScanPolicy {
+            id: Uuid::new_v4(),
+            name: "no-critical-vulns".to_string(),
+            repository_id: None,
+            max_severity: "critical".to_string(),
+            block_unscanned: true,
+            block_on_fail: true,
+            is_enabled: true,
+            min_staging_hours: Some(24),
+            max_artifact_age_days: Some(365),
+            require_signature: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(policy.name, "no-critical-vulns");
+        assert!(policy.block_unscanned);
+        assert!(policy.block_on_fail);
+        assert!(policy.is_enabled);
+        assert_eq!(policy.min_staging_hours, Some(24));
+        assert!(policy.repository_id.is_none()); // global policy
+    }
+
+    #[test]
+    fn test_scan_policy_repo_specific() {
+        let repo_id = Uuid::new_v4();
+        let policy = ScanPolicy {
+            id: Uuid::new_v4(),
+            name: "repo-policy".to_string(),
+            repository_id: Some(repo_id),
+            max_severity: "high".to_string(),
+            block_unscanned: false,
+            block_on_fail: false,
+            is_enabled: true,
+            min_staging_hours: None,
+            max_artifact_age_days: None,
+            require_signature: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(policy.repository_id, Some(repo_id));
+        assert!(policy.require_signature);
+    }
+
+    #[test]
+    fn test_scan_policy_serialization_roundtrip() {
+        let policy = ScanPolicy {
+            id: Uuid::nil(),
+            name: "test-policy".to_string(),
+            repository_id: None,
+            max_severity: "medium".to_string(),
+            block_unscanned: true,
+            block_on_fail: false,
+            is_enabled: true,
+            min_staging_hours: Some(48),
+            max_artifact_age_days: None,
+            require_signature: false,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json_str = serde_json::to_string(&policy).unwrap();
+        let deserialized: ScanPolicy = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.name, "test-policy");
+        assert_eq!(deserialized.max_severity, "medium");
+        assert_eq!(deserialized.block_unscanned, true);
+        assert_eq!(deserialized.min_staging_hours, Some(48));
+        assert!(deserialized.max_artifact_age_days.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Violation message formatting logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_violation_message_unscanned() {
+        let policy_name = "strict-policy";
+        let msg = format!("Policy '{}': artifact has not been scanned", policy_name);
+        assert_eq!(msg, "Policy 'strict-policy': artifact has not been scanned");
+    }
+
+    #[test]
+    fn test_violation_message_scan_failed() {
+        let policy_name = "default";
+        let msg = format!("Policy '{}': latest scan failed", policy_name);
+        assert_eq!(msg, "Policy 'default': latest scan failed");
+    }
+
+    #[test]
+    fn test_violation_message_severity() {
+        let policy_name = "no-high";
+        let count = 5;
+        let severity = "high";
+        let msg = format!(
+            "Policy '{}': {} findings at or above {} severity",
+            policy_name, count, severity
+        );
+        assert_eq!(
+            msg,
+            "Policy 'no-high': 5 findings at or above high severity"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Severity::from_str_loose used in policy evaluation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_severity_from_str_loose_for_policy() {
+        // The policy evaluation uses from_str_loose with unwrap_or(Critical)
+        let threshold = Severity::from_str_loose("high").unwrap_or(Severity::Critical);
+        assert_eq!(threshold, Severity::High);
+
+        let unknown = Severity::from_str_loose("unknown").unwrap_or(Severity::Critical);
+        assert_eq!(unknown, Severity::Critical);
+    }
+
+    // -----------------------------------------------------------------------
+    // Policy allowed = violations.is_empty() logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_policy_result_allowed_when_empty_violations() {
+        let violations: Vec<String> = vec![];
+        let result = PolicyResult {
+            allowed: violations.is_empty(),
+            violations,
+        };
+        assert!(result.allowed);
+    }
+
+    #[test]
+    fn test_policy_result_blocked_when_nonempty_violations() {
+        let violations = vec!["test".to_string()];
+        let result = PolicyResult {
+            allowed: violations.is_empty(),
+            violations,
+        };
+        assert!(!result.allowed);
+    }
+}

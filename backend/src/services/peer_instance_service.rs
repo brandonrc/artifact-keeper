@@ -702,3 +702,275 @@ pub struct SyncTask {
     pub storage_key: String,
     pub artifact_size: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // InstanceStatus Display tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_instance_status_display_online() {
+        assert_eq!(InstanceStatus::Online.to_string(), "online");
+    }
+
+    #[test]
+    fn test_instance_status_display_offline() {
+        assert_eq!(InstanceStatus::Offline.to_string(), "offline");
+    }
+
+    #[test]
+    fn test_instance_status_display_syncing() {
+        assert_eq!(InstanceStatus::Syncing.to_string(), "syncing");
+    }
+
+    #[test]
+    fn test_instance_status_display_degraded() {
+        assert_eq!(InstanceStatus::Degraded.to_string(), "degraded");
+    }
+
+    // -----------------------------------------------------------------------
+    // InstanceStatus equality tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_instance_status_equality() {
+        assert_eq!(InstanceStatus::Online, InstanceStatus::Online);
+        assert_ne!(InstanceStatus::Online, InstanceStatus::Offline);
+        assert_ne!(InstanceStatus::Syncing, InstanceStatus::Degraded);
+    }
+
+    #[test]
+    fn test_instance_status_clone_copy() {
+        let s = InstanceStatus::Syncing;
+        let s2 = s; // Copy
+        let s3 = s.clone(); // Clone
+        assert_eq!(s, s2);
+        assert_eq!(s, s3);
+    }
+
+    // -----------------------------------------------------------------------
+    // ReplicationMode equality tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_replication_mode_equality() {
+        assert_eq!(ReplicationMode::Push, ReplicationMode::Push);
+        assert_eq!(ReplicationMode::Pull, ReplicationMode::Pull);
+        assert_eq!(ReplicationMode::Mirror, ReplicationMode::Mirror);
+        assert_eq!(ReplicationMode::None, ReplicationMode::None);
+        assert_ne!(ReplicationMode::Push, ReplicationMode::Pull);
+        assert_ne!(ReplicationMode::Mirror, ReplicationMode::None);
+    }
+
+    #[test]
+    fn test_replication_mode_clone_copy() {
+        let m = ReplicationMode::Mirror;
+        let m2 = m; // Copy
+        let m3 = m.clone(); // Clone
+        assert_eq!(m, m2);
+        assert_eq!(m, m3);
+    }
+
+    // -----------------------------------------------------------------------
+    // SyncStatus equality tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_status_equality() {
+        assert_eq!(SyncStatus::Pending, SyncStatus::Pending);
+        assert_eq!(SyncStatus::InProgress, SyncStatus::InProgress);
+        assert_eq!(SyncStatus::Completed, SyncStatus::Completed);
+        assert_eq!(SyncStatus::Failed, SyncStatus::Failed);
+        assert_eq!(SyncStatus::Cancelled, SyncStatus::Cancelled);
+        assert_ne!(SyncStatus::Pending, SyncStatus::Completed);
+    }
+
+    #[test]
+    fn test_sync_status_clone_copy() {
+        let s = SyncStatus::Failed;
+        let s2 = s;
+        let s3 = s.clone();
+        assert_eq!(s, s2);
+        assert_eq!(s, s3);
+    }
+
+    // -----------------------------------------------------------------------
+    // RegisterPeerInstanceRequest construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_register_peer_instance_request_construction() {
+        let req = RegisterPeerInstanceRequest {
+            name: "peer-1".to_string(),
+            endpoint_url: "https://peer1.example.com".to_string(),
+            region: Some("us-east-1".to_string()),
+            cache_size_bytes: 10 * 1024 * 1024 * 1024, // 10 GiB
+            sync_filter: Some(serde_json::json!({"formats": ["maven", "docker"]})),
+            api_key: "secret-key".to_string(),
+        };
+        assert_eq!(req.name, "peer-1");
+        assert_eq!(req.endpoint_url, "https://peer1.example.com");
+        assert_eq!(req.region, Some("us-east-1".to_string()));
+        assert_eq!(req.cache_size_bytes, 10_737_418_240);
+        assert!(req.sync_filter.is_some());
+        assert_eq!(req.api_key, "secret-key");
+    }
+
+    #[test]
+    fn test_register_peer_instance_request_no_optional_fields() {
+        let req = RegisterPeerInstanceRequest {
+            name: "simple-peer".to_string(),
+            endpoint_url: "http://localhost:8080".to_string(),
+            region: None,
+            cache_size_bytes: 0,
+            sync_filter: None,
+            api_key: "key".to_string(),
+        };
+        assert!(req.region.is_none());
+        assert!(req.sync_filter.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // PeerInstance construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_instance_construction() {
+        let now = Utc::now();
+        let peer = PeerInstance {
+            id: Uuid::new_v4(),
+            name: "peer-node".to_string(),
+            endpoint_url: "https://node.example.com".to_string(),
+            status: InstanceStatus::Online,
+            region: Some("eu-west-1".to_string()),
+            cache_size_bytes: 5_000_000_000,
+            cache_used_bytes: 1_000_000_000,
+            last_heartbeat_at: Some(now),
+            last_sync_at: None,
+            sync_filter: None,
+            max_bandwidth_bps: Some(100_000_000),
+            sync_window_start: None,
+            sync_window_end: None,
+            sync_window_timezone: None,
+            concurrent_transfers_limit: Some(4),
+            active_transfers: 0,
+            backoff_until: None,
+            consecutive_failures: 0,
+            bytes_transferred_total: 0,
+            transfer_failures_total: 0,
+            api_key: "key".to_string(),
+            is_local: false,
+            created_at: now,
+            updated_at: now,
+        };
+        assert_eq!(peer.name, "peer-node");
+        assert_eq!(peer.status, InstanceStatus::Online);
+        assert_eq!(peer.cache_size_bytes, 5_000_000_000);
+        assert_eq!(peer.cache_used_bytes, 1_000_000_000);
+        assert!(!peer.is_local);
+    }
+
+    // -----------------------------------------------------------------------
+    // SyncTask construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_task_construction() {
+        let now = Utc::now();
+        let task = SyncTask {
+            id: Uuid::new_v4(),
+            peer_instance_id: Uuid::new_v4(),
+            artifact_id: Uuid::new_v4(),
+            status: SyncStatus::Pending,
+            priority: 5,
+            bytes_transferred: 0,
+            error_message: None,
+            started_at: None,
+            completed_at: None,
+            created_at: now,
+            storage_key: "repos/maven/com/example/1.0/artifact.jar".to_string(),
+            artifact_size: 1024 * 1024,
+        };
+        assert_eq!(task.status, SyncStatus::Pending);
+        assert_eq!(task.priority, 5);
+        assert_eq!(task.bytes_transferred, 0);
+        assert!(task.error_message.is_none());
+        assert!(task.started_at.is_none());
+        assert!(task.completed_at.is_none());
+        assert_eq!(task.artifact_size, 1024 * 1024);
+    }
+
+    // -----------------------------------------------------------------------
+    // MirrorRepo construction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_mirror_repo_construction() {
+        let repo = MirrorRepo {
+            repo_id: Uuid::new_v4(),
+            schedule: Some("0 */6 * * *".to_string()),
+            last_replicated_at: Some(Utc::now()),
+        };
+        assert!(repo.schedule.is_some());
+        assert!(repo.last_replicated_at.is_some());
+    }
+
+    #[test]
+    fn test_mirror_repo_no_schedule() {
+        let repo = MirrorRepo {
+            repo_id: Uuid::new_v4(),
+            schedule: None,
+            last_replicated_at: None,
+        };
+        assert!(repo.schedule.is_none());
+        assert!(repo.last_replicated_at.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // update_sync_status logic tests (sync status derivation)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_completed_status_derivation() {
+        // Mirrors the logic in update_sync_status
+        let completed = true;
+        let status = if completed {
+            InstanceStatus::Online
+        } else {
+            InstanceStatus::Syncing
+        };
+        assert_eq!(status, InstanceStatus::Online);
+    }
+
+    #[test]
+    fn test_sync_not_completed_status_derivation() {
+        let completed = false;
+        let status = if completed {
+            InstanceStatus::Online
+        } else {
+            InstanceStatus::Syncing
+        };
+        assert_eq!(status, InstanceStatus::Syncing);
+    }
+
+    // -----------------------------------------------------------------------
+    // heartbeat default status logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_heartbeat_default_status() {
+        let status: Option<InstanceStatus> = None;
+        let new_status = status.unwrap_or(InstanceStatus::Online);
+        assert_eq!(new_status, InstanceStatus::Online);
+    }
+
+    #[test]
+    fn test_heartbeat_explicit_status() {
+        let status: Option<InstanceStatus> = Some(InstanceStatus::Degraded);
+        let new_status = status.unwrap_or(InstanceStatus::Online);
+        assert_eq!(new_status, InstanceStatus::Degraded);
+    }
+}

@@ -710,3 +710,245 @@ async fn upload_cookbook(
         .body(Body::from(serde_json::to_string(&response_json).unwrap()))
         .unwrap())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer chef-api-key-123"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "chef-api-key-123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer chef-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "chef-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("admin".to_string(), "secret".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_lowercase() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pw");
+        let value = format!("basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pw".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_with_colon_in_password() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:p:a:s:s");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "p:a:s:s".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid!!!"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic: filename, artifact_path, storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cookbook_filename_format() {
+        let name = "apache2";
+        let version = "8.0.0";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        assert_eq!(filename, "apache2-8.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_cookbook_artifact_path_format() {
+        let name = "nginx";
+        let version = "12.0.0";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        let artifact_path = format!("{}/{}/{}", name, version, filename);
+        assert_eq!(artifact_path, "nginx/12.0.0/nginx-12.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_cookbook_storage_key_format() {
+        let name = "mysql";
+        let version = "5.0.0";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        let storage_key = format!("chef/{}/{}/{}", name, version, filename);
+        assert_eq!(storage_key, "chef/mysql/5.0.0/mysql-5.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"cookbook content");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/chef".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache/chef".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://supermarket.chef.io".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://supermarket.chef.io")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Chef metadata JSON construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_chef_metadata_json() {
+        let cookbook_name = "apache2";
+        let cookbook_version = "8.0.0";
+        let filename = format!("{}-{}.tar.gz", cookbook_name, cookbook_version);
+        let cookbook_json: Option<serde_json::Value> = Some(serde_json::json!({
+            "cookbook_name": cookbook_name,
+            "version": cookbook_version,
+        }));
+
+        let meta = serde_json::json!({
+            "cookbook_name": cookbook_name,
+            "cookbook_version": cookbook_version,
+            "filename": filename,
+            "cookbook_json": cookbook_json,
+        });
+
+        assert_eq!(meta["cookbook_name"], "apache2");
+        assert_eq!(meta["cookbook_version"], "8.0.0");
+        assert_eq!(meta["filename"], "apache2-8.0.0.tar.gz");
+        assert!(meta["cookbook_json"].is_object());
+    }
+
+    // -----------------------------------------------------------------------
+    // Chef API URL format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_info_url() {
+        let repo_key = "chef-local";
+        let name = "nginx";
+        let version = "12.0.0";
+        let url = format!(
+            "/chef/{}/api/v1/cookbooks/{}/versions/{}",
+            repo_key, name, version
+        );
+        assert_eq!(url, "/chef/chef-local/api/v1/cookbooks/nginx/versions/12.0.0");
+    }
+
+    #[test]
+    fn test_download_url() {
+        let repo_key = "chef-local";
+        let name = "nginx";
+        let version = "12.0.0";
+        let url = format!(
+            "/chef/{}/api/v1/cookbooks/{}/versions/{}/download",
+            repo_key, name, version
+        );
+        assert_eq!(
+            url,
+            "/chef/chef-local/api/v1/cookbooks/nginx/versions/12.0.0/download"
+        );
+    }
+}

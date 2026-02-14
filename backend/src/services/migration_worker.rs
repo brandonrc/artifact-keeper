@@ -984,4 +984,279 @@ mod tests {
         assert_eq!(config.max_retries, 3);
         assert!(config.verify_checksums);
     }
+
+    // -----------------------------------------------------------------------
+    // WorkerConfig - all fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_worker_config_default_all_fields() {
+        let config = WorkerConfig::default();
+        assert_eq!(config.concurrency, 4);
+        assert_eq!(config.throttle_delay_ms, 100);
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.batch_size, 100);
+        assert!(config.verify_checksums);
+        assert!(!config.dry_run);
+    }
+
+    #[test]
+    fn test_worker_config_custom() {
+        let config = WorkerConfig {
+            concurrency: 8,
+            throttle_delay_ms: 0,
+            max_retries: 5,
+            batch_size: 500,
+            verify_checksums: false,
+            dry_run: true,
+        };
+        assert_eq!(config.concurrency, 8);
+        assert_eq!(config.throttle_delay_ms, 0);
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.batch_size, 500);
+        assert!(!config.verify_checksums);
+        assert!(config.dry_run);
+    }
+
+    #[test]
+    fn test_worker_config_clone() {
+        let config = WorkerConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.concurrency, cloned.concurrency);
+        assert_eq!(config.throttle_delay_ms, cloned.throttle_delay_ms);
+        assert_eq!(config.max_retries, cloned.max_retries);
+        assert_eq!(config.batch_size, cloned.batch_size);
+        assert_eq!(config.verify_checksums, cloned.verify_checksums);
+        assert_eq!(config.dry_run, cloned.dry_run);
+    }
+
+    #[test]
+    fn test_worker_config_debug() {
+        let config = WorkerConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("WorkerConfig"));
+        assert!(debug_str.contains("concurrency"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ConflictResolution - exhaustive from_str
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conflict_resolution_from_str_skip() {
+        assert_eq!(
+            ConflictResolution::from_str("skip"),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str("SKIP"),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str("Skip"),
+            ConflictResolution::Skip
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_from_str_overwrite() {
+        assert_eq!(
+            ConflictResolution::from_str("overwrite"),
+            ConflictResolution::Overwrite
+        );
+        assert_eq!(
+            ConflictResolution::from_str("OVERWRITE"),
+            ConflictResolution::Overwrite
+        );
+        assert_eq!(
+            ConflictResolution::from_str("Overwrite"),
+            ConflictResolution::Overwrite
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_from_str_rename() {
+        assert_eq!(
+            ConflictResolution::from_str("rename"),
+            ConflictResolution::Rename
+        );
+        assert_eq!(
+            ConflictResolution::from_str("RENAME"),
+            ConflictResolution::Rename
+        );
+        assert_eq!(
+            ConflictResolution::from_str("Rename"),
+            ConflictResolution::Rename
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_from_str_defaults_to_skip() {
+        assert_eq!(
+            ConflictResolution::from_str("unknown"),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str(""),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str("merge"),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str("delete"),
+            ConflictResolution::Skip
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_eq() {
+        assert_eq!(ConflictResolution::Skip, ConflictResolution::Skip);
+        assert_eq!(ConflictResolution::Overwrite, ConflictResolution::Overwrite);
+        assert_eq!(ConflictResolution::Rename, ConflictResolution::Rename);
+        assert_ne!(ConflictResolution::Skip, ConflictResolution::Overwrite);
+        assert_ne!(ConflictResolution::Skip, ConflictResolution::Rename);
+        assert_ne!(ConflictResolution::Overwrite, ConflictResolution::Rename);
+    }
+
+    #[test]
+    fn test_conflict_resolution_copy() {
+        let cr = ConflictResolution::Overwrite;
+        let copied = cr; // Copy
+        assert_eq!(cr, copied);
+    }
+
+    #[test]
+    fn test_conflict_resolution_debug() {
+        let cr = ConflictResolution::Skip;
+        let debug_str = format!("{:?}", cr);
+        assert_eq!(debug_str, "Skip");
+    }
+
+    // -----------------------------------------------------------------------
+    // ProgressUpdate construction and fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_progress_update_construction() {
+        let job_id = Uuid::new_v4();
+        let update = ProgressUpdate {
+            job_id,
+            completed: 10,
+            failed: 2,
+            skipped: 3,
+            transferred_bytes: 1024 * 1024,
+            current_item: Some("libs-release/com/example/lib.jar".to_string()),
+            status: MigrationJobStatus::Running,
+        };
+        assert_eq!(update.job_id, job_id);
+        assert_eq!(update.completed, 10);
+        assert_eq!(update.failed, 2);
+        assert_eq!(update.skipped, 3);
+        assert_eq!(update.transferred_bytes, 1024 * 1024);
+        assert!(update.current_item.is_some());
+    }
+
+    #[test]
+    fn test_progress_update_no_current_item() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 100,
+            failed: 0,
+            skipped: 5,
+            transferred_bytes: 10_000_000,
+            current_item: None,
+            status: MigrationJobStatus::Completed,
+        };
+        assert!(update.current_item.is_none());
+    }
+
+    #[test]
+    fn test_progress_update_clone() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 5,
+            failed: 1,
+            skipped: 0,
+            transferred_bytes: 500,
+            current_item: Some("test.jar".to_string()),
+            status: MigrationJobStatus::Running,
+        };
+        let cloned = update.clone();
+        assert_eq!(update.job_id, cloned.job_id);
+        assert_eq!(update.completed, cloned.completed);
+        assert_eq!(update.current_item, cloned.current_item);
+    }
+
+    #[test]
+    fn test_progress_update_debug() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            transferred_bytes: 0,
+            current_item: None,
+            status: MigrationJobStatus::Running,
+        };
+        let debug_str = format!("{:?}", update);
+        assert!(debug_str.contains("ProgressUpdate"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TransferResult construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_transfer_result_construction() {
+        let result = TransferResult {
+            target_path: "libs-release/com/example/lib.jar".to_string(),
+            calculated_checksum: Some("abc123def456".to_string()),
+            metadata: Some(std::collections::HashMap::from([(
+                "key".to_string(),
+                vec!["value1".to_string(), "value2".to_string()],
+            )])),
+        };
+        assert_eq!(result.target_path, "libs-release/com/example/lib.jar");
+        assert!(result.calculated_checksum.is_some());
+        assert!(result.metadata.is_some());
+    }
+
+    #[test]
+    fn test_transfer_result_no_metadata() {
+        let result = TransferResult {
+            target_path: "repo/file.bin".to_string(),
+            calculated_checksum: None,
+            metadata: None,
+        };
+        assert!(result.calculated_checksum.is_none());
+        assert!(result.metadata.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // MigrationJobStatus usage in progress updates
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_progress_update_various_statuses() {
+        let statuses = [
+            MigrationJobStatus::Running,
+            MigrationJobStatus::Completed,
+            MigrationJobStatus::Failed,
+            MigrationJobStatus::Cancelled,
+        ];
+        for status in &statuses {
+            let update = ProgressUpdate {
+                job_id: Uuid::new_v4(),
+                completed: 0,
+                failed: 0,
+                skipped: 0,
+                transferred_bytes: 0,
+                current_item: None,
+                status: status.clone(),
+            };
+            let _ = format!("{:?}", update);
+        }
+    }
 }

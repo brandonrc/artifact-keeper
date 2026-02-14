@@ -1119,4 +1119,798 @@ mod tests {
         assert_eq!(license.name, "MIT License");
         assert_eq!(component.is_internal, Some(false));
     }
+
+    // -----------------------------------------------------------------------
+    // DtProject serialization/deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_project_deserialize_full() {
+        let json = r#"{
+            "uuid": "proj-uuid-1",
+            "name": "my-project",
+            "version": "1.0.0",
+            "description": "Test project",
+            "lastBomImport": 1700000000000,
+            "lastBomImportFormat": "CycloneDX 1.4"
+        }"#;
+        let project: DtProject = serde_json::from_str(json).unwrap();
+        assert_eq!(project.uuid, "proj-uuid-1");
+        assert_eq!(project.name, "my-project");
+        assert_eq!(project.version, Some("1.0.0".to_string()));
+        assert_eq!(project.description, Some("Test project".to_string()));
+        assert_eq!(project.last_bom_import, Some(1700000000000));
+        assert_eq!(
+            project.last_bom_import_format,
+            Some("CycloneDX 1.4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dt_project_deserialize_minimal() {
+        let json = r#"{
+            "uuid": "proj-uuid-2",
+            "name": "minimal-project",
+            "version": null,
+            "description": null,
+            "lastBomImport": null,
+            "lastBomImportFormat": null
+        }"#;
+        let project: DtProject = serde_json::from_str(json).unwrap();
+        assert_eq!(project.uuid, "proj-uuid-2");
+        assert_eq!(project.name, "minimal-project");
+        assert!(project.version.is_none());
+        assert!(project.description.is_none());
+        assert!(project.last_bom_import.is_none());
+    }
+
+    #[test]
+    fn test_dt_project_serialize_roundtrip() {
+        let project = DtProject {
+            uuid: "uuid-1".to_string(),
+            name: "test".to_string(),
+            version: Some("2.0".to_string()),
+            description: None,
+            last_bom_import: Some(12345),
+            last_bom_import_format: None,
+        };
+        let json = serde_json::to_string(&project).unwrap();
+        let deserialized: DtProject = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.uuid, project.uuid);
+        assert_eq!(deserialized.name, project.name);
+        assert_eq!(deserialized.version, project.version);
+    }
+
+    // -----------------------------------------------------------------------
+    // BomUploadResponse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bom_upload_response_deserialize() {
+        let json = r#"{"token": "bom-token-abc123"}"#;
+        let response: BomUploadResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.token, "bom-token-abc123");
+    }
+
+    // -----------------------------------------------------------------------
+    // BomProcessingStatus
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bom_processing_status_deserialize_true() {
+        let json = r#"{"processing": true}"#;
+        let status: BomProcessingStatus = serde_json::from_str(json).unwrap();
+        assert!(status.processing);
+    }
+
+    #[test]
+    fn test_bom_processing_status_deserialize_false() {
+        let json = r#"{"processing": false}"#;
+        let status: BomProcessingStatus = serde_json::from_str(json).unwrap();
+        assert!(!status.processing);
+    }
+
+    // -----------------------------------------------------------------------
+    // DtFinding - additional tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_finding_with_analysis_and_attribution() {
+        let json = r#"{
+            "component": {
+                "uuid": "comp-1",
+                "name": "my-lib",
+                "version": "1.0.0",
+                "group": null,
+                "purl": null
+            },
+            "vulnerability": {
+                "uuid": "vuln-1",
+                "vulnId": "CVE-2024-0001",
+                "source": "NVD",
+                "severity": "CRITICAL",
+                "title": "Critical RCE",
+                "description": "Remote code execution",
+                "cvssV3BaseScore": 9.8,
+                "cwe": {
+                    "cweId": 94,
+                    "name": "Code Injection"
+                }
+            },
+            "analysis": {
+                "state": "NOT_AFFECTED",
+                "justification": "Code not reachable",
+                "response": "will_not_fix",
+                "details": "Confirmed not reachable in our usage",
+                "isSuppressed": true
+            },
+            "attribution": {
+                "analyzerIdentity": "INTERNAL_ANALYZER",
+                "attributedOn": 1700000000000
+            }
+        }"#;
+
+        let finding: DtFinding = serde_json::from_str(json).unwrap();
+        assert_eq!(finding.vulnerability.severity, "CRITICAL");
+        assert_eq!(
+            finding.vulnerability.cvss_v3_base_score,
+            Some(9.8)
+        );
+        let analysis = finding.analysis.unwrap();
+        assert_eq!(analysis.state, Some("NOT_AFFECTED".to_string()));
+        assert!(analysis.is_suppressed);
+        let attribution = finding.attribution.unwrap();
+        assert_eq!(
+            attribution.analyzer_identity,
+            Some("INTERNAL_ANALYZER".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dt_finding_serialize_roundtrip() {
+        let finding = DtFinding {
+            component: DtComponent {
+                uuid: "c1".to_string(),
+                name: "pkg".to_string(),
+                version: Some("1.0".to_string()),
+                group: None,
+                purl: Some("pkg:npm/pkg@1.0".to_string()),
+            },
+            vulnerability: DtVulnerability {
+                uuid: "v1".to_string(),
+                vuln_id: "CVE-2024-0002".to_string(),
+                source: "NVD".to_string(),
+                severity: "HIGH".to_string(),
+                title: Some("Test".to_string()),
+                description: None,
+                cvss_v3_base_score: Some(7.5),
+                cwe: None,
+            },
+            analysis: None,
+            attribution: None,
+        };
+
+        let json = serde_json::to_string(&finding).unwrap();
+        let deserialized: DtFinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.vulnerability.vuln_id, "CVE-2024-0002");
+        assert_eq!(deserialized.component.name, "pkg");
+    }
+
+    // -----------------------------------------------------------------------
+    // DtProjectMetrics - defaults and partial data
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_project_metrics_defaults() {
+        // Minimal JSON with defaults
+        let json = r#"{}"#;
+        let metrics: DtProjectMetrics = serde_json::from_str(json).unwrap();
+        assert_eq!(metrics.critical, 0);
+        assert_eq!(metrics.high, 0);
+        assert_eq!(metrics.medium, 0);
+        assert_eq!(metrics.low, 0);
+        assert_eq!(metrics.unassigned, 0);
+        assert_eq!(metrics.vulnerabilities, None);
+        assert_eq!(metrics.findings_total, 0);
+        assert_eq!(metrics.findings_audited, 0);
+        assert_eq!(metrics.findings_unaudited, 0);
+        assert_eq!(metrics.suppressions, 0);
+        assert!((metrics.inherited_risk_score - 0.0).abs() < f64::EPSILON);
+        assert_eq!(metrics.policy_violations_fail, 0);
+        assert_eq!(metrics.policy_violations_warn, 0);
+        assert_eq!(metrics.policy_violations_info, 0);
+        assert_eq!(metrics.policy_violations_total, 0);
+        assert!(metrics.first_occurrence.is_none());
+        assert!(metrics.last_occurrence.is_none());
+    }
+
+    #[test]
+    fn test_dt_project_metrics_serialize_roundtrip() {
+        let metrics = DtProjectMetrics {
+            critical: 1,
+            high: 2,
+            medium: 3,
+            low: 4,
+            unassigned: 5,
+            vulnerabilities: Some(15),
+            findings_total: 15,
+            findings_audited: 10,
+            findings_unaudited: 5,
+            suppressions: 2,
+            inherited_risk_score: 25.5,
+            policy_violations_fail: 1,
+            policy_violations_warn: 0,
+            policy_violations_info: 3,
+            policy_violations_total: 4,
+            first_occurrence: Some(1000),
+            last_occurrence: Some(2000),
+        };
+
+        let json = serde_json::to_string(&metrics).unwrap();
+        let deserialized: DtProjectMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.critical, 1);
+        assert_eq!(deserialized.high, 2);
+        assert_eq!(deserialized.vulnerabilities, Some(15));
+        assert!((deserialized.inherited_risk_score - 25.5).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // DtPortfolioMetrics
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_portfolio_metrics_deserialize() {
+        let json = r#"{
+            "critical": 10,
+            "high": 20,
+            "medium": 30,
+            "low": 40,
+            "unassigned": 5,
+            "vulnerabilities": 105,
+            "findingsTotal": 105,
+            "findingsAudited": 50,
+            "findingsUnaudited": 55,
+            "suppressions": 10,
+            "inheritedRiskScore": 123.45,
+            "policyViolationsFail": 5,
+            "policyViolationsWarn": 8,
+            "policyViolationsInfo": 12,
+            "policyViolationsTotal": 25,
+            "projects": 42
+        }"#;
+
+        let metrics: DtPortfolioMetrics = serde_json::from_str(json).unwrap();
+        assert_eq!(metrics.critical, 10);
+        assert_eq!(metrics.high, 20);
+        assert_eq!(metrics.medium, 30);
+        assert_eq!(metrics.low, 40);
+        assert_eq!(metrics.projects, 42);
+        assert_eq!(metrics.policy_violations_total, 25);
+        assert!((metrics.inherited_risk_score - 123.45).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_dt_portfolio_metrics_defaults() {
+        let json = r#"{}"#;
+        let metrics: DtPortfolioMetrics = serde_json::from_str(json).unwrap();
+        assert_eq!(metrics.critical, 0);
+        assert_eq!(metrics.projects, 0);
+        assert_eq!(metrics.findings_total, 0);
+    }
+
+    #[test]
+    fn test_dt_portfolio_metrics_serialize_roundtrip() {
+        let metrics = DtPortfolioMetrics {
+            critical: 3,
+            high: 5,
+            medium: 10,
+            low: 2,
+            unassigned: 0,
+            vulnerabilities: Some(20),
+            findings_total: 20,
+            findings_audited: 15,
+            findings_unaudited: 5,
+            suppressions: 1,
+            inherited_risk_score: 55.0,
+            policy_violations_fail: 2,
+            policy_violations_warn: 1,
+            policy_violations_info: 0,
+            policy_violations_total: 3,
+            projects: 10,
+        };
+
+        let json = serde_json::to_string(&metrics).unwrap();
+        let deserialized: DtPortfolioMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.critical, 3);
+        assert_eq!(deserialized.projects, 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // DtPolicyFull
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_policy_full_deserialize() {
+        let json = r#"{
+            "uuid": "policy-uuid-1",
+            "name": "License Policy",
+            "violationState": "FAIL",
+            "includeChildren": true,
+            "policyConditions": [
+                {
+                    "uuid": "cond-uuid-1",
+                    "subject": "LICENSE",
+                    "operator": "IS",
+                    "value": "GPL-3.0"
+                }
+            ],
+            "projects": [
+                {
+                    "uuid": "proj-uuid-1",
+                    "name": "my-project",
+                    "version": "1.0",
+                    "description": null,
+                    "lastBomImport": null,
+                    "lastBomImportFormat": null
+                }
+            ],
+            "tags": [{"name": "security"}]
+        }"#;
+
+        let policy: DtPolicyFull = serde_json::from_str(json).unwrap();
+        assert_eq!(policy.uuid, "policy-uuid-1");
+        assert_eq!(policy.name, "License Policy");
+        assert_eq!(policy.violation_state, "FAIL");
+        assert_eq!(policy.include_children, Some(true));
+        assert_eq!(policy.policy_conditions.len(), 1);
+        assert_eq!(policy.policy_conditions[0].subject, "LICENSE");
+        assert_eq!(policy.projects.len(), 1);
+        assert_eq!(policy.projects[0].name, "my-project");
+        assert_eq!(policy.tags.len(), 1);
+    }
+
+    #[test]
+    fn test_dt_policy_full_empty_conditions_and_projects() {
+        let json = r#"{
+            "uuid": "policy-uuid-2",
+            "name": "Empty Policy",
+            "violationState": "WARN",
+            "includeChildren": null,
+            "policyConditions": [],
+            "projects": [],
+            "tags": []
+        }"#;
+
+        let policy: DtPolicyFull = serde_json::from_str(json).unwrap();
+        assert!(policy.policy_conditions.is_empty());
+        assert!(policy.projects.is_empty());
+        assert!(policy.tags.is_empty());
+        assert!(policy.include_children.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DtAnalysis
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_analysis_deserialize() {
+        let json = r#"{
+            "state": "NOT_AFFECTED",
+            "justification": "Code not reachable",
+            "response": "will_not_fix",
+            "details": "Detailed explanation here",
+            "isSuppressed": false
+        }"#;
+        let analysis: DtAnalysis = serde_json::from_str(json).unwrap();
+        assert_eq!(analysis.state, Some("NOT_AFFECTED".to_string()));
+        assert_eq!(analysis.justification, Some("Code not reachable".to_string()));
+        assert!(!analysis.is_suppressed);
+    }
+
+    #[test]
+    fn test_dt_analysis_minimal() {
+        let json = r#"{"isSuppressed": true}"#;
+        let analysis: DtAnalysis = serde_json::from_str(json).unwrap();
+        assert!(analysis.state.is_none());
+        assert!(analysis.justification.is_none());
+        assert!(analysis.response.is_none());
+        assert!(analysis.details.is_none());
+        assert!(analysis.is_suppressed);
+    }
+
+    // -----------------------------------------------------------------------
+    // DtAnalysisResponse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_analysis_response_deserialize() {
+        let json = r#"{
+            "analysisState": "EXPLOITABLE",
+            "analysisJustification": null,
+            "analysisDetails": "We are affected",
+            "isSuppressed": false
+        }"#;
+        let response: DtAnalysisResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.analysis_state, "EXPLOITABLE");
+        assert!(response.analysis_justification.is_none());
+        assert_eq!(response.analysis_details, Some("We are affected".to_string()));
+        assert!(!response.is_suppressed);
+    }
+
+    #[test]
+    fn test_dt_analysis_response_serialize_roundtrip() {
+        let response = DtAnalysisResponse {
+            analysis_state: "IN_TRIAGE".to_string(),
+            analysis_justification: Some("Under review".to_string()),
+            analysis_details: None,
+            is_suppressed: false,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: DtAnalysisResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.analysis_state, "IN_TRIAGE");
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateAnalysisRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_analysis_request_serialize() {
+        let request = UpdateAnalysisRequest {
+            project: "proj-uuid".to_string(),
+            component: "comp-uuid".to_string(),
+            vulnerability: "vuln-uuid".to_string(),
+            analysis_state: "NOT_AFFECTED".to_string(),
+            analysis_justification: Some("Protected by WAF".to_string()),
+            analysis_details: None,
+            is_suppressed: true,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["project"], "proj-uuid");
+        assert_eq!(json["component"], "comp-uuid");
+        assert_eq!(json["vulnerability"], "vuln-uuid");
+        assert_eq!(json["analysisState"], "NOT_AFFECTED");
+        assert_eq!(json["analysisJustification"], "Protected by WAF");
+        // analysisDetails should be skipped (skip_serializing_if = None)
+        assert!(json.get("analysisDetails").is_none());
+        assert_eq!(json["isSuppressed"], true);
+    }
+
+    #[test]
+    fn test_update_analysis_request_serialize_all_fields() {
+        let request = UpdateAnalysisRequest {
+            project: "p".to_string(),
+            component: "c".to_string(),
+            vulnerability: "v".to_string(),
+            analysis_state: "EXPLOITABLE".to_string(),
+            analysis_justification: Some("justification".to_string()),
+            analysis_details: Some("details here".to_string()),
+            is_suppressed: false,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["analysisDetails"], "details here");
+        assert_eq!(json["isSuppressed"], false);
+    }
+
+    #[test]
+    fn test_update_analysis_request_serialize_no_optional_fields() {
+        let request = UpdateAnalysisRequest {
+            project: "p".to_string(),
+            component: "c".to_string(),
+            vulnerability: "v".to_string(),
+            analysis_state: "IN_TRIAGE".to_string(),
+            analysis_justification: None,
+            analysis_details: None,
+            is_suppressed: false,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        // Both optional fields should be absent
+        assert!(json.get("analysisJustification").is_none());
+        assert!(json.get("analysisDetails").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateProjectRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_project_request_serialize() {
+        let request = CreateProjectRequest {
+            name: "my-project".to_string(),
+            version: Some("1.0.0".to_string()),
+            description: Some("Test project".to_string()),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["name"], "my-project");
+        assert_eq!(json["version"], "1.0.0");
+        assert_eq!(json["description"], "Test project");
+    }
+
+    #[test]
+    fn test_create_project_request_serialize_minimal() {
+        let request = CreateProjectRequest {
+            name: "minimal".to_string(),
+            version: None,
+            description: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["name"], "minimal");
+        assert!(json["version"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // DtComponent serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_component_serialize_roundtrip() {
+        let component = DtComponent {
+            uuid: "c1".to_string(),
+            name: "lodash".to_string(),
+            version: Some("4.17.21".to_string()),
+            group: Some("npm".to_string()),
+            purl: Some("pkg:npm/lodash@4.17.21".to_string()),
+        };
+        let json = serde_json::to_string(&component).unwrap();
+        let deserialized: DtComponent = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "lodash");
+        assert_eq!(deserialized.purl, Some("pkg:npm/lodash@4.17.21".to_string()));
+    }
+
+    #[test]
+    fn test_dt_component_minimal() {
+        let json = r#"{"uuid": "c2", "name": "minimal"}"#;
+        let component: DtComponent = serde_json::from_str(json).unwrap();
+        assert_eq!(component.uuid, "c2");
+        assert_eq!(component.name, "minimal");
+        assert!(component.version.is_none());
+        assert!(component.group.is_none());
+        assert!(component.purl.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DtComponentFull - additional tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_component_full_no_license() {
+        let json = r#"{
+            "uuid": "comp-no-license",
+            "name": "unlicensed-lib",
+            "version": null,
+            "group": null,
+            "purl": null,
+            "cpe": "cpe:/a:vendor:product:1.0",
+            "resolvedLicense": null,
+            "isInternal": true
+        }"#;
+        let component: DtComponentFull = serde_json::from_str(json).unwrap();
+        assert!(component.resolved_license.is_none());
+        assert_eq!(component.is_internal, Some(true));
+        assert_eq!(
+            component.cpe,
+            Some("cpe:/a:vendor:product:1.0".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DtLicense
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_license_serialize_roundtrip() {
+        let license = DtLicense {
+            uuid: Some("lic-uuid".to_string()),
+            license_id: Some("Apache-2.0".to_string()),
+            name: "Apache License 2.0".to_string(),
+        };
+        let json = serde_json::to_string(&license).unwrap();
+        let deserialized: DtLicense = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.license_id, Some("Apache-2.0".to_string()));
+        assert_eq!(deserialized.name, "Apache License 2.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // DtCwe
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_cwe_serialize_roundtrip() {
+        let cwe = DtCwe {
+            cwe_id: 79,
+            name: "Cross-site Scripting".to_string(),
+        };
+        let json = serde_json::to_string(&cwe).unwrap();
+        let deserialized: DtCwe = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.cwe_id, 79);
+        assert_eq!(deserialized.name, "Cross-site Scripting");
+    }
+
+    // -----------------------------------------------------------------------
+    // DtAttribution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_attribution_serialize_roundtrip() {
+        let attribution = DtAttribution {
+            analyzer_identity: Some("TRIVY".to_string()),
+            attributed_on: Some(1700000000000),
+        };
+        let json = serde_json::to_string(&attribution).unwrap();
+        let deserialized: DtAttribution = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.analyzer_identity,
+            Some("TRIVY".to_string())
+        );
+        assert_eq!(deserialized.attributed_on, Some(1700000000000));
+    }
+
+    #[test]
+    fn test_dt_attribution_minimal() {
+        let json = r#"{}"#;
+        let attribution: DtAttribution = serde_json::from_str(json).unwrap();
+        assert!(attribution.analyzer_identity.is_none());
+        assert!(attribution.attributed_on.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DtPolicyViolation - additional tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_policy_violation_serialize_roundtrip() {
+        let violation = DtPolicyViolation {
+            uuid: "viol-1".to_string(),
+            violation_type: "SECURITY".to_string(),
+            component: DtComponent {
+                uuid: "comp-1".to_string(),
+                name: "vulnerable-lib".to_string(),
+                version: Some("0.9".to_string()),
+                group: None,
+                purl: None,
+            },
+            policy_condition: DtPolicyCondition {
+                uuid: "cond-1".to_string(),
+                subject: "SEVERITY".to_string(),
+                operator: "IS".to_string(),
+                value: "CRITICAL".to_string(),
+                policy: DtPolicy {
+                    uuid: "pol-1".to_string(),
+                    name: "Block Critical".to_string(),
+                    violation_state: "FAIL".to_string(),
+                },
+            },
+        };
+
+        let json = serde_json::to_string(&violation).unwrap();
+        let deserialized: DtPolicyViolation = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.violation_type, "SECURITY");
+        assert_eq!(deserialized.component.name, "vulnerable-lib");
+        assert_eq!(deserialized.policy_condition.policy.name, "Block Critical");
+    }
+
+    // -----------------------------------------------------------------------
+    // DtVulnerability
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_vulnerability_serialize_roundtrip() {
+        let vuln = DtVulnerability {
+            uuid: "v1".to_string(),
+            vuln_id: "CVE-2024-12345".to_string(),
+            source: "NVD".to_string(),
+            severity: "CRITICAL".to_string(),
+            title: Some("Buffer overflow".to_string()),
+            description: Some("A buffer overflow in...".to_string()),
+            cvss_v3_base_score: Some(9.8),
+            cwe: Some(DtCwe {
+                cwe_id: 120,
+                name: "Buffer Overflow".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string(&vuln).unwrap();
+        let deserialized: DtVulnerability = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.vuln_id, "CVE-2024-12345");
+        assert_eq!(deserialized.cvss_v3_base_score, Some(9.8));
+        assert!(deserialized.cwe.is_some());
+    }
+
+    #[test]
+    fn test_dt_vulnerability_minimal() {
+        let json = r#"{
+            "uuid": "v2",
+            "vulnId": "OSV-2024-001",
+            "source": "OSV",
+            "severity": "LOW"
+        }"#;
+        let vuln: DtVulnerability = serde_json::from_str(json).unwrap();
+        assert_eq!(vuln.vuln_id, "OSV-2024-001");
+        assert!(vuln.title.is_none());
+        assert!(vuln.description.is_none());
+        assert!(vuln.cvss_v3_base_score.is_none());
+        assert!(vuln.cwe.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // DependencyTrackConfig construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dependency_track_config_construction() {
+        let config = DependencyTrackConfig {
+            base_url: "http://localhost:8092".to_string(),
+            api_key: "test-api-key".to_string(),
+            enabled: true,
+        };
+        assert_eq!(config.base_url, "http://localhost:8092");
+        assert_eq!(config.api_key, "test-api-key");
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_dependency_track_config_clone() {
+        let config = DependencyTrackConfig {
+            base_url: "http://dt.example.com".to_string(),
+            api_key: "key-123".to_string(),
+            enabled: false,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.base_url, "http://dt.example.com");
+        assert_eq!(cloned.api_key, "key-123");
+        assert!(!cloned.enabled);
+    }
+
+    #[test]
+    fn test_dependency_track_config_debug() {
+        let config = DependencyTrackConfig {
+            base_url: "http://localhost:8092".to_string(),
+            api_key: "key".to_string(),
+            enabled: true,
+        };
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("DependencyTrackConfig"));
+        assert!(debug_str.contains("localhost"));
+    }
+
+    // -----------------------------------------------------------------------
+    // DtPolicyCondition and DtPolicy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_policy_condition_serialize_roundtrip() {
+        let condition = DtPolicyCondition {
+            uuid: "cond-1".to_string(),
+            subject: "LICENSE_GROUP".to_string(),
+            operator: "IS_NOT".to_string(),
+            value: "Permissive".to_string(),
+            policy: DtPolicy {
+                uuid: "pol-1".to_string(),
+                name: "No Copyleft".to_string(),
+                violation_state: "WARN".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        let deserialized: DtPolicyCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.subject, "LICENSE_GROUP");
+        assert_eq!(deserialized.policy.name, "No Copyleft");
+    }
+
+    // -----------------------------------------------------------------------
+    // DtPolicyConditionFull
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dt_policy_condition_full_serialize_roundtrip() {
+        let condition = DtPolicyConditionFull {
+            uuid: "cond-full-1".to_string(),
+            subject: "COORDINATES".to_string(),
+            operator: "MATCHES".to_string(),
+            value: "org.apache.*".to_string(),
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        let deserialized: DtPolicyConditionFull = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.uuid, "cond-full-1");
+        assert_eq!(deserialized.value, "org.apache.*");
+    }
 }

@@ -311,6 +311,185 @@ fn compute_next_run(cron_expr: &str) -> Option<chrono::DateTime<Utc>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // compute_next_run
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_next_run_valid_5_field_cron() {
+        // Every day at midnight: "0 0 * * *"
+        let result = compute_next_run("0 0 * * *");
+        assert!(result.is_some(), "Should parse a valid 5-field cron expression");
+        let next = result.unwrap();
+        assert!(next > Utc::now(), "Next run should be in the future");
+    }
+
+    #[test]
+    fn test_compute_next_run_valid_6_field_cron() {
+        // 6-field with seconds: "0 0 0 * * *"  (every day at midnight)
+        let result = compute_next_run("0 0 0 * * *");
+        assert!(result.is_some(), "Should parse a valid 6-field cron expression");
+        let next = result.unwrap();
+        assert!(next > Utc::now());
+    }
+
+    #[test]
+    fn test_compute_next_run_valid_7_field_cron() {
+        // 7-field with seconds and year: "0 30 9 * * * *"
+        let result = compute_next_run("0 30 9 * * * *");
+        assert!(result.is_some(), "Should parse a valid 7-field cron expression");
+    }
+
+    #[test]
+    fn test_compute_next_run_every_minute() {
+        // Every minute: "* * * * *"
+        let result = compute_next_run("* * * * *");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        // Should be within 60 seconds from now
+        let diff = next - Utc::now();
+        assert!(diff.num_seconds() <= 60);
+    }
+
+    #[test]
+    fn test_compute_next_run_invalid_cron_falls_back_to_24h() {
+        let before = Utc::now();
+        let result = compute_next_run("this is not valid cron");
+        assert!(result.is_some(), "Invalid cron should fall back to 24h from now");
+        let next = result.unwrap();
+        // Should be roughly 24 hours from now (allow some tolerance)
+        let diff = next - before;
+        assert!(
+            diff.num_hours() >= 23 && diff.num_hours() <= 25,
+            "Fallback should be ~24 hours from now, got {} hours",
+            diff.num_hours()
+        );
+    }
+
+    #[test]
+    fn test_compute_next_run_empty_string_falls_back() {
+        let result = compute_next_run("");
+        assert!(result.is_some(), "Empty string should fall back to 24h");
+        let diff = result.unwrap() - Utc::now();
+        assert!(diff.num_hours() >= 23);
+    }
+
+    #[test]
+    fn test_compute_next_run_5_field_prepends_seconds() {
+        // The function should prepend "0 " for 5-field expressions
+        // "30 2 * * *" -> "0 30 2 * * *" (2:30 AM daily)
+        let result = compute_next_run("30 2 * * *");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_compute_next_run_hourly() {
+        // Every hour at minute 0: "0 * * * *"
+        let result = compute_next_run("0 * * * *");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        let diff = next - Utc::now();
+        assert!(diff.num_minutes() <= 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // GaugeStats struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gauge_stats_construction() {
+        let stats = GaugeStats {
+            repos: 10,
+            artifacts: 500,
+            storage: 1_073_741_824, // 1 GB
+            users: 25,
+        };
+        assert_eq!(stats.repos, 10);
+        assert_eq!(stats.artifacts, 500);
+        assert_eq!(stats.storage, 1_073_741_824);
+        assert_eq!(stats.users, 25);
+    }
+
+    #[test]
+    fn test_gauge_stats_debug() {
+        let stats = GaugeStats {
+            repos: 0,
+            artifacts: 0,
+            storage: 0,
+            users: 0,
+        };
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("GaugeStats"));
+        assert!(debug_str.contains("repos: 0"));
+    }
+
+    // -----------------------------------------------------------------------
+    // BackupScheduleRow struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_backup_schedule_row_construction() {
+        let row = BackupScheduleRow {
+            id: uuid::Uuid::new_v4(),
+            name: "nightly-backup".to_string(),
+            backup_type: BackupType::Full,
+            cron_expression: "0 2 * * *".to_string(),
+            include_repositories: None,
+        };
+        assert_eq!(row.name, "nightly-backup");
+        assert_eq!(row.cron_expression, "0 2 * * *");
+        assert!(row.include_repositories.is_none());
+    }
+
+    #[test]
+    fn test_backup_schedule_row_with_repositories() {
+        let repo_ids = vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let row = BackupScheduleRow {
+            id: uuid::Uuid::new_v4(),
+            name: "selective-backup".to_string(),
+            backup_type: BackupType::Incremental,
+            cron_expression: "0 3 * * 0".to_string(),
+            include_repositories: Some(repo_ids.clone()),
+        };
+        assert_eq!(row.include_repositories.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_backup_schedule_row_debug() {
+        let row = BackupScheduleRow {
+            id: uuid::Uuid::new_v4(),
+            name: "test".to_string(),
+            backup_type: BackupType::Metadata,
+            cron_expression: "0 0 * * *".to_string(),
+            include_repositories: None,
+        };
+        let debug_str = format!("{:?}", row);
+        assert!(debug_str.contains("BackupScheduleRow"));
+        assert!(debug_str.contains("test"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cron normalization logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cron_5_field_detection() {
+        // Verify the detection logic: count whitespace-separated tokens
+        let five = "0 0 * * *";
+        assert_eq!(five.split_whitespace().count(), 5);
+
+        let six = "0 0 0 * * *";
+        assert_eq!(six.split_whitespace().count(), 6);
+
+        let seven = "0 0 0 * * * *";
+        assert_eq!(seven.split_whitespace().count(), 7);
+    }
+}
+
 /// Update Prometheus gauge metrics from database state.
 async fn update_gauge_metrics(db: &PgPool) -> crate::error::Result<()> {
     let stats = sqlx::query_as::<_, GaugeStats>(

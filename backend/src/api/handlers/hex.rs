@@ -707,3 +707,284 @@ fn extract_erlang_term_value(content: &str, key: &str) -> Option<String> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer hex-api-key"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "hex-api-key".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-hex-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-hex-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("alice:hex-pass");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("alice".to_string(), "hex-pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!invalid"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_basic_no_colon() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("justuser");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_erlang_term_value
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_erlang_term_name() {
+        let content = r#"{<<"name">>, <<"phoenix">>}.
+{<<"version">>, <<"1.7.0">>}.
+"#;
+        let result = extract_erlang_term_value(content, "name");
+        assert_eq!(result, Some("phoenix".to_string()));
+    }
+
+    #[test]
+    fn test_extract_erlang_term_version() {
+        let content = r#"{<<"name">>, <<"phoenix">>}.
+{<<"version">>, <<"1.7.0">>}.
+"#;
+        let result = extract_erlang_term_value(content, "version");
+        assert_eq!(result, Some("1.7.0".to_string()));
+    }
+
+    #[test]
+    fn test_extract_erlang_term_missing_key() {
+        let content = r#"{<<"name">>, <<"phoenix">>}.
+{<<"version">>, <<"1.7.0">>}.
+"#;
+        let result = extract_erlang_term_value(content, "description");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_erlang_term_empty_content() {
+        let result = extract_erlang_term_value("", "name");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_erlang_term_with_hyphens_in_name() {
+        let content = r#"{<<"name">>, <<"my-elixir-lib">>}.
+{<<"version">>, <<"0.1.0">>}.
+"#;
+        let result = extract_erlang_term_value(content, "name");
+        assert_eq!(result, Some("my-elixir-lib".to_string()));
+    }
+
+    #[test]
+    fn test_extract_erlang_term_app_key() {
+        let content = r#"{<<"app">>, <<"myapp">>}.
+{<<"name">>, <<"myapp">>}.
+{<<"version">>, <<"2.0.0">>}.
+"#;
+        let result = extract_erlang_term_value(content, "app");
+        assert_eq!(result, Some("myapp".to_string()));
+    }
+
+    #[test]
+    fn test_extract_erlang_term_with_extra_whitespace() {
+        let content = "  {<<\"name\">>, <<\"ecto\">>}.  \n";
+        let result = extract_erlang_term_value(content, "name");
+        assert_eq!(result, Some("ecto".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_name_version_from_tarball
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_name_version_from_tarball_empty() {
+        let result = extract_name_version_from_tarball(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_name_version_from_tarball_invalid() {
+        let result = extract_name_version_from_tarball(b"not a tarball");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_name_version_from_tarball_no_metadata() {
+        // Create a valid tar with no metadata.config file
+        let mut builder = tar::Builder::new(Vec::new());
+        let data = b"3";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("VERSION").unwrap();
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder.append(&header, &data[..]).unwrap();
+        let tar_data = builder.into_inner().unwrap();
+
+        let result = extract_name_version_from_tarball(&tar_data);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("metadata.config not found"));
+    }
+
+    #[test]
+    fn test_extract_name_version_from_tarball_valid() {
+        // Create a valid tar with metadata.config
+        let mut builder = tar::Builder::new(Vec::new());
+
+        let metadata = r#"{<<"name">>, <<"phoenix">>}.
+{<<"version">>, <<"1.7.0">>}.
+"#;
+        let data = metadata.as_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_path("metadata.config").unwrap();
+        header.set_size(data.len() as u64);
+        header.set_cksum();
+        builder.append(&header, data).unwrap();
+        let tar_data = builder.into_inner().unwrap();
+
+        let result = extract_name_version_from_tarball(&tar_data);
+        assert!(result.is_ok());
+        let (name, version) = result.unwrap();
+        assert_eq!(name, "phoenix");
+        assert_eq!(version, "1.7.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic: filename, artifact_path, storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_hex_filename_format() {
+        let name = "plug";
+        let version = "1.15.0";
+        let filename = format!("{}-{}.tar", name, version);
+        assert_eq!(filename, "plug-1.15.0.tar");
+    }
+
+    #[test]
+    fn test_hex_artifact_path_format() {
+        let name = "ecto";
+        let version = "3.11.0";
+        let filename = format!("{}-{}.tar", name, version);
+        let artifact_path = format!("{}/{}/{}", name, version, filename);
+        assert_eq!(artifact_path, "ecto/3.11.0/ecto-3.11.0.tar");
+    }
+
+    #[test]
+    fn test_hex_storage_key_format() {
+        let name = "jason";
+        let version = "1.4.0";
+        let filename = format!("{}-{}.tar", name, version);
+        let storage_key = format!("hex/{}/{}/{}", name, version, filename);
+        assert_eq!(storage_key, "hex/jason/1.4.0/jason-1.4.0.tar");
+    }
+
+    #[test]
+    fn test_hex_tarball_url() {
+        let repo_key = "hex-local";
+        let name = "plug";
+        let version = "1.15.0";
+        let url = format!("/hex/{}/tarballs/{}-{}.tar", repo_key, name, version);
+        assert_eq!(url, "/hex/hex-local/tarballs/plug-1.15.0.tar");
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"hex package data");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/hex".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "hosted");
+        assert!(repo.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://repo.hex.pm".to_string()),
+        };
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://repo.hex.pm")
+        );
+    }
+}

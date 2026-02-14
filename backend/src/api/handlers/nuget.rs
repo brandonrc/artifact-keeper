@@ -994,3 +994,454 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     let end_pos = content.find(&close)?;
     Some(content[..end_pos].trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_valid() {
+        let headers = make_basic_header("admin", "secret");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "secret".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase() {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_missing() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_colon_in_password() {
+        let headers = make_basic_header("user", "p:a:s:s");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "p:a:s:s".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_xml_tag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_xml_tag_simple() {
+        let xml = "<id>MyPackage</id>";
+        assert_eq!(
+            extract_xml_tag(xml, "id"),
+            Some("MyPackage".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_tag_with_whitespace() {
+        let xml = "<id>  MyPackage  </id>";
+        assert_eq!(
+            extract_xml_tag(xml, "id"),
+            Some("MyPackage".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_tag_with_namespace() {
+        let xml = r#"<id xmlns="http://example.com">PackageWithNS</id>"#;
+        assert_eq!(
+            extract_xml_tag(xml, "id"),
+            Some("PackageWithNS".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_xml_tag_missing() {
+        let xml = "<name>Hello</name>";
+        assert_eq!(extract_xml_tag(xml, "id"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_tag_empty_content() {
+        let xml = "<id></id>";
+        assert_eq!(extract_xml_tag(xml, "id"), Some("".to_string()));
+    }
+
+    #[test]
+    fn test_extract_xml_tag_in_nuspec() {
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>Newtonsoft.Json</id>
+    <version>13.0.1</version>
+    <description>Popular JSON framework</description>
+    <authors>James Newton-King</authors>
+  </metadata>
+</package>"#;
+        assert_eq!(
+            extract_xml_tag(xml, "id"),
+            Some("Newtonsoft.Json".to_string())
+        );
+        assert_eq!(
+            extract_xml_tag(xml, "version"),
+            Some("13.0.1".to_string())
+        );
+        assert_eq!(
+            extract_xml_tag(xml, "description"),
+            Some("Popular JSON framework".to_string())
+        );
+        assert_eq!(
+            extract_xml_tag(xml, "authors"),
+            Some("James Newton-King".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // find_subsequence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_subsequence_found() {
+        let haystack = b"hello world";
+        let needle = b"world";
+        assert_eq!(find_subsequence(haystack, needle), Some(6));
+    }
+
+    #[test]
+    fn test_find_subsequence_at_start() {
+        let haystack = b"hello world";
+        let needle = b"hello";
+        assert_eq!(find_subsequence(haystack, needle), Some(0));
+    }
+
+    #[test]
+    fn test_find_subsequence_not_found() {
+        let haystack = b"hello world";
+        let needle = b"xyz";
+        assert_eq!(find_subsequence(haystack, needle), None);
+    }
+
+    // NOTE: find_subsequence panics when needle is empty because
+    // haystack.windows(0) panics. This is a potential bug in production
+    // code if it ever receives an empty needle. Not fixing source code.
+    #[test]
+    #[should_panic(expected = "window size must be non-zero")]
+    fn test_find_subsequence_empty_needle_panics() {
+        let haystack = b"hello";
+        let needle = b"";
+        find_subsequence(haystack, needle);
+    }
+
+    #[test]
+    fn test_find_subsequence_needle_longer_than_haystack() {
+        let haystack = b"hi";
+        let needle = b"hello world";
+        assert_eq!(find_subsequence(haystack, needle), None);
+    }
+
+    #[test]
+    fn test_find_subsequence_crlf() {
+        let haystack = b"header\r\n\r\nbody";
+        let needle = b"\r\n\r\n";
+        assert_eq!(find_subsequence(haystack, needle), Some(6));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_nupkg_bytes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_nupkg_bytes_raw_body() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        let body = Bytes::from_static(b"raw nupkg content");
+        let result = extract_nupkg_bytes(&headers, body.clone()).unwrap();
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn test_extract_nupkg_bytes_no_content_type() {
+        let headers = HeaderMap::new();
+        let body = Bytes::from_static(b"raw content");
+        let result = extract_nupkg_bytes(&headers, body.clone()).unwrap();
+        assert_eq!(result, body);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_nupkg_from_multipart
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_nupkg_from_multipart_valid() {
+        let boundary = "----boundary123";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+        let body = format!(
+            "------boundary123\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"pkg.nupkg\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n\
+             FILE_CONTENT_HERE\r\n\
+             ------boundary123--\r\n"
+        );
+        let result = extract_nupkg_from_multipart(&content_type, body.as_bytes());
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_ref(), b"FILE_CONTENT_HERE");
+    }
+
+    #[test]
+    fn test_extract_nupkg_from_multipart_missing_boundary() {
+        let content_type = "multipart/form-data";
+        let body = b"some body";
+        let result = extract_nupkg_from_multipart(content_type, body);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_nupkg_from_multipart_quoted_boundary() {
+        let content_type = "multipart/form-data; boundary=\"myboundary\"";
+        let body = b"--myboundary\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nDATA\r\n--myboundary--\r\n";
+        let result = extract_nupkg_from_multipart(content_type, body);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_nuspec_from_nupkg
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_nuspec_from_nupkg_valid() {
+        // Create a minimal ZIP with a .nuspec file
+        let buf = Vec::new();
+        let cursor = std::io::Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("MyPackage.nuspec", options).unwrap();
+        let nuspec_content = r#"<?xml version="1.0"?>
+<package>
+  <metadata>
+    <id>MyPackage</id>
+    <version>1.2.3</version>
+    <description>A test package</description>
+    <authors>Test Author</authors>
+  </metadata>
+</package>"#;
+        std::io::Write::write_all(&mut zip, nuspec_content.as_bytes()).unwrap();
+        let cursor = zip.finish().unwrap();
+
+        let result = parse_nuspec_from_nupkg(cursor.get_ref());
+        assert!(result.is_ok());
+        let nuspec = result.unwrap();
+        assert_eq!(nuspec.id, "MyPackage");
+        assert_eq!(nuspec.version, "1.2.3");
+        assert_eq!(nuspec.description, "A test package");
+        assert_eq!(nuspec.authors, "Test Author");
+    }
+
+    #[test]
+    fn test_parse_nuspec_from_nupkg_no_nuspec() {
+        let buf = Vec::new();
+        let cursor = std::io::Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("readme.txt", options).unwrap();
+        std::io::Write::write_all(&mut zip, b"no nuspec here").unwrap();
+        let cursor = zip.finish().unwrap();
+
+        let result = parse_nuspec_from_nupkg(cursor.get_ref());
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("No .nuspec file found"));
+    }
+
+    #[test]
+    fn test_parse_nuspec_from_nupkg_invalid_zip() {
+        let result = parse_nuspec_from_nupkg(b"not a zip file");
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("Invalid ZIP archive"));
+    }
+
+    #[test]
+    fn test_parse_nuspec_missing_fields() {
+        let buf = Vec::new();
+        let cursor = std::io::Cursor::new(buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("Partial.nuspec", options).unwrap();
+        let nuspec_content = r#"<?xml version="1.0"?>
+<package><metadata><id>OnlyId</id></metadata></package>"#;
+        std::io::Write::write_all(&mut zip, nuspec_content.as_bytes()).unwrap();
+        let cursor = zip.finish().unwrap();
+
+        let result = parse_nuspec_from_nupkg(cursor.get_ref());
+        assert!(result.is_ok());
+        let nuspec = result.unwrap();
+        assert_eq!(nuspec.id, "OnlyId");
+        assert_eq!(nuspec.version, "");
+        assert_eq!(nuspec.description, "");
+        assert_eq!(nuspec.authors, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // NuspecInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nuspec_info_construction() {
+        let info = NuspecInfo {
+            id: "TestPkg".to_string(),
+            version: "2.0.0".to_string(),
+            description: "A library".to_string(),
+            authors: "Author Name".to_string(),
+        };
+        assert_eq!(info.id, "TestPkg");
+        assert_eq!(info.version, "2.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchQuery deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_query_defaults() {
+        let q: SearchQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(q.q.is_none());
+        assert_eq!(q.skip, None);
+        assert_eq!(q.take, None);
+        assert_eq!(q.prerelease, None);
+    }
+
+    #[test]
+    fn test_search_query_with_values() {
+        let q: SearchQuery = serde_json::from_str(
+            r#"{"q":"json","skip":10,"take":50,"prerelease":true}"#,
+        )
+        .unwrap();
+        assert_eq!(q.q, Some("json".to_string()));
+        assert_eq!(q.skip, Some(10));
+        assert_eq!(q.take, Some(50));
+        assert_eq!(q.prerelease, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nuget_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let info = RepoInfo {
+            id,
+            storage_path: "/data/nuget".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert!(info.upstream_url.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 checksum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_checksum() {
+        let data = b"nuget package data";
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+        // Same input => same output
+        let mut hasher2 = Sha256::new();
+        hasher2.update(data);
+        let checksum2 = format!("{:x}", hasher2.finalize());
+        assert_eq!(checksum, checksum2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Path/storage key construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nuget_artifact_path() {
+        let package_id = "newtonsoft.json";
+        let version = "13.0.1";
+        let filename = format!("{}.{}.nupkg", package_id, version);
+        let artifact_path = format!("{}/{}/{}", package_id, version, filename);
+        assert_eq!(
+            artifact_path,
+            "newtonsoft.json/13.0.1/newtonsoft.json.13.0.1.nupkg"
+        );
+    }
+
+    #[test]
+    fn test_nuget_storage_key() {
+        let package_id = "newtonsoft.json";
+        let version = "13.0.1";
+        let filename = format!("{}.{}.nupkg", package_id, version);
+        let storage_key = format!("nuget/{}/{}/{}", package_id, version, filename);
+        assert_eq!(
+            storage_key,
+            "nuget/newtonsoft.json/13.0.1/newtonsoft.json.13.0.1.nupkg"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Service index base URL
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_service_index_base_url() {
+        let scheme = "https";
+        let host = "myregistry.example.com";
+        let repo_key = "nuget-hosted";
+        let base = format!("{}://{}/nuget/{}", scheme, host, repo_key);
+        assert_eq!(base, "https://myregistry.example.com/nuget/nuget-hosted");
+    }
+
+    #[test]
+    fn test_service_index_default_host() {
+        let scheme = "http";
+        let host = "localhost";
+        let repo_key = "main";
+        let base = format!("{}://{}/nuget/{}", scheme, host, repo_key);
+        assert_eq!(base, "http://localhost/nuget/main");
+    }
+}

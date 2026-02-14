@@ -387,3 +387,266 @@ impl SearchService {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // SearchQuery default and deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_query_default() {
+        let query = SearchQuery::default();
+        assert!(query.q.is_none());
+        assert!(query.format.is_none());
+        assert!(query.name.is_none());
+        assert!(query.offset.is_none());
+        assert!(query.limit.is_none());
+    }
+
+    #[test]
+    fn test_search_query_deserialization() {
+        let json = r#"{"q": "my-artifact", "format": "maven", "offset": 10, "limit": 50}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q.as_deref(), Some("my-artifact"));
+        assert_eq!(query.format.as_deref(), Some("maven"));
+        assert_eq!(query.offset, Some(10));
+        assert_eq!(query.limit, Some(50));
+        assert!(query.name.is_none());
+    }
+
+    #[test]
+    fn test_search_query_deserialization_partial() {
+        let json = r#"{"q": "test"}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q.as_deref(), Some("test"));
+        assert!(query.format.is_none());
+        assert!(query.offset.is_none());
+        assert!(query.limit.is_none());
+    }
+
+    #[test]
+    fn test_search_query_deserialization_empty() {
+        let json = r#"{}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert!(query.q.is_none());
+    }
+
+    #[test]
+    fn test_search_query_with_name_filter() {
+        let json = r#"{"name": "my-lib*"}"#;
+        let query: SearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.name.as_deref(), Some("my-lib*"));
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchQuery pagination value normalization (tested via logic extraction)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pagination_offset_normalization() {
+        // The search method normalizes: offset = query.offset.unwrap_or(0).max(0)
+        let offset_none: Option<i64> = None;
+        assert_eq!(offset_none.unwrap_or(0).max(0), 0);
+
+        let offset_negative: Option<i64> = Some(-5);
+        assert_eq!(offset_negative.unwrap_or(0).max(0), 0);
+
+        let offset_positive: Option<i64> = Some(20);
+        assert_eq!(offset_positive.unwrap_or(0).max(0), 20);
+    }
+
+    #[test]
+    fn test_pagination_limit_normalization() {
+        // The search method normalizes: limit = query.limit.unwrap_or(20).clamp(1, 100)
+        let limit_none: Option<i64> = None;
+        assert_eq!(limit_none.unwrap_or(20).clamp(1, 100), 20);
+
+        let limit_zero: Option<i64> = Some(0);
+        assert_eq!(limit_zero.unwrap_or(20).clamp(1, 100), 1);
+
+        let limit_over: Option<i64> = Some(500);
+        assert_eq!(limit_over.unwrap_or(20).clamp(1, 100), 100);
+
+        let limit_normal: Option<i64> = Some(50);
+        assert_eq!(limit_normal.unwrap_or(20).clamp(1, 100), 50);
+
+        let limit_negative: Option<i64> = Some(-10);
+        assert_eq!(limit_negative.unwrap_or(20).clamp(1, 100), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Query filter building logic (replicated from execute_search/count_results)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_q_filter_construction_single_word() {
+        let q = Some("artifact".to_string());
+        let q_filter = q.as_ref().map(|q| {
+            q.split_whitespace()
+                .map(|w| format!("{}:*", w))
+                .collect::<Vec<_>>()
+                .join(" & ")
+        });
+        assert_eq!(q_filter.as_deref(), Some("artifact:*"));
+    }
+
+    #[test]
+    fn test_q_filter_construction_multiple_words() {
+        let q = Some("my awesome artifact".to_string());
+        let q_filter = q.as_ref().map(|q| {
+            q.split_whitespace()
+                .map(|w| format!("{}:*", w))
+                .collect::<Vec<_>>()
+                .join(" & ")
+        });
+        assert_eq!(q_filter.as_deref(), Some("my:* & awesome:* & artifact:*"));
+    }
+
+    #[test]
+    fn test_q_filter_construction_none() {
+        let q: Option<String> = None;
+        let q_filter = q.as_ref().map(|q| {
+            q.split_whitespace()
+                .map(|w| format!("{}:*", w))
+                .collect::<Vec<_>>()
+                .join(" & ")
+        });
+        assert!(q_filter.is_none());
+    }
+
+    #[test]
+    fn test_name_filter_wildcard_replacement() {
+        let name = Some("my-lib*".to_string());
+        let name_filter = name.as_ref().map(|n| n.replace('*', "%"));
+        assert_eq!(name_filter.as_deref(), Some("my-lib%"));
+    }
+
+    #[test]
+    fn test_name_filter_multiple_wildcards() {
+        let name = Some("*my*lib*".to_string());
+        let name_filter = name.as_ref().map(|n| n.replace('*', "%"));
+        assert_eq!(name_filter.as_deref(), Some("%my%lib%"));
+    }
+
+    #[test]
+    fn test_name_filter_none() {
+        let name: Option<String> = None;
+        let name_filter = name.as_ref().map(|n| n.replace('*', "%"));
+        assert!(name_filter.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchResult construction and serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_result_serialization() {
+        let result = SearchResult {
+            id: Uuid::nil(),
+            repository_id: Uuid::nil(),
+            repository_key: "maven-central".to_string(),
+            path: "com/example/lib/1.0/lib-1.0.jar".to_string(),
+            name: "lib".to_string(),
+            version: Some("1.0".to_string()),
+            format: "maven".to_string(),
+            size_bytes: 1024,
+            content_type: "application/java-archive".to_string(),
+            created_at: DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            download_count: 42,
+            score: 1.0,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["name"], "lib");
+        assert_eq!(json["version"], "1.0");
+        assert_eq!(json["format"], "maven");
+        assert_eq!(json["size_bytes"], 1024);
+        assert_eq!(json["download_count"], 42);
+        assert_eq!(json["score"], 1.0);
+    }
+
+    #[test]
+    fn test_search_result_version_none() {
+        let result = SearchResult {
+            id: Uuid::nil(),
+            repository_id: Uuid::nil(),
+            repository_key: "generic".to_string(),
+            path: "files/readme.txt".to_string(),
+            name: "readme.txt".to_string(),
+            version: None,
+            format: "generic".to_string(),
+            size_bytes: 256,
+            content_type: "text/plain".to_string(),
+            created_at: Utc::now(),
+            download_count: 0,
+            score: 0.5,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json["version"].is_null());
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchFacets
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_facets_default() {
+        let facets = SearchFacets::default();
+        assert!(facets.formats.is_empty());
+        assert!(facets.repositories.is_empty());
+        assert!(facets.content_types.is_empty());
+    }
+
+    #[test]
+    fn test_facet_count_serialization() {
+        let facet = FacetCount {
+            value: "maven".to_string(),
+            count: 100,
+        };
+        let json = serde_json::to_value(&facet).unwrap();
+        assert_eq!(json["value"], "maven");
+        assert_eq!(json["count"], 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // SearchResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_response_serialization() {
+        let response = SearchResponse {
+            items: vec![],
+            total: 0,
+            offset: 0,
+            limit: 20,
+            facets: SearchFacets::default(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["total"], 0);
+        assert_eq!(json["offset"], 0);
+        assert_eq!(json["limit"], 20);
+        assert!(json["items"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Suggest pattern construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_suggest_pattern_construction() {
+        let prefix = "my-lib";
+        let pattern = format!("{}%", prefix);
+        assert_eq!(pattern, "my-lib%");
+    }
+
+    #[test]
+    fn test_suggest_pattern_empty_prefix() {
+        let prefix = "";
+        let pattern = format!("{}%", prefix);
+        assert_eq!(pattern, "%");
+    }
+}

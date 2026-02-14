@@ -379,3 +379,269 @@ macro_rules! audit_log {
         )
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    // -----------------------------------------------------------------------
+    // AuditAction::as_str
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_action_as_str_authentication() {
+        assert_eq!(AuditAction::Login.as_str(), "LOGIN");
+        assert_eq!(AuditAction::Logout.as_str(), "LOGOUT");
+        assert_eq!(AuditAction::LoginFailed.as_str(), "LOGIN_FAILED");
+        assert_eq!(AuditAction::PasswordChanged.as_str(), "PASSWORD_CHANGED");
+        assert_eq!(AuditAction::ApiTokenCreated.as_str(), "API_TOKEN_CREATED");
+        assert_eq!(AuditAction::ApiTokenRevoked.as_str(), "API_TOKEN_REVOKED");
+    }
+
+    #[test]
+    fn test_audit_action_as_str_user_management() {
+        assert_eq!(AuditAction::UserCreated.as_str(), "USER_CREATED");
+        assert_eq!(AuditAction::UserUpdated.as_str(), "USER_UPDATED");
+        assert_eq!(AuditAction::UserDeleted.as_str(), "USER_DELETED");
+        assert_eq!(AuditAction::UserDisabled.as_str(), "USER_DISABLED");
+        assert_eq!(AuditAction::RoleAssigned.as_str(), "ROLE_ASSIGNED");
+        assert_eq!(AuditAction::RoleRevoked.as_str(), "ROLE_REVOKED");
+    }
+
+    #[test]
+    fn test_audit_action_as_str_repository() {
+        assert_eq!(AuditAction::RepositoryCreated.as_str(), "REPOSITORY_CREATED");
+        assert_eq!(AuditAction::RepositoryUpdated.as_str(), "REPOSITORY_UPDATED");
+        assert_eq!(AuditAction::RepositoryDeleted.as_str(), "REPOSITORY_DELETED");
+        assert_eq!(
+            AuditAction::RepositoryPermissionChanged.as_str(),
+            "REPOSITORY_PERMISSION_CHANGED"
+        );
+    }
+
+    #[test]
+    fn test_audit_action_as_str_artifact() {
+        assert_eq!(AuditAction::ArtifactUploaded.as_str(), "ARTIFACT_UPLOADED");
+        assert_eq!(
+            AuditAction::ArtifactDownloaded.as_str(),
+            "ARTIFACT_DOWNLOADED"
+        );
+        assert_eq!(AuditAction::ArtifactDeleted.as_str(), "ARTIFACT_DELETED");
+        assert_eq!(
+            AuditAction::ArtifactMetadataUpdated.as_str(),
+            "ARTIFACT_METADATA_UPDATED"
+        );
+    }
+
+    #[test]
+    fn test_audit_action_as_str_system() {
+        assert_eq!(AuditAction::BackupStarted.as_str(), "BACKUP_STARTED");
+        assert_eq!(AuditAction::BackupCompleted.as_str(), "BACKUP_COMPLETED");
+        assert_eq!(AuditAction::BackupFailed.as_str(), "BACKUP_FAILED");
+        assert_eq!(AuditAction::RestoreStarted.as_str(), "RESTORE_STARTED");
+        assert_eq!(AuditAction::RestoreCompleted.as_str(), "RESTORE_COMPLETED");
+        assert_eq!(AuditAction::RestoreFailed.as_str(), "RESTORE_FAILED");
+    }
+
+    #[test]
+    fn test_audit_action_as_str_peer() {
+        assert_eq!(AuditAction::PeerRegistered.as_str(), "PEER_REGISTERED");
+        assert_eq!(AuditAction::PeerUnregistered.as_str(), "PEER_UNREGISTERED");
+        assert_eq!(AuditAction::PeerSyncStarted.as_str(), "PEER_SYNC_STARTED");
+        assert_eq!(
+            AuditAction::PeerSyncCompleted.as_str(),
+            "PEER_SYNC_COMPLETED"
+        );
+    }
+
+    #[test]
+    fn test_audit_action_as_str_configuration() {
+        assert_eq!(AuditAction::SettingChanged.as_str(), "SETTING_CHANGED");
+        assert_eq!(AuditAction::PluginInstalled.as_str(), "PLUGIN_INSTALLED");
+        assert_eq!(
+            AuditAction::PluginUninstalled.as_str(),
+            "PLUGIN_UNINSTALLED"
+        );
+        assert_eq!(AuditAction::PluginEnabled.as_str(), "PLUGIN_ENABLED");
+        assert_eq!(AuditAction::PluginDisabled.as_str(), "PLUGIN_DISABLED");
+    }
+
+    // -----------------------------------------------------------------------
+    // ResourceType::as_str
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resource_type_as_str_all_variants() {
+        assert_eq!(ResourceType::User.as_str(), "user");
+        assert_eq!(ResourceType::Repository.as_str(), "repository");
+        assert_eq!(ResourceType::Artifact.as_str(), "artifact");
+        assert_eq!(ResourceType::Role.as_str(), "role");
+        assert_eq!(ResourceType::ApiToken.as_str(), "api_token");
+        assert_eq!(ResourceType::PeerInstance.as_str(), "peer_instance");
+        assert_eq!(ResourceType::Backup.as_str(), "backup");
+        assert_eq!(ResourceType::Setting.as_str(), "setting");
+        assert_eq!(ResourceType::Plugin.as_str(), "plugin");
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditEntry builder
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_entry_new_defaults() {
+        let entry = AuditEntry::new(AuditAction::Login, ResourceType::User);
+        assert!(entry.user_id.is_none());
+        assert!(entry.resource_id.is_none());
+        assert!(entry.details.is_none());
+        assert!(entry.ip_address.is_none());
+        // correlation_id should be set (a random UUID)
+        assert!(!entry.correlation_id.is_nil());
+    }
+
+    #[test]
+    fn test_audit_entry_builder_user() {
+        let user_id = Uuid::new_v4();
+        let entry = AuditEntry::new(AuditAction::Login, ResourceType::User).user(user_id);
+        assert_eq!(entry.user_id, Some(user_id));
+    }
+
+    #[test]
+    fn test_audit_entry_builder_resource() {
+        let resource_id = Uuid::new_v4();
+        let entry =
+            AuditEntry::new(AuditAction::ArtifactUploaded, ResourceType::Artifact)
+                .resource(resource_id);
+        assert_eq!(entry.resource_id, Some(resource_id));
+    }
+
+    #[test]
+    fn test_audit_entry_builder_details() {
+        let details = serde_json::json!({"key": "value", "count": 42});
+        let entry = AuditEntry::new(AuditAction::SettingChanged, ResourceType::Setting)
+            .details(details.clone());
+        assert_eq!(entry.details, Some(details));
+    }
+
+    #[test]
+    fn test_audit_entry_builder_ip_v4() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let entry =
+            AuditEntry::new(AuditAction::Login, ResourceType::User).ip(ip);
+        assert_eq!(entry.ip_address, Some(ip));
+    }
+
+    #[test]
+    fn test_audit_entry_builder_ip_v6() {
+        let ip = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let entry =
+            AuditEntry::new(AuditAction::Login, ResourceType::User).ip(ip);
+        assert_eq!(entry.ip_address, Some(ip));
+    }
+
+    #[test]
+    fn test_audit_entry_builder_correlation() {
+        let correlation_id = Uuid::new_v4();
+        let entry = AuditEntry::new(AuditAction::BackupStarted, ResourceType::Backup)
+            .correlation(correlation_id);
+        assert_eq!(entry.correlation_id, correlation_id);
+    }
+
+    #[test]
+    fn test_audit_entry_builder_full_chain() {
+        let user_id = Uuid::new_v4();
+        let resource_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let details = serde_json::json!({"action": "test"});
+
+        let entry = AuditEntry::new(AuditAction::ArtifactDeleted, ResourceType::Artifact)
+            .user(user_id)
+            .resource(resource_id)
+            .details(details.clone())
+            .ip(ip)
+            .correlation(correlation_id);
+
+        assert_eq!(entry.user_id, Some(user_id));
+        assert_eq!(entry.resource_id, Some(resource_id));
+        assert_eq!(entry.details, Some(details));
+        assert_eq!(entry.ip_address, Some(ip));
+        assert_eq!(entry.correlation_id, correlation_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditAction Debug trait
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_action_debug() {
+        let debug_str = format!("{:?}", AuditAction::Login);
+        assert_eq!(debug_str, "Login");
+    }
+
+    #[test]
+    fn test_resource_type_debug() {
+        let debug_str = format!("{:?}", ResourceType::Artifact);
+        assert_eq!(debug_str, "Artifact");
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditLogEntry struct construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_log_entry_construction() {
+        let entry = AuditLogEntry {
+            id: Uuid::new_v4(),
+            user_id: Some(Uuid::new_v4()),
+            action: "LOGIN".to_string(),
+            resource_type: "user".to_string(),
+            resource_id: Some(Uuid::new_v4()),
+            details: Some(serde_json::json!({"ip": "127.0.0.1"})),
+            ip_address: Some("127.0.0.1".to_string()),
+            correlation_id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(entry.action, "LOGIN");
+        assert_eq!(entry.resource_type, "user");
+        assert!(entry.user_id.is_some());
+        assert!(entry.ip_address.is_some());
+    }
+
+    #[test]
+    fn test_audit_log_entry_optional_fields_none() {
+        let entry = AuditLogEntry {
+            id: Uuid::new_v4(),
+            user_id: None,
+            action: "BACKUP_STARTED".to_string(),
+            resource_type: "backup".to_string(),
+            resource_id: None,
+            details: None,
+            ip_address: None,
+            correlation_id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+        };
+        assert!(entry.user_id.is_none());
+        assert!(entry.resource_id.is_none());
+        assert!(entry.details.is_none());
+        assert!(entry.ip_address.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // AuditAction Clone + Copy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_audit_action_clone_copy() {
+        let action = AuditAction::Login;
+        let cloned = action;
+        assert_eq!(action.as_str(), cloned.as_str());
+    }
+
+    #[test]
+    fn test_resource_type_clone_copy() {
+        let rt = ResourceType::Artifact;
+        let cloned = rt;
+        assert_eq!(rt.as_str(), cloned.as_str());
+    }
+}

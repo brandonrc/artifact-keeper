@@ -649,3 +649,232 @@ fn extract_podspec_from_archive(data: &[u8]) -> Result<PodSpec, String> {
 
     Err("No .podspec.json found in archive".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    // -----------------------------------------------------------------------
+    // extract_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_credentials_bearer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer cocoapods-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "cocoapods-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_bearer_lowercase() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("bearer my-pod-token"),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "my-pod-token".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_basic() {
+        let mut headers = HeaderMap::new();
+        let encoded = base64::engine::general_purpose::STANDARD.encode("dev:pw");
+        let value = format!("Basic {}", encoded);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&value).unwrap(),
+        );
+        let result = extract_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("dev".to_string(), "pw".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_credentials_no_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    #[test]
+    fn test_extract_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!"),
+        );
+        assert_eq!(extract_credentials(&headers), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_podspec_from_archive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_podspec_from_archive_empty() {
+        let result = extract_podspec_from_archive(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_podspec_from_archive_invalid_data() {
+        let result = extract_podspec_from_archive(b"not a gzip archive");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_podspec_from_archive_no_podspec() {
+        // Create a valid tar.gz with no .podspec.json file
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut tar_data = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_data);
+            let data = b"random content";
+            let mut header = tar::Header::new_gnu();
+            header.set_path("README.md").unwrap();
+            header.set_size(data.len() as u64);
+            header.set_cksum();
+            builder.append(&header, &data[..]).unwrap();
+            builder.finish().unwrap();
+        }
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_data).unwrap();
+        let compressed = gz.finish().unwrap();
+
+        let result = extract_podspec_from_archive(&compressed);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No .podspec.json found"));
+    }
+
+    #[test]
+    fn test_extract_podspec_from_archive_valid() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let podspec_json = serde_json::json!({
+            "name": "Alamofire",
+            "version": "5.8.0",
+            "summary": "HTTP Networking in Swift",
+            "homepage": "https://github.com/Alamofire/Alamofire",
+        });
+        let podspec_bytes = serde_json::to_vec(&podspec_json).unwrap();
+
+        let mut tar_data = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_data);
+            let mut header = tar::Header::new_gnu();
+            header.set_path("Alamofire.podspec.json").unwrap();
+            header.set_size(podspec_bytes.len() as u64);
+            header.set_cksum();
+            builder.append(&header, &podspec_bytes[..]).unwrap();
+            builder.finish().unwrap();
+        }
+
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_data).unwrap();
+        let compressed = gz.finish().unwrap();
+
+        let result = extract_podspec_from_archive(&compressed);
+        assert!(result.is_ok());
+        let podspec = result.unwrap();
+        assert_eq!(podspec.name, "Alamofire");
+        assert_eq!(podspec.version, "5.8.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Format-specific logic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cocoapods_filename_format() {
+        let name = "Alamofire";
+        let version = "5.8.0";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        assert_eq!(filename, "Alamofire-5.8.0.tar.gz");
+    }
+
+    #[test]
+    fn test_cocoapods_artifact_path_format() {
+        let name = "Moya";
+        let version = "15.0.0";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        let path = format!("{}/{}/{}", name, version, filename);
+        assert_eq!(path, "Moya/15.0.0/Moya-15.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_cocoapods_storage_key_format() {
+        let name = "SnapKit";
+        let version = "5.7.1";
+        let filename = format!("{}-{}.tar.gz", name, version);
+        let key = format!("cocoapods/{}/{}/{}", name, version, filename);
+        assert_eq!(key, "cocoapods/SnapKit/5.7.1/SnapKit-5.7.1.tar.gz");
+    }
+
+    #[test]
+    fn test_cocoapods_podspec_key_format() {
+        let name = "AFNetworking";
+        let version = "4.0.0";
+        let key = format!("cocoapods/{}/{}/{}.podspec.json", name, version, name);
+        assert_eq!(
+            key,
+            "cocoapods/AFNetworking/4.0.0/AFNetworking.podspec.json"
+        );
+    }
+
+    #[test]
+    fn test_sha256_computation() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pod content");
+        let result = format!("{:x}", hasher.finalize());
+        assert_eq!(result.len(), 64);
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction() {
+        let id = uuid::Uuid::new_v4();
+        let repo = RepoInfo {
+            id,
+            storage_path: "/data/cocoapods".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.id, id);
+        assert_eq!(repo.repo_type, "hosted");
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache/cocoapods".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://cdn.cocoapods.org/".to_string()),
+        };
+        assert_eq!(repo.repo_type, "remote");
+        assert_eq!(
+            repo.upstream_url.as_deref(),
+            Some("https://cdn.cocoapods.org/")
+        );
+    }
+}
