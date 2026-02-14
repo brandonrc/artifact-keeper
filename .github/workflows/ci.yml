@@ -113,37 +113,73 @@ jobs:
         run: cargo test --workspace --test '*' --verbose
 
   # ════════════════════════════════════════════════════════════════════════════
-  # SMOKE E2E (Every Push/PR) - Target: < 20 minutes
+  # SMOKE E2E (Every Push/PR) — runs on self-hosted ARC runner in K8s cluster
+  # Tests against the in-cluster backend (same pattern as web Playwright E2E)
   # ════════════════════════════════════════════════════════════════════════════
 
   smoke-e2e:
     name: 🔥 Smoke E2E Tests
-    runs-on: ubuntu-latest
+    runs-on: ak-e2e-runners
     needs: [test-backend-unit]
-    timeout-minutes: 30
+    timeout-minutes: 10
+    env:
+      REGISTRY_URL: http://backend.artifactkeeper-1.svc.cluster.local:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: admin123
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build backend image (cached)
-        uses: docker/build-push-action@v6
+      - uses: actions/setup-python@v5
         with:
-          context: .
-          file: Dockerfile.backend
-          load: true
-          tags: artifact-keeper-backend:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          python-version: '3.12'
 
-      - name: Run smoke E2E tests (PyPI, npm, Cargo)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: smoke-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: smoke-cargo-${{ runner.os }}-
+
+      - name: Install system dependencies
         run: |
-          docker compose -f docker-compose.test.yml --profile smoke up \
-            --abort-on-container-exit
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl jq >/dev/null 2>&1
 
-      - name: Cleanup
-        if: always()
-        run: docker compose -f docker-compose.test.yml --profile smoke down -v --remove-orphans
+      - name: Wait for backend readiness
+        run: |
+          echo "Waiting for backend at $REGISTRY_URL..."
+          for i in $(seq 1 30); do
+            if curl -sf "$REGISTRY_URL/readyz" >/dev/null 2>&1; then
+              echo "Backend is ready"
+              break
+            fi
+            echo "  Attempt $i/30..."
+            sleep 2
+          done
+          curl -sf "$REGISTRY_URL/readyz" || { echo "Backend not ready after 60s"; exit 1; }
+
+      - name: Ensure test repositories exist
+        run: bash scripts/e2e-setup.sh
+
+      - name: Run smoke tests (PyPI)
+        run: bash scripts/native-tests/test-pypi.sh
+
+      - name: Run smoke tests (npm)
+        run: bash scripts/native-tests/test-npm.sh
+
+      - name: Run smoke tests (Cargo)
+        run: bash scripts/native-tests/test-cargo.sh
+
+      - name: Run health probe tests
+        run: bash scripts/native-tests/test-health-probes.sh
 
   # ════════════════════════════════════════════════════════════════════════════
   # SECURITY (Runs on all events, non-blocking)
