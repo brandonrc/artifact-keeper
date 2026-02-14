@@ -107,6 +107,7 @@ pub struct PendingQuery {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)]
 struct ApprovalRow {
     id: Uuid,
     artifact_id: Uuid,
@@ -504,6 +505,7 @@ pub async fn approve_promotion(
     }
 
     #[derive(sqlx::FromRow)]
+    #[allow(dead_code)]
     struct SimpleRow {
         id: Uuid,
         artifact_id: Uuid,
@@ -545,6 +547,7 @@ pub async fn approve_promotion(
     let target_repo = repo_service.get_by_key(&target_repo_key.0).await?;
 
     #[derive(sqlx::FromRow)]
+    #[allow(dead_code)]
     struct ArtifactRow {
         id: Uuid,
         path: String,
