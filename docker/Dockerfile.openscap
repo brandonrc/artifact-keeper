@@ -1,9 +1,10 @@
 # ---------- Stage 1: Build minimal rootfs with OpenSCAP ----------
-FROM registry.access.redhat.com/ubi9/ubi:9.5 AS rootfs-builder
+FROM registry.access.redhat.com/ubi9/ubi:latest AS rootfs-builder
 
 # Add CentOS 9 Stream repo for scap-security-guide (not in UBI repos)
-RUN dnf install -y --nodocs 'dnf-command(config-manager)' && \
-    dnf config-manager --add-repo https://mirror.stream.centos.org/9-stream/AppStream/x86_64/os/
+RUN ARCH=$(uname -m) && \
+    dnf install -y --nodocs 'dnf-command(config-manager)' && \
+    dnf config-manager --add-repo "https://mirror.stream.centos.org/9-stream/AppStream/${ARCH}/os/"
 
 # Install OpenSCAP, SCAP content, and Python into a clean rootfs
 RUN mkdir -p /mnt/rootfs && \
@@ -23,8 +24,38 @@ RUN echo 'oscap:x:1001:0:OpenSCAP Scanner:/home/oscap:/sbin/nologin' >> /mnt/roo
     mkdir -p /mnt/rootfs/home/oscap /mnt/rootfs/scan-workspace /mnt/rootfs/usr/local/bin && \
     chown -R 1001:0 /mnt/rootfs/home/oscap /mnt/rootfs/scan-workspace
 
+# ---------- STIG hardening (applicable subset for ubi-micro) ----------
+
+# Crypto policy: FIPS-grade defaults for OpenSSL
+RUN if [ -f /mnt/rootfs/etc/pki/tls/openssl.cnf ]; then \
+      echo -e "\n[algorithm_sect]\ndefault_properties = fips=yes" >> /mnt/rootfs/etc/pki/tls/openssl.cnf; \
+    fi
+
+# Disable core dumps
+RUN mkdir -p /mnt/rootfs/etc/security/limits.d && \
+    echo "* hard core 0" > /mnt/rootfs/etc/security/limits.d/50-coredump.conf
+
+# Max concurrent login sessions
+RUN echo "* hard maxlogins 10" > /mnt/rootfs/etc/security/limits.d/50-maxlogins.conf
+
+# Ensure no empty passwords
+RUN sed -i 's/\bnullok\b//g' /mnt/rootfs/etc/pam.d/* 2>/dev/null || true
+
+# Restrictive umask
+RUN if [ -f /mnt/rootfs/etc/login.defs ]; then \
+      sed -i 's/^UMASK.*/UMASK\t\t077/' /mnt/rootfs/etc/login.defs; \
+    fi
+
+# Clean machine-id
+RUN rm -f /mnt/rootfs/etc/machine-id && \
+    touch /mnt/rootfs/etc/machine-id && \
+    chmod 0444 /mnt/rootfs/etc/machine-id
+
+# Remove leftover cache/tmp
+RUN rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
+
 # ---------- Stage 2: UBI 9 Micro runtime ----------
-FROM registry.access.redhat.com/ubi9/ubi-micro:9.5
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest
 
 # Copy minimal rootfs (oscap, scap-security-guide, python3, libs)
 COPY --from=rootfs-builder /mnt/rootfs /
