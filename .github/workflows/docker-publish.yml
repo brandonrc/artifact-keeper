@@ -190,7 +190,7 @@ jobs:
       # Unpatched UBI base image CVEs (Red Hat's responsibility) are still
       # reported in SARIF for visibility but don't block the build.
       - name: Trivy scan - Backend
-        uses: aquasecurity/trivy-action@v0.31.0
+        uses: aquasecurity/trivy-action@0.34.0
         with:
           image-ref: ${{ steps.refs.outputs.backend }}
           format: 'sarif'
@@ -200,7 +200,7 @@ jobs:
           exit-code: '1'
 
       - name: Trivy scan - OpenSCAP
-        uses: aquasecurity/trivy-action@v0.31.0
+        uses: aquasecurity/trivy-action@0.34.0
         if: success() || failure()
         with:
           image-ref: ${{ steps.refs.outputs.openscap }}
