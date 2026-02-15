@@ -114,7 +114,7 @@ RUN if [ -f /mnt/rootfs/etc/dnf/dnf.conf ]; then \
 RUN rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
 
 # ---------- Stage 5: Download scanner CLIs ----------
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.5 AS scanners
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.7 AS scanners
 RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 tar gzip && \
     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /opt/bin && \
     curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /opt/bin && \
