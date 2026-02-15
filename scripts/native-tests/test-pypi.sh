@@ -99,7 +99,7 @@ echo "✅ PEP 691 JSON API works"
 echo "==> [5/6] Installing package with pip..."
 pip3 install \
   --index-url "$PYPI_URL/simple/" \
-  --trusted-host "$(echo "$REGISTRY_URL" | sed 's|https\?://||' | cut -d: -f1)" \
+  --trusted-host "$(echo "$REGISTRY_URL" | sed -E 's|https?://||' | cut -d: -f1)" \
   "test-package-native==$TEST_VERSION" 2>&1 | tail -3
 
 # Verify installation

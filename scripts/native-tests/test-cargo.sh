@@ -82,8 +82,6 @@ mkdir -p "$WORK_DIR/test-install"
 cd "$WORK_DIR/test-install"
 cargo init --name test-consumer
 cat >> Cargo.toml << EOF
-
-[dependencies]
 test-crate-native = { version = "$TEST_VERSION", registry = "test-registry" }
 EOF
 
