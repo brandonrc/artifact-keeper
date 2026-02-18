@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::models::user::User;
+use crate::models::user::{AuthProvider, User};
 
 /// Summary of a service account for list responses.
 #[derive(Debug, Clone, Serialize)]

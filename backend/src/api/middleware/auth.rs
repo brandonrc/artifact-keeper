@@ -22,7 +22,6 @@ use axum::{
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::user::User;
 use crate::services::auth_service::{AuthService, Claims};
 
 /// Custom header name for API key
