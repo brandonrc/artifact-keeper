@@ -45,6 +45,7 @@ run_test() {
 run_test "Peer Registration"  /scripts/test-peer-registration.sh
 run_test "Sync Policy"        /scripts/test-sync-policy.sh
 run_test "Artifact Sync"      /scripts/test-artifact-sync.sh
+run_test "Retroactive Sync"   /scripts/test-retroactive-sync.sh
 run_test "Heartbeat"          /scripts/test-heartbeat.sh
 
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

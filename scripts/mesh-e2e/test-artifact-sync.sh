@@ -71,7 +71,7 @@ pass "repository 'mesh-sync-test' ensured on peer-b"
 # 4. Register peer-b on peer-a (if not already done)
 # ---------------------------------------------------------------------------
 log "Ensuring peer-b is registered on peer-a..."
-curl -sf -X POST "$PEER_A_URL/api/v1/peers" \
+curl -s -X POST "$PEER_A_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_A_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -87,10 +87,10 @@ PEERS_ON_A=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_A_TOKEN")
 
 PEER_B_ID=$(echo "$PEERS_ON_A" | jq -r '
-  if type == "array" then
-    [.[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // .peer_id // empty
-  elif .peers then
-    [.peers[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // .peer_id // empty
+  if .items then
+    [.items[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // empty
+  elif type == "array" then
+    [.[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // empty
   else empty end')
 
 [ -n "$PEER_B_ID" ] \
@@ -98,18 +98,34 @@ PEER_B_ID=$(echo "$PEERS_ON_A" | jq -r '
   || fail "could not find peer-b in peer-a peer list"
 
 # ---------------------------------------------------------------------------
-# 5. Subscribe peer-b to the repo
+# 5. Look up the repository ID for mesh-sync-test
+# ---------------------------------------------------------------------------
+log "Looking up repository ID for 'mesh-sync-test'..."
+REPO_ID=$(curl -sf -X GET "$PEER_A_URL/api/v1/repositories" \
+  -H "Authorization: Bearer $PEER_A_TOKEN" | jq -r '
+  if .items then
+    [.items[] | select(.key == "mesh-sync-test")][0] | .id // empty
+  elif type == "array" then
+    [.[] | select(.key == "mesh-sync-test")][0] | .id // empty
+  else empty end')
+
+[ -n "$REPO_ID" ] \
+  && pass "repository ID: $REPO_ID" \
+  || fail "could not find repository 'mesh-sync-test'"
+
+# ---------------------------------------------------------------------------
+# 6. Subscribe peer-b to the repo
 # ---------------------------------------------------------------------------
 log "Subscribing peer-b to 'mesh-sync-test'..."
-SUB_RESP=$(curl -sf -X POST "$PEER_A_URL/api/v1/peers/$PEER_B_ID/repositories" \
+SUB_RESP=$(curl -s -X POST "$PEER_A_URL/api/v1/peers/$PEER_B_ID/repositories" \
   -H "Authorization: Bearer $PEER_A_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"repository_key": "mesh-sync-test"}' 2>/dev/null || echo "{}")
+  -d "{\"repository_id\": \"$REPO_ID\", \"replication_mode\": \"push\", \"sync_enabled\": true}" 2>/dev/null || echo "{}")
 
 pass "peer-b subscribed to 'mesh-sync-test'"
 
 # ---------------------------------------------------------------------------
-# 6. Upload artifact to peer-a
+# 7. Upload artifact to peer-a
 # ---------------------------------------------------------------------------
 log "Uploading artifact to peer-a..."
 ARTIFACT_CONTENT="mesh-replication-e2e-test-content-$(date +%s)"
@@ -122,7 +138,7 @@ UPLOAD_RESP=$(printf '%s' "$ARTIFACT_CONTENT" | curl -sf -X PUT \
 pass "artifact uploaded to peer-a"
 
 # ---------------------------------------------------------------------------
-# 7. Wait briefly and check sync tasks
+# 8. Wait briefly and check sync tasks
 # ---------------------------------------------------------------------------
 log "Waiting 2 seconds before checking sync tasks..."
 sleep 2
@@ -132,7 +148,7 @@ TASKS_RESP=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/$PEER_B_ID/sync/tasks" \
 
 TASK_COUNT=$(echo "$TASKS_RESP" | jq -r '
   if type == "array" then length
-  elif .tasks then (.tasks | length)
+  elif .items then (.items | length)
   else 0 end')
 
 [ "$TASK_COUNT" -gt 0 ] 2>/dev/null \
@@ -140,13 +156,13 @@ TASK_COUNT=$(echo "$TASKS_RESP" | jq -r '
   || echo "  [INFO] no sync tasks found yet (may appear after worker run)"
 
 # ---------------------------------------------------------------------------
-# 8. Wait for sync worker (runs every ~10s)
+# 9. Wait for sync worker (runs every ~10s)
 # ---------------------------------------------------------------------------
 log "Waiting 15 seconds for sync worker to process..."
 sleep 15
 
 # ---------------------------------------------------------------------------
-# 9. Check sync task status
+# 10. Check sync task status
 # ---------------------------------------------------------------------------
 log "Checking sync task status..."
 TASKS_AFTER=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/$PEER_B_ID/sync/tasks" \
@@ -155,8 +171,8 @@ TASKS_AFTER=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/$PEER_B_ID/sync/tasks" \
 COMPLETED_COUNT=$(echo "$TASKS_AFTER" | jq -r '
   if type == "array" then
     [.[] | select(.status == "completed" or .status == "success" or .status == "synced")] | length
-  elif .tasks then
-    [.tasks[] | select(.status == "completed" or .status == "success" or .status == "synced")] | length
+  elif .items then
+    [.items[] | select(.status == "completed" or .status == "success" or .status == "synced")] | length
   else 0 end')
 
 [ "$COMPLETED_COUNT" -gt 0 ] 2>/dev/null \
@@ -164,7 +180,7 @@ COMPLETED_COUNT=$(echo "$TASKS_AFTER" | jq -r '
   || echo "  [INFO] no completed sync tasks yet (checking artifact directly)"
 
 # ---------------------------------------------------------------------------
-# 10. Verify artifact exists on peer-b
+# 11. Verify artifact exists on peer-b
 # ---------------------------------------------------------------------------
 log "Attempting to download artifact from peer-b..."
 DOWNLOAD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
