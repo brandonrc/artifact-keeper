@@ -46,7 +46,7 @@ pass "repository 'mesh-policy-test' ensured on peer-a"
 # 3. Ensure peer-b is registered on peer-a
 # ---------------------------------------------------------------------------
 log "Ensuring peer-b is registered on peer-a..."
-curl -sf -X POST "$PEER_A_URL/api/v1/peers" \
+curl -s -X POST "$PEER_A_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_A_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -62,10 +62,10 @@ PEERS_ON_A=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_A_TOKEN")
 
 PEER_B_ID=$(echo "$PEERS_ON_A" | jq -r '
-  if type == "array" then
-    [.[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // .peer_id // empty
-  elif .peers then
-    [.peers[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // .peer_id // empty
+  if .items then
+    [.items[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // empty
+  elif type == "array" then
+    [.[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")][0] | .id // empty
   else empty end')
 
 [ -n "$PEER_B_ID" ] \
@@ -107,20 +107,34 @@ pass "sync policy evaluation triggered"
 sleep 2
 
 # ---------------------------------------------------------------------------
-# 6. Verify peer-b has subscriptions
+# 6. Get the repository ID for mesh-policy-test
+# ---------------------------------------------------------------------------
+log "Looking up repository ID for 'mesh-policy-test'..."
+REPOS_RESP=$(curl -sf -X GET "$PEER_A_URL/api/v1/repositories" \
+  -H "Authorization: Bearer $PEER_A_TOKEN")
+
+REPO_ID=$(echo "$REPOS_RESP" | jq -r '
+  if .items then
+    [.items[] | select(.key == "mesh-policy-test")][0] | .id // empty
+  elif type == "array" then
+    [.[] | select(.key == "mesh-policy-test")][0] | .id // empty
+  else empty end')
+
+[ -n "$REPO_ID" ] \
+  && pass "repository ID: $REPO_ID" \
+  || fail "could not find repository 'mesh-policy-test'"
+
+# ---------------------------------------------------------------------------
+# 7. Verify peer-b has subscriptions (endpoint returns Vec<Uuid>)
 # ---------------------------------------------------------------------------
 log "Checking subscriptions for peer-b..."
 SUBS_RESP=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/$PEER_B_ID/repositories" \
   -H "Authorization: Bearer $PEER_A_TOKEN" 2>/dev/null || echo "[]")
 
-# Check if the generic repo is subscribed
-SUB_COUNT=$(echo "$SUBS_RESP" | jq -r '
+# The endpoint returns a flat array of repository UUIDs
+SUB_COUNT=$(echo "$SUBS_RESP" | jq -r --arg repo_id "$REPO_ID" '
   if type == "array" then
-    [.[] | select(.repository_key == "mesh-policy-test" or .key == "mesh-policy-test" or .repo_key == "mesh-policy-test")] | length
-  elif .repositories then
-    [.repositories[] | select(.repository_key == "mesh-policy-test" or .key == "mesh-policy-test" or .repo_key == "mesh-policy-test")] | length
-  elif .subscriptions then
-    [.subscriptions[] | select(.repository_key == "mesh-policy-test" or .key == "mesh-policy-test" or .repo_key == "mesh-policy-test")] | length
+    [.[] | select(. == $repo_id)] | length
   else 0 end')
 
 [ "$SUB_COUNT" -gt 0 ] 2>/dev/null \

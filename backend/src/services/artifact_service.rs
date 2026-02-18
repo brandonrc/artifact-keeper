@@ -277,15 +277,25 @@ impl ArtifactService {
             let db = self.db.clone();
             let artifact_id = artifact.id;
             let repository_id = artifact.repository_id;
+            let artifact_path = artifact.path.clone();
+            let artifact_size = artifact.size_bytes;
+            let artifact_created = artifact.created_at;
             tokio::spawn(async move {
-                // Find peers with push/mirror subscriptions for this repo
-                let subscriptions: std::result::Result<Vec<(uuid::Uuid,)>, _> = sqlx::query_as(
+                // Find peers with push/mirror subscriptions, including the policy's artifact_filter
+                #[derive(sqlx::FromRow)]
+                struct SubWithFilter {
+                    peer_instance_id: uuid::Uuid,
+                    artifact_filter: Option<serde_json::Value>,
+                }
+
+                let subscriptions: std::result::Result<Vec<SubWithFilter>, _> = sqlx::query_as(
                     r#"
-                    SELECT peer_instance_id
-                    FROM peer_repo_subscriptions
-                    WHERE repository_id = $1
-                      AND sync_enabled = true
-                      AND replication_mode::text IN ('push', 'mirror')
+                    SELECT prs.peer_instance_id, sp.artifact_filter
+                    FROM peer_repo_subscriptions prs
+                    LEFT JOIN sync_policies sp ON sp.id = prs.policy_id
+                    WHERE prs.repository_id = $1
+                      AND prs.sync_enabled = true
+                      AND prs.replication_mode::text IN ('push', 'mirror')
                     "#,
                 )
                 .bind(repository_id)
@@ -296,25 +306,44 @@ impl ArtifactService {
                     Ok(subs) if !subs.is_empty() => {
                         let peer_service =
                             crate::services::peer_instance_service::PeerInstanceService::new(db);
-                        let count = subs.len();
-                        for (peer_instance_id,) in &subs {
+                        let mut queued = 0usize;
+                        for sub in &subs {
+                            let filter: crate::services::sync_policy_service::ArtifactFilter = sub
+                                .artifact_filter
+                                .as_ref()
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                .unwrap_or_default();
+
+                            if !filter.matches(&artifact_path, artifact_size, artifact_created) {
+                                tracing::debug!(
+                                    "Artifact {} filtered out for peer {} by policy artifact_filter",
+                                    artifact_id,
+                                    sub.peer_instance_id,
+                                );
+                                continue;
+                            }
+
                             if let Err(e) = peer_service
-                                .queue_sync_task(*peer_instance_id, artifact_id, 0)
+                                .queue_sync_task(sub.peer_instance_id, artifact_id, 0)
                                 .await
                             {
                                 tracing::warn!(
                                     "Failed to queue sync task for peer {} artifact {}: {}",
-                                    peer_instance_id,
+                                    sub.peer_instance_id,
                                     artifact_id,
                                     e
                                 );
+                            } else {
+                                queued += 1;
                             }
                         }
-                        tracing::info!(
-                            "Queued sync tasks for artifact {} to {} peer(s)",
-                            artifact_id,
-                            count
-                        );
+                        if queued > 0 {
+                            tracing::info!(
+                                "Queued sync tasks for artifact {} to {} peer(s)",
+                                artifact_id,
+                                queued
+                            );
+                        }
                     }
                     Ok(_) => {} // No push/mirror subscriptions
                     Err(e) => {

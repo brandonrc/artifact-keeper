@@ -149,6 +149,7 @@ pub struct EvaluationResultResponse {
     pub updated: usize,
     pub removed: usize,
     pub policies_evaluated: usize,
+    pub retroactive_tasks_queued: usize,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -275,6 +276,7 @@ fn evaluation_to_response(r: EvaluationResult) -> EvaluationResultResponse {
         updated: r.updated,
         removed: r.removed,
         policies_evaluated: r.policies_evaluated,
+        retroactive_tasks_queued: r.retroactive_tasks_queued,
     }
 }
 
@@ -696,12 +698,14 @@ mod tests {
             updated: 2,
             removed: 1,
             policies_evaluated: 5,
+            retroactive_tasks_queued: 7,
         };
         let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["created"], 3);
         assert_eq!(json["updated"], 2);
         assert_eq!(json["removed"], 1);
         assert_eq!(json["policies_evaluated"], 5);
+        assert_eq!(json["retroactive_tasks_queued"], 7);
     }
 
     #[test]

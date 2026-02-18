@@ -32,7 +32,7 @@ log "Getting peer-a identity..."
 PEER_A_IDENTITY=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/identity" \
   -H "Authorization: Bearer $PEER_A_TOKEN")
 
-PEER_A_ID=$(echo "$PEER_A_IDENTITY" | jq -r '.peer_instance_id // .id // empty')
+PEER_A_ID=$(echo "$PEER_A_IDENTITY" | jq -r '.peer_id // empty')
 [ -n "$PEER_A_ID" ] \
   && pass "peer-a identity: id=$PEER_A_ID" \
   || fail "could not retrieve peer-a identity"

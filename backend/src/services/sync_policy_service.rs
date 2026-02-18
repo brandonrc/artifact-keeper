@@ -122,6 +122,51 @@ pub struct ArtifactFilter {
     pub max_size_bytes: Option<i64>,
 }
 
+impl ArtifactFilter {
+    /// Check whether an artifact passes this filter.
+    ///
+    /// Returns `true` if the artifact should be synced (passes all constraints).
+    /// An empty/default filter passes everything.
+    pub fn matches(
+        &self,
+        artifact_path: &str,
+        artifact_size_bytes: i64,
+        artifact_created_at: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        if let Some(max_age) = self.max_age_days {
+            let age = chrono::Utc::now() - artifact_created_at;
+            if age.num_days() > max_age as i64 {
+                return false;
+            }
+        }
+
+        if let Some(max_size) = self.max_size_bytes {
+            if artifact_size_bytes > max_size {
+                return false;
+            }
+        }
+
+        if !self.include_paths.is_empty() {
+            let matches_any = self.include_paths.iter().any(|pattern| {
+                let sql_pattern = pattern.replace('*', "%");
+                sql_like_match(artifact_path, &sql_pattern)
+            });
+            if !matches_any {
+                return false;
+            }
+        }
+
+        if self.exclude_paths.iter().any(|pattern| {
+            let sql_pattern = pattern.replace('*', "%");
+            sql_like_match(artifact_path, &sql_pattern)
+        }) {
+            return false;
+        }
+
+        true
+    }
+}
+
 /// Request to create a new sync policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSyncPolicyRequest {
@@ -180,6 +225,7 @@ pub struct EvaluationResult {
     pub updated: usize,
     pub removed: usize,
     pub policies_evaluated: usize,
+    pub retroactive_tasks_queued: usize,
 }
 
 /// Preview result showing what a policy would match.
@@ -545,6 +591,8 @@ impl SyncPolicyService {
             .collect();
 
         // Upsert desired subscriptions
+        let mut newly_created: Vec<(Uuid, Uuid, Uuid)> = Vec::new();
+
         for ((peer_id, repo_id), policy_id) in &desired {
             // Find the policy to get replication mode
             let policy = policies.iter().find(|p| p.id == *policy_id);
@@ -554,7 +602,7 @@ impl SyncPolicyService {
 
             match existing_set.get(&(*peer_id, *repo_id)) {
                 Some(Some(existing_policy_id)) if existing_policy_id == policy_id => {
-                    // Already exists with the same policy — update replication mode just in case
+                    // Already exists with the same policy -- update replication mode just in case
                     sqlx::query(
                         r#"
                         UPDATE peer_repo_subscriptions
@@ -572,7 +620,7 @@ impl SyncPolicyService {
                     updated += 1;
                 }
                 Some(_) => {
-                    // Exists but with a different policy — update policy_id
+                    // Exists but with a different policy -- update policy_id
                     sqlx::query(
                         r#"
                         UPDATE peer_repo_subscriptions
@@ -590,7 +638,7 @@ impl SyncPolicyService {
                     updated += 1;
                 }
                 None => {
-                    // New subscription — insert. Use ON CONFLICT to handle the case where
+                    // New subscription -- insert. Use ON CONFLICT to handle the case where
                     // a manual subscription already exists for this (peer, repo) pair.
                     // We only create a new one if there is no existing subscription at all.
                     let result = sqlx::query(
@@ -611,16 +659,23 @@ impl SyncPolicyService {
 
                     if result.rows_affected() > 0 {
                         created += 1;
+                        newly_created.push((*peer_id, *repo_id, *policy_id));
                     }
                 }
             }
         }
+
+        // Queue sync tasks for existing artifacts in newly created subscriptions
+        let retroactive_tasks_queued = self
+            .queue_retroactive_sync_tasks(&newly_created, &policies)
+            .await?;
 
         Ok(EvaluationResult {
             created,
             updated,
             removed,
             policies_evaluated,
+            retroactive_tasks_queued,
         })
     }
 
@@ -711,13 +766,14 @@ impl SyncPolicyService {
         }
 
         // Upsert desired subscriptions for this repo
+        let mut newly_created: Vec<(Uuid, Uuid, Uuid)> = Vec::new();
         for (peer_id, policy_id) in &desired {
             let policy = policies.iter().find(|p| p.id == *policy_id);
             let replication_mode = policy
                 .map(|p| p.replication_mode.as_str())
                 .unwrap_or("push");
 
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO peer_repo_subscriptions
                     (peer_instance_id, repository_id, sync_enabled, replication_mode, policy_id)
@@ -732,7 +788,15 @@ impl SyncPolicyService {
             .execute(&self.db)
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
+
+            if result.rows_affected() > 0 {
+                newly_created.push((*peer_id, repo_id, *policy_id));
+            }
         }
+
+        let _ = self
+            .queue_retroactive_sync_tasks(&newly_created, &policies)
+            .await;
 
         Ok(())
     }
@@ -792,13 +856,14 @@ impl SyncPolicyService {
         }
 
         // Upsert desired subscriptions for this peer
+        let mut newly_created: Vec<(Uuid, Uuid, Uuid)> = Vec::new();
         for (repo_id, policy_id) in &desired {
             let policy = policies.iter().find(|p| p.id == *policy_id);
             let replication_mode = policy
                 .map(|p| p.replication_mode.as_str())
                 .unwrap_or("push");
 
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO peer_repo_subscriptions
                     (peer_instance_id, repository_id, sync_enabled, replication_mode, policy_id)
@@ -813,9 +878,92 @@ impl SyncPolicyService {
             .execute(&self.db)
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
+
+            if result.rows_affected() > 0 {
+                newly_created.push((peer_id, *repo_id, *policy_id));
+            }
         }
 
+        let _ = self
+            .queue_retroactive_sync_tasks(&newly_created, &policies)
+            .await;
+
         Ok(())
+    }
+
+    /// Queue sync tasks for existing artifacts in newly created subscriptions.
+    ///
+    /// When a policy evaluation creates new (peer, repo) subscriptions, this method
+    /// finds all existing artifacts in those repos, applies the policy's artifact_filter,
+    /// and queues sync tasks for matching artifacts.
+    async fn queue_retroactive_sync_tasks(
+        &self,
+        new_subscriptions: &[(Uuid, Uuid, Uuid)], // (peer_id, repo_id, policy_id)
+        policies: &[SyncPolicy],
+    ) -> Result<usize> {
+        if new_subscriptions.is_empty() {
+            return Ok(0);
+        }
+
+        #[derive(sqlx::FromRow)]
+        struct ArtifactRow {
+            id: Uuid,
+            path: String,
+            size_bytes: i64,
+            created_at: DateTime<Utc>,
+        }
+
+        let mut total_queued: usize = 0;
+
+        for (peer_id, repo_id, policy_id) in new_subscriptions {
+            let filter: ArtifactFilter = policies
+                .iter()
+                .find(|p| p.id == *policy_id)
+                .and_then(|p| serde_json::from_value(p.artifact_filter.clone()).ok())
+                .unwrap_or_default();
+
+            let artifacts: Vec<ArtifactRow> = sqlx::query_as(
+                r#"
+                SELECT id, path, size_bytes, created_at
+                FROM artifacts
+                WHERE repository_id = $1 AND is_deleted = false
+                "#,
+            )
+            .bind(repo_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            for artifact in &artifacts {
+                if !filter.matches(&artifact.path, artifact.size_bytes, artifact.created_at) {
+                    continue;
+                }
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO sync_tasks (peer_instance_id, artifact_id, priority)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (peer_instance_id, artifact_id)
+                    DO UPDATE SET priority = GREATEST(sync_tasks.priority, $3)
+                    "#,
+                )
+                .bind(peer_id)
+                .bind(artifact.id)
+                .bind(0i32)
+                .execute(&self.db)
+                .await;
+                total_queued += 1;
+            }
+        }
+
+        if total_queued > 0 {
+            tracing::info!(
+                "Retroactively queued {} sync task(s) for {} new subscription(s)",
+                total_queued,
+                new_subscriptions.len()
+            );
+        }
+
+        Ok(total_queued)
     }
 
     // -----------------------------------------------------------------------
@@ -1576,12 +1724,14 @@ mod tests {
             updated: 3,
             removed: 1,
             policies_evaluated: 2,
+            retroactive_tasks_queued: 10,
         };
         let json: serde_json::Value = serde_json::to_value(&r).unwrap();
         assert_eq!(json["created"], 5);
         assert_eq!(json["updated"], 3);
         assert_eq!(json["removed"], 1);
         assert_eq!(json["policies_evaluated"], 2);
+        assert_eq!(json["retroactive_tasks_queued"], 10);
     }
 
     #[test]
@@ -2135,5 +2285,91 @@ mod tests {
         fn _assert_constructor_exists(_db: sqlx::PgPool) {
             let _svc = SyncPolicyService::new(_db);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactFilter::matches()
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_default_passes_everything() {
+        let f = ArtifactFilter::default();
+        assert!(f.matches("any/path.jar", 999_999, chrono::Utc::now()));
+    }
+
+    #[test]
+    fn test_filter_max_age_rejects_old() {
+        let f = ArtifactFilter {
+            max_age_days: Some(7),
+            ..Default::default()
+        };
+        let old = chrono::Utc::now() - chrono::Duration::days(10);
+        let recent = chrono::Utc::now() - chrono::Duration::days(3);
+        assert!(!f.matches("a.jar", 100, old));
+        assert!(f.matches("a.jar", 100, recent));
+    }
+
+    #[test]
+    fn test_filter_max_size_rejects_large() {
+        let f = ArtifactFilter {
+            max_size_bytes: Some(1000),
+            ..Default::default()
+        };
+        assert!(!f.matches("a.jar", 2000, chrono::Utc::now()));
+        assert!(f.matches("a.jar", 500, chrono::Utc::now()));
+        assert!(f.matches("a.jar", 1000, chrono::Utc::now()));
+    }
+
+    #[test]
+    fn test_filter_include_paths() {
+        let f = ArtifactFilter {
+            include_paths: vec!["release/*".to_string(), "stable/*".to_string()],
+            ..Default::default()
+        };
+        assert!(f.matches("release/v1.0.jar", 100, chrono::Utc::now()));
+        assert!(f.matches("stable/build.tar", 100, chrono::Utc::now()));
+        assert!(!f.matches("snapshot/v1.0.jar", 100, chrono::Utc::now()));
+    }
+
+    #[test]
+    fn test_filter_exclude_paths() {
+        let f = ArtifactFilter {
+            exclude_paths: vec!["*.snapshot".to_string(), "tmp/*".to_string()],
+            ..Default::default()
+        };
+        assert!(!f.matches("build.snapshot", 100, chrono::Utc::now()));
+        assert!(!f.matches("tmp/file.jar", 100, chrono::Utc::now()));
+        assert!(f.matches("release/file.jar", 100, chrono::Utc::now()));
+    }
+
+    #[test]
+    fn test_filter_combined_constraints() {
+        let f = ArtifactFilter {
+            max_age_days: Some(30),
+            max_size_bytes: Some(5000),
+            include_paths: vec!["release/*".to_string()],
+            exclude_paths: vec!["*.tmp".to_string()],
+        };
+        let now = chrono::Utc::now();
+        // Passes all constraints
+        assert!(f.matches("release/v1.jar", 1000, now));
+        // Fails: wrong path
+        assert!(!f.matches("snapshot/v1.jar", 1000, now));
+        // Fails: too large
+        assert!(!f.matches("release/v1.jar", 10_000, now));
+        // Fails: excluded
+        assert!(!f.matches("release/build.tmp", 1000, now));
+        // Fails: too old
+        let old = now - chrono::Duration::days(60);
+        assert!(!f.matches("release/v1.jar", 1000, old));
+    }
+
+    #[test]
+    fn test_filter_empty_include_means_all() {
+        let f = ArtifactFilter {
+            include_paths: vec![],
+            ..Default::default()
+        };
+        assert!(f.matches("anything/at/all.bin", 100, chrono::Utc::now()));
     }
 }

@@ -33,7 +33,7 @@ log "Getting peer-a identity..."
 PEER_A_IDENTITY=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers/identity" \
   -H "Authorization: Bearer $PEER_A_TOKEN")
 
-PEER_A_INSTANCE_ID=$(echo "$PEER_A_IDENTITY" | jq -r '.peer_instance_id // .id // empty')
+PEER_A_INSTANCE_ID=$(echo "$PEER_A_IDENTITY" | jq -r '.peer_id // empty')
 PEER_A_NAME=$(echo "$PEER_A_IDENTITY" | jq -r '.name // empty')
 
 [ -n "$PEER_A_INSTANCE_ID" ] \
@@ -79,15 +79,15 @@ ANNOUNCE_RESP=$(curl -sf -X POST "$PEER_B_URL/api/v1/peers/announce" \
   -H "Authorization: Bearer $PEER_B_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "{
-    \"peer_instance_id\": \"$PEER_A_INSTANCE_ID\",
+    \"peer_id\": \"$PEER_A_INSTANCE_ID\",
     \"name\": \"peer-a\",
     \"endpoint_url\": \"http://backend-peer-a:8080\",
     \"api_key\": \"peer-a-key\"
   }")
 
-PEER_A_ID_ON_B=$(echo "$ANNOUNCE_RESP" | jq -r '.id // .peer_id // empty')
-[ -n "$PEER_A_ID_ON_B" ] \
-  && pass "peer-a announced on peer-b (id=$PEER_A_ID_ON_B)" \
+ANNOUNCE_STATUS=$(echo "$ANNOUNCE_RESP" | jq -r '.status // empty')
+[ "$ANNOUNCE_STATUS" = "accepted" ] \
+  && pass "peer-a announced on peer-b (status=accepted)" \
   || fail "failed to announce peer-a on peer-b: $ANNOUNCE_RESP"
 
 # ---------------------------------------------------------------------------
@@ -98,10 +98,10 @@ PEERS_ON_B=$(curl -sf -X GET "$PEER_B_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_B_TOKEN")
 
 PEER_A_FOUND=$(echo "$PEERS_ON_B" | jq -r '
-  if type == "array" then
+  if .items then
+    [.items[] | select(.name == "peer-a" or .endpoint_url == "http://backend-peer-a:8080")] | length
+  elif type == "array" then
     [.[] | select(.name == "peer-a" or .endpoint_url == "http://backend-peer-a:8080")] | length
-  elif .peers then
-    [.peers[] | select(.name == "peer-a" or .endpoint_url == "http://backend-peer-a:8080")] | length
   else 0 end')
 
 [ "$PEER_A_FOUND" -gt 0 ] 2>/dev/null \
@@ -116,10 +116,10 @@ PEERS_ON_A=$(curl -sf -X GET "$PEER_A_URL/api/v1/peers" \
   -H "Authorization: Bearer $PEER_A_TOKEN")
 
 PEER_B_FOUND=$(echo "$PEERS_ON_A" | jq -r '
-  if type == "array" then
+  if .items then
+    [.items[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")] | length
+  elif type == "array" then
     [.[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")] | length
-  elif .peers then
-    [.peers[] | select(.name == "peer-b" or .endpoint_url == "http://backend-peer-b:8080")] | length
   else 0 end')
 
 [ "$PEER_B_FOUND" -gt 0 ] 2>/dev/null \
