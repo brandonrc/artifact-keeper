@@ -28,6 +28,7 @@ pub struct User {
     pub display_name: Option<String>,
     pub is_active: bool,
     pub is_admin: bool,
+    pub is_service_account: bool,
     pub must_change_password: bool,
     pub totp_secret: Option<String>,
     pub totp_enabled: bool,
@@ -51,4 +52,6 @@ pub struct ApiToken {
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub created_by_user_id: Option<Uuid>,
+    pub description: Option<String>,
 }

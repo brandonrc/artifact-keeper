@@ -204,7 +204,9 @@ mod tests {
             email: "admin@example.com".to_string(),
             is_admin: true,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         };
         assert!(auth.is_admin);
         assert!(!auth.is_api_token);
@@ -218,7 +220,9 @@ mod tests {
             email: "ci@example.com".to_string(),
             is_admin: false,
             is_api_token: true,
+            is_service_account: false,
             scopes: Some(vec!["read".to_string()]),
+            allowed_repo_ids: None,
         };
         assert!(!auth.is_admin);
         assert!(auth.is_api_token);

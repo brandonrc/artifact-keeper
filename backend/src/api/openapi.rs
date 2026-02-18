@@ -47,6 +47,7 @@ use utoipa::{Modify, OpenApi};
         (name = "sso", description = "Single sign-on configuration"),
         (name = "migration", description = "Data migration and import"),
         (name = "quality", description = "Artifact health scoring and quality gates"),
+        (name = "service_accounts", description = "Service account management"),
         (name = "health", description = "Health and readiness checks"),
     ),
     components(schemas(ErrorResponse))
@@ -124,6 +125,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     doc.merge(super::handlers::quality_gates::QualityGatesApiDoc::openapi());
     doc.merge(super::handlers::approval::ApprovalApiDoc::openapi());
     doc.merge(super::handlers::promotion_rules::PromotionRulesApiDoc::openapi());
+    doc.merge(super::handlers::service_accounts::ServiceAccountsApiDoc::openapi());
 
     doc
 }
@@ -467,6 +469,10 @@ mod tests {
             (
                 "/api/v1/instances/",
                 vec![include_str!("handlers/remote_instances.rs")],
+            ),
+            (
+                "/api/v1/service-accounts/",
+                vec![include_str!("handlers/service_accounts.rs")],
             ),
             (
                 "/api/v1/migrations/",

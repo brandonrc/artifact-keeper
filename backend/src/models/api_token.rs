@@ -22,6 +22,8 @@ pub struct ApiToken {
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub created_by_user_id: Option<Uuid>,
+    pub description: Option<String>,
 }
 
 /// Response type for API token creation (includes the actual token only once).
@@ -35,4 +37,6 @@ pub struct ApiTokenCreated {
     pub scopes: Vec<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub description: Option<String>,
+    pub repository_ids: Vec<Uuid>,
 }

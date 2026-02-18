@@ -637,7 +637,9 @@ mod tests {
             email: "admin@example.com".to_string(),
             is_admin: true,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         };
         assert!(require_admin(&auth).is_ok());
     }
@@ -650,7 +652,9 @@ mod tests {
             email: "user@example.com".to_string(),
             is_admin: false,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         };
         let err = require_admin(&auth).unwrap_err();
         assert!(
@@ -668,7 +672,9 @@ mod tests {
             email: "api@example.com".to_string(),
             is_admin: false,
             is_api_token: true,
+            is_service_account: false,
             scopes: Some(vec!["read".to_string(), "write".to_string()]),
+            allowed_repo_ids: None,
         };
         assert!(require_admin(&auth).is_err());
     }
@@ -681,7 +687,9 @@ mod tests {
             email: "admin-api@example.com".to_string(),
             is_admin: true,
             is_api_token: true,
+            is_service_account: false,
             scopes: Some(vec!["admin".to_string()]),
+            allowed_repo_ids: None,
         };
         assert!(require_admin(&auth).is_ok());
     }

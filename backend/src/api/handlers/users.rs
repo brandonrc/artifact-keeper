@@ -139,7 +139,7 @@ pub async fn list_users(
         SELECT
             id, username, email, password_hash, display_name,
             auth_provider as "auth_provider: AuthProvider",
-            external_id, is_admin, is_active, must_change_password,
+            external_id, is_admin, is_active, is_service_account, must_change_password,
             totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
             last_login_at, created_at, updated_at
         FROM users
@@ -225,12 +225,12 @@ pub async fn create_user(
     let user = sqlx::query_as!(
         User,
         r#"
-        INSERT INTO users (username, email, password_hash, display_name, auth_provider, is_admin, must_change_password)
-        VALUES ($1, $2, $3, $4, 'local', $5, $6)
+        INSERT INTO users (username, email, password_hash, display_name, auth_provider, is_admin, is_service_account, must_change_password)
+        VALUES ($1, $2, $3, $4, 'local', $5, false, $6)
         RETURNING
             id, username, email, password_hash, display_name,
             auth_provider as "auth_provider: AuthProvider",
-            external_id, is_admin, is_active, must_change_password,
+            external_id, is_admin, is_active, is_service_account, must_change_password,
             totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
             last_login_at, created_at, updated_at
         "#,
@@ -289,7 +289,7 @@ pub async fn get_user(
         SELECT
             id, username, email, password_hash, display_name,
             auth_provider as "auth_provider: AuthProvider",
-            external_id, is_admin, is_active, must_change_password,
+            external_id, is_admin, is_active, is_service_account, must_change_password,
             totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
             last_login_at, created_at, updated_at
         FROM users
@@ -341,7 +341,7 @@ pub async fn update_user(
         RETURNING
             id, username, email, password_hash, display_name,
             auth_provider as "auth_provider: AuthProvider",
-            external_id, is_admin, is_active, must_change_password,
+            external_id, is_admin, is_active, is_service_account, must_change_password,
             totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
             last_login_at, created_at, updated_at
         "#,
@@ -987,6 +987,7 @@ mod tests {
             display_name: Some("Test User".to_string()),
             is_active: true,
             is_admin: false,
+            is_service_account: false,
             must_change_password: false,
             totp_secret: None,
             totp_enabled: false,
