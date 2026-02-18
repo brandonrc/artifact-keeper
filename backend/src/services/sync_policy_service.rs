@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
+use crate::services::repo_selector_service::RepoSelectorService;
 
 // ---------------------------------------------------------------------------
 // Models
@@ -70,23 +71,8 @@ impl From<SyncPolicyRow> for SyncPolicy {
     }
 }
 
-/// Repository selector: determines which repositories a policy applies to.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RepoSelector {
-    /// Label key-value pairs that must all match (AND semantics).
-    #[serde(default)]
-    pub match_labels: HashMap<String, String>,
-    /// Repository format types to include (e.g. "docker", "maven"). OR semantics.
-    #[serde(default)]
-    pub match_formats: Vec<String>,
-    /// Glob-like name pattern (e.g. "libs-*"). Only `*` wildcard supported,
-    /// translated to SQL `LIKE` with `%`.
-    #[serde(default)]
-    pub match_pattern: Option<String>,
-    /// Explicit repository UUIDs to include.
-    #[serde(default)]
-    pub match_repos: Vec<Uuid>,
-}
+// Re-export from the shared repo_selector_service for backward compatibility.
+pub use crate::services::repo_selector_service::RepoSelector;
 
 /// Peer selector: determines which peers a policy replicates to.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -236,13 +222,8 @@ pub struct PreviewResult {
     pub subscription_count: usize,
 }
 
-/// A matched repository in a preview.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedRepo {
-    pub id: Uuid,
-    pub key: String,
-    pub format: String,
-}
+// Re-export from the shared repo_selector_service.
+pub use crate::services::repo_selector_service::MatchedRepo;
 
 /// A matched peer in a preview.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,24 +250,10 @@ fn default_precedence() -> i32 {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, sqlx::FromRow)]
-struct RepoRow {
-    id: Uuid,
-    key: String,
-    format: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
 struct PeerRow {
     id: Uuid,
     name: String,
     region: Option<String>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct LabelRow {
-    repository_id: Uuid,
-    label_key: String,
-    label_value: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -681,17 +648,8 @@ impl SyncPolicyService {
 
     /// Preview what a policy configuration would match without making changes.
     pub async fn preview_policy(&self, req: CreateSyncPolicyRequest) -> Result<PreviewResult> {
-        let repos = self.resolve_repos(&req.repo_selector).await?;
+        let matched_repositories = self.resolve_repos(&req.repo_selector).await?;
         let peers = self.resolve_peers(&req.peer_selector).await?;
-
-        let matched_repositories: Vec<MatchedRepo> = repos
-            .into_iter()
-            .map(|r| MatchedRepo {
-                id: r.id,
-                key: r.key,
-                format: r.format,
-            })
-            .collect();
 
         let matched_peers: Vec<MatchedPeer> = peers
             .into_iter()
@@ -806,7 +764,7 @@ impl SyncPolicyService {
         let policies = self.list_enabled_policies().await?;
 
         // Determine which policies match this peer
-        let mut matching_policies: Vec<(&SyncPolicy, Vec<RepoRow>)> = Vec::new();
+        let mut matching_policies: Vec<(&SyncPolicy, Vec<MatchedRepo>)> = Vec::new();
 
         for policy in &policies {
             let peer_selector: PeerSelector =
@@ -988,98 +946,10 @@ impl SyncPolicyService {
         Ok(rows.into_iter().map(SyncPolicy::from).collect())
     }
 
-    /// Resolve repositories matching a selector.
-    async fn resolve_repos(&self, selector: &RepoSelector) -> Result<Vec<RepoRow>> {
-        // If explicit repo IDs are given, use them directly
-        if !selector.match_repos.is_empty() {
-            let repos: Vec<RepoRow> = sqlx::query_as(
-                r#"
-                SELECT id, key, format::TEXT
-                FROM repositories
-                WHERE id = ANY($1)
-                "#,
-            )
-            .bind(&selector.match_repos)
-            .fetch_all(&self.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
-            return Ok(repos);
-        }
-
-        // Start with all repositories
-        let mut all_repos: Vec<RepoRow> =
-            sqlx::query_as("SELECT id, key, format::TEXT FROM repositories ORDER BY key")
-                .fetch_all(&self.db)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let has_any_filter = !selector.match_labels.is_empty()
-            || !selector.match_formats.is_empty()
-            || selector.match_pattern.is_some();
-
-        // If no filters at all, return empty (a policy with an empty selector matches nothing)
-        if !has_any_filter {
-            return Ok(vec![]);
-        }
-
-        // Filter by format
-        if !selector.match_formats.is_empty() {
-            let formats: Vec<String> = selector
-                .match_formats
-                .iter()
-                .map(|f| f.to_lowercase())
-                .collect();
-            all_repos.retain(|r| formats.contains(&r.format.to_lowercase()));
-        }
-
-        // Filter by name pattern (glob: * -> %)
-        if let Some(pattern) = &selector.match_pattern {
-            let sql_pattern = pattern.replace('*', "%");
-            all_repos.retain(|r| sql_like_match(&r.key, &sql_pattern));
-        }
-
-        // Filter by labels (AND semantics: all label pairs must match)
-        if !selector.match_labels.is_empty() {
-            let label_repo_ids = self.resolve_repos_by_labels(&selector.match_labels).await?;
-            all_repos.retain(|r| label_repo_ids.contains(&r.id));
-        }
-
-        Ok(all_repos)
-    }
-
-    /// Find repository IDs that have all the given labels.
-    async fn resolve_repos_by_labels(&self, labels: &HashMap<String, String>) -> Result<Vec<Uuid>> {
-        if labels.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let all_labels: Vec<LabelRow> =
-            sqlx::query_as("SELECT repository_id, label_key, label_value FROM repository_labels")
-                .fetch_all(&self.db)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?;
-
-        // Group labels by repository
-        let mut repo_labels: HashMap<Uuid, Vec<(&str, &str)>> = HashMap::new();
-        for row in &all_labels {
-            repo_labels
-                .entry(row.repository_id)
-                .or_default()
-                .push((&row.label_key, &row.label_value));
-        }
-
-        // Find repos that have ALL required labels
-        let mut matching: Vec<Uuid> = Vec::new();
-        for (repo_id, repo_label_list) in &repo_labels {
-            let all_match = labels
-                .iter()
-                .all(|(k, v)| repo_label_list.iter().any(|(lk, lv)| lk == k && lv == v));
-            if all_match {
-                matching.push(*repo_id);
-            }
-        }
-
-        Ok(matching)
+    /// Resolve repositories matching a selector (delegates to shared service).
+    async fn resolve_repos(&self, selector: &RepoSelector) -> Result<Vec<MatchedRepo>> {
+        let svc = RepoSelectorService::new(self.db.clone());
+        svc.resolve(selector).await
     }
 
     /// Resolve peers matching a selector.
@@ -1173,44 +1043,8 @@ impl SyncPolicyService {
     }
 }
 
-/// Simple SQL LIKE pattern matching for in-memory filtering.
-/// Supports `%` as wildcard (matches zero or more characters).
-pub(crate) fn sql_like_match(value: &str, pattern: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('%').collect();
-
-    if parts.len() == 1 {
-        // No wildcards — exact match
-        return value == pattern;
-    }
-
-    let mut pos = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        if i == 0 {
-            // Must start with this prefix
-            if !value.starts_with(part) {
-                return false;
-            }
-            pos = part.len();
-        } else if i == parts.len() - 1 {
-            // Must end with this suffix
-            if !value[pos..].ends_with(part) {
-                return false;
-            }
-            pos = value.len();
-        } else {
-            // Must contain this part somewhere after pos
-            match value[pos..].find(part) {
-                Some(found) => pos += found + part.len(),
-                None => return false,
-            }
-        }
-    }
-
-    true
-}
+// Re-export sql_like_match from the shared service for backward compatibility.
+pub(crate) use crate::services::repo_selector_service::sql_like_match;
 
 // ---------------------------------------------------------------------------
 // Tests

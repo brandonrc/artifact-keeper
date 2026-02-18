@@ -33,6 +33,10 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/:id/tokens", get(list_tokens).post(create_token))
         .route("/:id/tokens/:token_id", axum::routing::delete(revoke_token))
+        .route(
+            "/repo-selector/preview",
+            axum::routing::post(preview_repo_selector),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +103,14 @@ pub struct CreateTokenRequest {
     pub scopes: Vec<String>,
     pub expires_in_days: Option<i64>,
     pub description: Option<String>,
+    /// Explicit repository IDs to restrict access to. Mutually exclusive with `repo_selector`.
     pub repository_ids: Option<Vec<Uuid>>,
+    /// Dynamic repository selector (match by labels, formats, name pattern).
+    /// Mutually exclusive with `repository_ids`. When set, matched repos are
+    /// resolved at auth time so new repos that match the selector are picked up
+    /// automatically.
+    #[schema(value_type = Option<Object>)]
+    pub repo_selector: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -119,6 +130,34 @@ pub struct TokenInfoResponse {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub is_expired: bool,
+    /// Dynamic repository selector, if configured.
+    #[schema(value_type = Option<Object>)]
+    pub repo_selector: Option<serde_json::Value>,
+    /// Explicit repository IDs this token is restricted to (from join table).
+    pub repository_ids: Vec<Uuid>,
+}
+
+/// Request body for previewing which repositories a selector matches.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PreviewRepoSelectorRequest {
+    /// The repository selector to evaluate.
+    #[schema(value_type = Object)]
+    pub repo_selector: serde_json::Value,
+}
+
+/// Response for the repo selector preview endpoint.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PreviewRepoSelectorResponse {
+    pub matched_repositories: Vec<MatchedRepoResponse>,
+    pub total: usize,
+}
+
+/// A single matched repository in the preview response.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MatchedRepoResponse {
+    pub id: Uuid,
+    pub key: String,
+    pub format: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -326,18 +365,54 @@ pub async fn list_tokens(
     let token_svc = TokenService::new(state.db.clone(), Arc::new(state.config.clone()));
     let tokens = token_svc.list_tokens(id).await?;
 
+    // Batch-fetch explicit repo restrictions from the join table
+    let token_ids: Vec<Uuid> = tokens.iter().map(|t| t.id).collect();
+    let repo_rows = sqlx::query!(
+        "SELECT token_id, repo_id FROM api_token_repositories WHERE token_id = ANY($1)",
+        &token_ids
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let mut repo_map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
+    for row in repo_rows {
+        repo_map.entry(row.token_id).or_default().push(row.repo_id);
+    }
+
+    // Fetch repo_selector values from the tokens table
+    let selector_rows = sqlx::query!(
+        "SELECT id, repo_selector FROM api_tokens WHERE id = ANY($1)",
+        &token_ids
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let mut selector_map: std::collections::HashMap<Uuid, Option<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for row in selector_rows {
+        selector_map.insert(row.id, row.repo_selector);
+    }
+
     Ok(Json(TokenListResponse {
         items: tokens
             .into_iter()
-            .map(|t| TokenInfoResponse {
-                id: t.id,
-                name: t.name,
-                token_prefix: t.token_prefix,
-                scopes: t.scopes,
-                expires_at: t.expires_at,
-                last_used_at: t.last_used_at,
-                created_at: t.created_at,
-                is_expired: t.is_expired,
+            .map(|t| {
+                let repo_ids = repo_map.remove(&t.id).unwrap_or_default();
+                let selector = selector_map.get(&t.id).and_then(|s| s.clone());
+                TokenInfoResponse {
+                    id: t.id,
+                    name: t.name,
+                    token_prefix: t.token_prefix,
+                    scopes: t.scopes,
+                    expires_at: t.expires_at,
+                    last_used_at: t.last_used_at,
+                    created_at: t.created_at,
+                    is_expired: t.is_expired,
+                    repo_selector: selector,
+                    repository_ids: repo_ids,
+                }
             })
             .collect(),
     }))
@@ -365,6 +440,13 @@ pub async fn create_token(
 ) -> Result<Json<CreateTokenResponse>> {
     require_admin(&auth)?;
 
+    // Validate mutual exclusivity
+    if payload.repo_selector.is_some() && payload.repository_ids.is_some() {
+        return Err(AppError::Validation(
+            "Cannot specify both repo_selector and repository_ids".to_string(),
+        ));
+    }
+
     // Verify the service account exists
     let svc = ServiceAccountService::new(state.db.clone());
     svc.get(id).await?;
@@ -374,8 +456,17 @@ pub async fn create_token(
         .generate_api_token(id, &payload.name, payload.scopes, payload.expires_in_days)
         .await?;
 
-    // If repository restrictions specified, insert them
-    if let Some(repo_ids) = &payload.repository_ids {
+    // Store repo_selector or explicit repository_ids (mutually exclusive)
+    if let Some(selector) = &payload.repo_selector {
+        sqlx::query!(
+            "UPDATE api_tokens SET repo_selector = $1 WHERE id = $2",
+            selector,
+            token_id
+        )
+        .execute(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    } else if let Some(repo_ids) = &payload.repository_ids {
         for repo_id in repo_ids {
             sqlx::query!(
                 "INSERT INTO api_token_repositories (token_id, repo_id) VALUES ($1, $2)",
@@ -403,6 +494,54 @@ pub async fn create_token(
         id: token_id,
         token,
         name: payload.name,
+    }))
+}
+
+/// Preview which repositories match a given repo selector.
+///
+/// Does not create or modify anything. Useful for testing selectors before
+/// attaching them to a token.
+#[utoipa::path(
+    post,
+    path = "/repo-selector/preview",
+    context_path = "/api/v1/service-accounts",
+    tag = "service_accounts",
+    request_body = PreviewRepoSelectorRequest,
+    responses(
+        (status = 200, description = "Matched repositories", body = PreviewRepoSelectorResponse),
+        (status = 400, description = "Invalid selector"),
+        (status = 403, description = "Not admin"),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn preview_repo_selector(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthExtension>,
+    Json(payload): Json<PreviewRepoSelectorRequest>,
+) -> Result<Json<PreviewRepoSelectorResponse>> {
+    require_admin(&auth)?;
+
+    use crate::services::repo_selector_service::{RepoSelector, RepoSelectorService};
+
+    let selector: RepoSelector = serde_json::from_value(payload.repo_selector)
+        .map_err(|e| AppError::Validation(format!("Invalid repo_selector: {e}")))?;
+
+    let svc = RepoSelectorService::new(state.db.clone());
+    let matched = svc.resolve(&selector).await?;
+
+    let total = matched.len();
+    let items: Vec<MatchedRepoResponse> = matched
+        .into_iter()
+        .map(|r| MatchedRepoResponse {
+            id: r.id,
+            key: r.key,
+            format: r.format,
+        })
+        .collect();
+
+    Ok(Json(PreviewRepoSelectorResponse {
+        matched_repositories: items,
+        total,
     }))
 }
 
@@ -454,6 +593,7 @@ pub async fn revoke_token(
         list_tokens,
         create_token,
         revoke_token,
+        preview_repo_selector,
     ),
     components(schemas(
         CreateServiceAccountRequest,
@@ -465,6 +605,9 @@ pub async fn revoke_token(
         CreateTokenResponse,
         TokenInfoResponse,
         TokenListResponse,
+        PreviewRepoSelectorRequest,
+        PreviewRepoSelectorResponse,
+        MatchedRepoResponse,
     )),
     tags(
         (name = "service_accounts", description = "Service account management"),

@@ -211,7 +211,7 @@ impl TokenService {
             r#"
             SELECT id, user_id, name, token_hash, token_prefix, scopes,
                    expires_at, last_used_at, created_at,
-                   created_by_user_id, description
+                   created_by_user_id, description, repo_selector
             FROM api_tokens
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -240,7 +240,7 @@ impl TokenService {
             r#"
             SELECT id, user_id, name, token_hash, token_prefix, scopes,
                    expires_at, last_used_at, created_at,
-                   created_by_user_id, description
+                   created_by_user_id, description, repo_selector
             FROM api_tokens
             WHERE id = $1 AND user_id = $2
             "#,
@@ -471,6 +471,7 @@ mod tests {
             created_at: Utc::now(),
             created_by_user_id: None,
             description: None,
+            repo_selector: None,
         }
     }
 
@@ -492,6 +493,7 @@ mod tests {
             created_at: Utc::now(),
             created_by_user_id: None,
             description: None,
+            repo_selector: None,
         };
 
         let info = TokenInfo::from(token.clone());
@@ -514,6 +516,7 @@ mod tests {
             created_at: Utc::now() - Duration::days(30),
             created_by_user_id: None,
             description: None,
+            repo_selector: None,
         };
 
         let info = TokenInfo::from(token);
@@ -547,6 +550,7 @@ mod tests {
             created_at: now - Duration::days(10),
             created_by_user_id: None,
             description: None,
+            repo_selector: None,
         };
 
         let info = TokenInfo::from(token);
