@@ -267,7 +267,8 @@ impl AuthService {
         // Find token by prefix
         let stored_token = sqlx::query!(
             r#"
-            SELECT at.id, at.token_hash, at.user_id, at.scopes, at.expires_at
+            SELECT at.id, at.token_hash, at.user_id, at.scopes, at.expires_at,
+                   at.repo_selector
             FROM api_tokens at
             WHERE at.token_prefix = $1
             "#,
@@ -319,19 +320,38 @@ impl AuthService {
         .map_err(|e| AppError::Database(e.to_string()))?
         .ok_or_else(|| AppError::Authentication("User not found".to_string()))?;
 
-        // Fetch repository restrictions for this token
-        let repo_rows = sqlx::query!(
-            "SELECT repo_id FROM api_token_repositories WHERE token_id = $1",
-            stored_token.id
-        )
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
-        let allowed_repo_ids = if repo_rows.is_empty() {
-            None // unrestricted
+        // Fetch repository restrictions for this token.
+        // If a repo_selector is set, resolve it dynamically. Otherwise fall
+        // back to the explicit api_token_repositories join table.
+        let allowed_repo_ids = if let Some(selector_json) = &stored_token.repo_selector {
+            use crate::services::repo_selector_service::{RepoSelector, RepoSelectorService};
+            let selector: RepoSelector =
+                serde_json::from_value(selector_json.clone()).unwrap_or_default();
+            if RepoSelectorService::is_empty(&selector) {
+                None // empty selector = unrestricted
+            } else {
+                let svc = RepoSelectorService::new(self.db.clone());
+                let ids = svc.resolve_ids(&selector).await?;
+                if ids.is_empty() {
+                    Some(vec![]) // selector matched nothing, deny all
+                } else {
+                    Some(ids)
+                }
+            }
         } else {
-            Some(repo_rows.into_iter().map(|r| r.repo_id).collect())
+            let repo_rows = sqlx::query!(
+                "SELECT repo_id FROM api_token_repositories WHERE token_id = $1",
+                stored_token.id
+            )
+            .fetch_all(&self.db)
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+            if repo_rows.is_empty() {
+                None // unrestricted
+            } else {
+                Some(repo_rows.into_iter().map(|r| r.repo_id).collect())
+            }
         };
 
         Ok(ApiTokenValidation {
