@@ -427,14 +427,14 @@ async fn authenticate(
 
     // Try Bearer token first (API key)
     if let Some(token) = extract_bearer_token(headers) {
-        let user = auth_service.validate_api_token(&token).await.map_err(|_| {
+        let validation = auth_service.validate_api_token(&token).await.map_err(|_| {
             connect_error(
                 StatusCode::UNAUTHORIZED,
                 "unauthenticated",
                 "Invalid API token",
             )
         })?;
-        return Ok(user.id);
+        return Ok(validation.user.id);
     }
 
     // Fall back to Basic auth

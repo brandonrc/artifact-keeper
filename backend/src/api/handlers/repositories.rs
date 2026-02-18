@@ -1738,7 +1738,9 @@ mod tests {
             email: "test@example.com".to_string(),
             is_admin: false,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         };
         assert!(require_auth(Some(auth)).is_ok());
     }

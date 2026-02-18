@@ -21,7 +21,7 @@ use axum::{
 };
 use uuid::Uuid;
 
-use crate::models::user::User;
+use crate::error::AppError;
 use crate::services::auth_service::{AuthService, Claims};
 
 /// Custom header name for API key
@@ -36,8 +36,52 @@ pub struct AuthExtension {
     pub is_admin: bool,
     /// Indicates if authentication was via API token (vs JWT)
     pub is_api_token: bool,
+    /// Whether this principal is a service account (machine identity)
+    pub is_service_account: bool,
     /// Token scopes if authenticated via API token
     pub scopes: Option<Vec<String>>,
+    /// Repository IDs this token is restricted to (None = unrestricted)
+    pub allowed_repo_ids: Option<Vec<Uuid>>,
+}
+
+impl AuthExtension {
+    /// Check whether this auth context has a required scope.
+    /// JWT sessions (non-API-token auth) always pass since they have no scope
+    /// restrictions. API tokens must explicitly include the scope (or `*`/`admin`).
+    pub fn has_scope(&self, scope: &str) -> bool {
+        if !self.is_api_token {
+            return true; // JWT sessions are not scope-restricted
+        }
+        match &self.scopes {
+            None => true,
+            Some(scopes) => {
+                scopes.iter().any(|s| s == scope)
+                    || scopes.iter().any(|s| s == "*")
+                    || scopes.iter().any(|s| s == "admin")
+            }
+        }
+    }
+
+    /// Check whether this auth context has access to a specific repository.
+    /// Returns true if unrestricted or if the repo is in the allowed set.
+    pub fn can_access_repo(&self, repo_id: Uuid) -> bool {
+        match &self.allowed_repo_ids {
+            None => true,
+            Some(ids) => ids.contains(&repo_id),
+        }
+    }
+
+    /// Return an authorization error if scope check fails.
+    pub fn require_scope(&self, scope: &str) -> crate::error::Result<()> {
+        if self.has_scope(scope) {
+            Ok(())
+        } else {
+            Err(AppError::Authorization(format!(
+                "Token does not have required scope: {}",
+                scope
+            )))
+        }
+    }
 }
 
 impl From<Claims> for AuthExtension {
@@ -48,7 +92,9 @@ impl From<Claims> for AuthExtension {
             email: claims.email,
             is_admin: claims.is_admin,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         }
     }
 }
@@ -174,29 +220,26 @@ pub async fn auth_middleware(
     }
 }
 
-/// Create an AuthExtension from a validated User for API token authentication.
-fn auth_extension_from_api_user(user: User) -> AuthExtension {
-    AuthExtension {
-        user_id: user.id,
-        username: user.username,
-        email: user.email,
-        is_admin: user.is_admin,
-        is_api_token: true,
-        scopes: None, // Scopes loaded on-demand via TokenService
-    }
-}
-
-/// Validate an API token and create an AuthExtension.
+/// Validate an API token and create an AuthExtension with scopes and repo restrictions.
 async fn validate_api_token_with_scopes(
     auth_service: &AuthService,
     token: &str,
 ) -> Result<AuthExtension, ()> {
-    let user = auth_service
+    let validation = auth_service
         .validate_api_token(token)
         .await
         .map_err(|_| ())?;
 
-    Ok(auth_extension_from_api_user(user))
+    Ok(AuthExtension {
+        user_id: validation.user.id,
+        username: validation.user.username,
+        email: validation.user.email,
+        is_admin: validation.user.is_admin,
+        is_api_token: true,
+        is_service_account: validation.user.is_service_account,
+        scopes: Some(validation.scopes),
+        allowed_repo_ids: validation.allowed_repo_ids,
+    })
 }
 
 /// Optional authentication middleware - allows unauthenticated requests
@@ -214,17 +257,15 @@ pub async fn optional_auth_middleware(
         ExtractedToken::Bearer(token) => {
             if let Ok(claims) = auth_service.validate_access_token(token) {
                 Some(AuthExtension::from(claims))
-            } else if let Ok(user) = auth_service.validate_api_token(token).await {
-                Some(auth_extension_from_api_user(user))
             } else {
-                None
+                validate_api_token_with_scopes(&auth_service, token)
+                    .await
+                    .ok()
             }
         }
-        ExtractedToken::ApiKey(token) => auth_service
-            .validate_api_token(token)
+        ExtractedToken::ApiKey(token) => validate_api_token_with_scopes(&auth_service, token)
             .await
-            .ok()
-            .map(auth_extension_from_api_user),
+            .ok(),
         ExtractedToken::None | ExtractedToken::Invalid => None,
     };
 
@@ -246,19 +287,22 @@ pub async fn admin_middleware(
     let auth_ext = match extracted {
         ExtractedToken::Bearer(token) => match auth_service.validate_access_token(token) {
             Ok(claims) => AuthExtension::from(claims),
-            Err(_) => match auth_service.validate_api_token(token).await {
-                Ok(user) => auth_extension_from_api_user(user),
+            Err(_) => match validate_api_token_with_scopes(&auth_service, token).await {
+                Ok(ext) => ext,
                 Err(_) => {
                     return (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response()
                 }
             },
         },
-        ExtractedToken::ApiKey(token) => match auth_service.validate_api_token(token).await {
-            Ok(user) => auth_extension_from_api_user(user),
-            Err(_) => {
-                return (StatusCode::UNAUTHORIZED, "Invalid or expired API token").into_response()
+        ExtractedToken::ApiKey(token) => {
+            match validate_api_token_with_scopes(&auth_service, token).await {
+                Ok(ext) => ext,
+                Err(_) => {
+                    return (StatusCode::UNAUTHORIZED, "Invalid or expired API token")
+                        .into_response()
+                }
             }
-        },
+        }
         ExtractedToken::None => {
             return (StatusCode::UNAUTHORIZED, "Missing authorization header").into_response();
         }
@@ -459,66 +503,82 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // auth_extension_from_api_user
+    // AuthExtension scope and repo helpers
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_auth_extension_from_api_user_fn() {
-        let user_id = Uuid::new_v4();
-        let user = User {
-            id: user_id,
+    fn make_api_token_ext(scopes: Vec<String>, repo_ids: Option<Vec<Uuid>>) -> AuthExtension {
+        AuthExtension {
+            user_id: Uuid::new_v4(),
             username: "apiuser".to_string(),
             email: "api@example.com".to_string(),
-            password_hash: None,
-            auth_provider: crate::models::user::AuthProvider::Local,
-            external_id: None,
-            display_name: None,
-            is_active: true,
             is_admin: false,
-            must_change_password: false,
-            totp_secret: None,
-            totp_enabled: false,
-            totp_backup_codes: None,
-            totp_verified_at: None,
-            last_login_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        let ext = auth_extension_from_api_user(user);
-        assert_eq!(ext.user_id, user_id);
-        assert_eq!(ext.username, "apiuser");
-        assert_eq!(ext.email, "api@example.com");
-        assert!(!ext.is_admin);
-        assert!(ext.is_api_token);
-        assert!(ext.scopes.is_none());
+            is_api_token: true,
+            is_service_account: false,
+            scopes: Some(scopes),
+            allowed_repo_ids: repo_ids,
+        }
     }
 
     #[test]
-    fn test_auth_extension_from_api_user_admin_fn() {
-        let user = User {
-            id: Uuid::new_v4(),
-            username: "admin_api".to_string(),
-            email: "admin@example.com".to_string(),
-            password_hash: Some("hash".to_string()),
-            auth_provider: crate::models::user::AuthProvider::Local,
-            external_id: None,
-            display_name: Some("Admin".to_string()),
-            is_active: true,
-            is_admin: true,
-            must_change_password: false,
-            totp_secret: None,
-            totp_enabled: false,
-            totp_backup_codes: None,
-            totp_verified_at: None,
-            last_login_at: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
+    fn test_has_scope_exact_match() {
+        let ext = make_api_token_ext(vec!["read:artifacts".to_string()], None);
+        assert!(ext.has_scope("read:artifacts"));
+        assert!(!ext.has_scope("write:artifacts"));
+    }
 
-        let ext = auth_extension_from_api_user(user);
-        assert!(ext.is_admin);
-        assert!(ext.is_api_token);
+    #[test]
+    fn test_has_scope_wildcard() {
+        let ext = make_api_token_ext(vec!["*".to_string()], None);
+        assert!(ext.has_scope("read:artifacts"));
+        assert!(ext.has_scope("write:repositories"));
+    }
+
+    #[test]
+    fn test_has_scope_admin_grants_all() {
+        let ext = make_api_token_ext(vec!["admin".to_string()], None);
+        assert!(ext.has_scope("delete:artifacts"));
+    }
+
+    #[test]
+    fn test_has_scope_jwt_always_passes() {
+        let ext = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "jwtuser".to_string(),
+            email: "jwt@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        };
+        assert!(ext.has_scope("anything"));
+    }
+
+    #[test]
+    fn test_can_access_repo_unrestricted() {
+        let ext = make_api_token_ext(vec!["*".to_string()], None);
+        assert!(ext.can_access_repo(Uuid::new_v4()));
+    }
+
+    #[test]
+    fn test_can_access_repo_restricted() {
+        let allowed = Uuid::new_v4();
+        let denied = Uuid::new_v4();
+        let ext = make_api_token_ext(vec!["*".to_string()], Some(vec![allowed]));
+        assert!(ext.can_access_repo(allowed));
+        assert!(!ext.can_access_repo(denied));
+    }
+
+    #[test]
+    fn test_require_scope_ok() {
+        let ext = make_api_token_ext(vec!["write:artifacts".to_string()], None);
+        assert!(ext.require_scope("write:artifacts").is_ok());
+    }
+
+    #[test]
+    fn test_require_scope_denied() {
+        let ext = make_api_token_ext(vec!["read:artifacts".to_string()], None);
+        assert!(ext.require_scope("write:artifacts").is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -533,7 +593,9 @@ mod tests {
             email: "user@x.com".to_string(),
             is_admin: false,
             is_api_token: false,
+            is_service_account: false,
             scopes: Some(vec!["read".to_string(), "write".to_string()]),
+            allowed_repo_ids: None,
         };
 
         let cloned = ext.clone();

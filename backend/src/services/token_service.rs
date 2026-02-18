@@ -188,6 +188,8 @@ impl TokenService {
             scopes: request.scopes,
             expires_at,
             created_at: Utc::now(),
+            description: None,
+            repository_ids: vec![],
         })
     }
 
@@ -208,7 +210,8 @@ impl TokenService {
             ApiToken,
             r#"
             SELECT id, user_id, name, token_hash, token_prefix, scopes,
-                   expires_at, last_used_at, created_at
+                   expires_at, last_used_at, created_at,
+                   created_by_user_id, description
             FROM api_tokens
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -236,7 +239,8 @@ impl TokenService {
             ApiToken,
             r#"
             SELECT id, user_id, name, token_hash, token_prefix, scopes,
-                   expires_at, last_used_at, created_at
+                   expires_at, last_used_at, created_at,
+                   created_by_user_id, description
             FROM api_tokens
             WHERE id = $1 AND user_id = $2
             "#,
@@ -295,7 +299,7 @@ impl TokenService {
         let auth_service = AuthService::new(self.db.clone(), self.config.clone());
 
         match auth_service.validate_api_token(token).await {
-            Ok(user) => {
+            Ok(validation) => {
                 // Get token details
                 if token.len() >= 8 {
                     let prefix = &token[..8];
@@ -313,7 +317,7 @@ impl TokenService {
 
                         return TokenValidation {
                             is_valid: true,
-                            user_id: Some(user.id),
+                            user_id: Some(validation.user.id),
                             scopes: token_info.scopes,
                             expires_in,
                             error: None,
@@ -323,7 +327,7 @@ impl TokenService {
 
                 TokenValidation {
                     is_valid: true,
-                    user_id: Some(user.id),
+                    user_id: Some(validation.user.id),
                     scopes: vec![],
                     expires_in: None,
                     error: None,
@@ -465,6 +469,8 @@ mod tests {
             expires_at,
             last_used_at,
             created_at: Utc::now(),
+            created_by_user_id: None,
+            description: None,
         }
     }
 
@@ -484,6 +490,8 @@ mod tests {
             expires_at: Some(Utc::now() + Duration::days(30)),
             last_used_at: None,
             created_at: Utc::now(),
+            created_by_user_id: None,
+            description: None,
         };
 
         let info = TokenInfo::from(token.clone());
@@ -504,6 +512,8 @@ mod tests {
             expires_at: Some(Utc::now() - Duration::days(1)),
             last_used_at: None,
             created_at: Utc::now() - Duration::days(30),
+            created_by_user_id: None,
+            description: None,
         };
 
         let info = TokenInfo::from(token);
@@ -535,6 +545,8 @@ mod tests {
             expires_at: Some(now + Duration::days(90)),
             last_used_at: Some(last_used),
             created_at: now - Duration::days(10),
+            created_by_user_id: None,
+            description: None,
         };
 
         let info = TokenInfo::from(token);

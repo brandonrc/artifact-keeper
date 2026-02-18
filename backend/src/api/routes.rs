@@ -363,6 +363,14 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
                 auth_middleware,
             )),
         )
+        // Service account management routes with auth middleware
+        .nest(
+            "/service-accounts",
+            handlers::service_accounts::router().layer(middleware::from_fn_with_state(
+                auth_service.clone(),
+                auth_middleware,
+            )),
+        )
         // Migration routes with auth middleware
         .nest(
             "/migrations",

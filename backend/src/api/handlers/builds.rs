@@ -586,7 +586,9 @@ mod tests {
             email: "user@example.com".to_string(),
             is_admin: false,
             is_api_token: false,
+            is_service_account: false,
             scopes: None,
+            allowed_repo_ids: None,
         };
         let result = require_auth(Some(auth));
         assert!(result.is_ok());

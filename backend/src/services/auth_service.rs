@@ -39,6 +39,17 @@ pub struct RoleMapping {
     pub roles: Vec<String>,
 }
 
+/// Result of API token validation: the user plus the token's constraints.
+#[derive(Debug, Clone)]
+pub struct ApiTokenValidation {
+    /// The authenticated user
+    pub user: User,
+    /// Token scopes (e.g. "read:artifacts", "write:artifacts", "*")
+    pub scopes: Vec<String>,
+    /// Repository IDs the token is restricted to (None = unrestricted)
+    pub allowed_repo_ids: Option<Vec<Uuid>>,
+}
+
 /// JWT claims structure
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -95,7 +106,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -208,7 +219,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -243,8 +254,8 @@ impl AuthService {
             .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))
     }
 
-    /// Validate API token and return user
-    pub async fn validate_api_token(&self, token: &str) -> Result<User> {
+    /// Validate API token and return user with scopes and repository restrictions.
+    pub async fn validate_api_token(&self, token: &str) -> Result<ApiTokenValidation> {
         // API tokens have format: prefix_secret
         // We store hash of full token and prefix for lookup
         if token.len() < 8 {
@@ -295,7 +306,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -308,7 +319,26 @@ impl AuthService {
         .map_err(|e| AppError::Database(e.to_string()))?
         .ok_or_else(|| AppError::Authentication("User not found".to_string()))?;
 
-        Ok(user)
+        // Fetch repository restrictions for this token
+        let repo_rows = sqlx::query!(
+            "SELECT repo_id FROM api_token_repositories WHERE token_id = $1",
+            stored_token.id
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let allowed_repo_ids = if repo_rows.is_empty() {
+            None // unrestricted
+        } else {
+            Some(repo_rows.into_iter().map(|r| r.repo_id).collect())
+        };
+
+        Ok(ApiTokenValidation {
+            user,
+            scopes: stored_token.scopes,
+            allowed_repo_ids,
+        })
     }
 
     /// Generate a new API token
@@ -453,7 +483,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -657,7 +687,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -687,7 +717,7 @@ impl AuthService {
                 RETURNING
                     id, username, email, password_hash, display_name,
                     auth_provider as "auth_provider: AuthProvider",
-                    external_id, is_admin, is_active, must_change_password,
+                    external_id, is_admin, is_active, is_service_account, must_change_password,
                     totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                     last_login_at, created_at, updated_at
                 "#,
@@ -707,13 +737,13 @@ impl AuthService {
                 r#"
                 INSERT INTO users (
                     username, email, display_name, auth_provider,
-                    external_id, is_admin, is_active, must_change_password
+                    external_id, is_admin, is_active, is_service_account, must_change_password
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, true, false)
+                VALUES ($1, $2, $3, $4, $5, $6, true, false, false)
                 RETURNING
                     id, username, email, password_hash, display_name,
                     auth_provider as "auth_provider: AuthProvider",
-                    external_id, is_admin, is_active, must_change_password,
+                    external_id, is_admin, is_active, is_service_account, must_change_password,
                     totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                     last_login_at, created_at, updated_at
                 "#,
@@ -807,7 +837,7 @@ impl AuthService {
             RETURNING
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             "#,
@@ -832,7 +862,7 @@ impl AuthService {
             SELECT
                 id, username, email, password_hash, display_name,
                 auth_provider as "auth_provider: AuthProvider",
-                external_id, is_admin, is_active, must_change_password,
+                external_id, is_admin, is_active, is_service_account, must_change_password,
                 totp_secret, totp_enabled, totp_backup_codes, totp_verified_at,
                 last_login_at, created_at, updated_at
             FROM users
@@ -986,6 +1016,7 @@ mod tests {
             display_name: Some("Test User".to_string()),
             is_active: true,
             is_admin: false,
+            is_service_account: false,
             must_change_password: false,
             totp_secret: None,
             totp_enabled: false,
