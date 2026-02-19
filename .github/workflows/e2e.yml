@@ -21,6 +21,7 @@ on:
           - conda
           - docker
           - protobuf
+          - tag-replication
         default: smoke
       include_stress:
         description: 'Include stress tests'
