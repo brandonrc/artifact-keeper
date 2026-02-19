@@ -238,8 +238,7 @@ impl TagReplicationTestServer {
             .json(&json!({
                 "name": name,
                 "endpoint_url": endpoint_url,
-                "auth_token": "test-auth-token",
-                "direction": "push"
+                "api_key": format!("test-api-key-{}", name)
             }))
             .send()
             .await?;

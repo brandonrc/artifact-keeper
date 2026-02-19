@@ -186,7 +186,7 @@ PEER_NAME="tag-e2e-peer-${SUFFIX}"
 PEER_RESP=$(curl -sf -X POST "${API_URL}/api/v1/peers" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{\"name\": \"${PEER_NAME}\", \"endpoint_url\": \"https://${PEER_NAME}.test:8080\", \"auth_token\": \"test-token\", \"direction\": \"push\"}")
+    -d "{\"name\": \"${PEER_NAME}\", \"endpoint_url\": \"https://${PEER_NAME}.test:8080\", \"api_key\": \"test-api-key-${SUFFIX}\"}")
 
 PEER_ID=$(echo "$PEER_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || true)
 if [ -n "$PEER_ID" ]; then
@@ -267,9 +267,9 @@ sleep 1
 echo ""
 echo "--- Test 6: Error handling ---"
 
-ERR_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -X GET \
+ERR_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X GET \
     "${API_URL}/api/v1/artifacts/00000000-0000-0000-0000-000000000000/labels" \
-    -H "Authorization: Bearer ${TOKEN}" 2>/dev/null || echo "404")
+    -H "Authorization: Bearer ${TOKEN}" 2>/dev/null)
 
 if [ "$ERR_STATUS" = "404" ]; then
     pass "Nonexistent artifact returns 404"
