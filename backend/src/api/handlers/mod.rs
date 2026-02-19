@@ -60,6 +60,7 @@ pub mod search;
 pub mod security;
 pub mod service_accounts;
 pub mod signing;
+pub mod storage_gc;
 pub mod sso;
 pub mod sso_admin;
 pub mod swift;

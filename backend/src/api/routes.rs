@@ -259,6 +259,7 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
                 .route("/metrics", get(handlers::health::metrics))
                 .nest("/analytics", handlers::analytics::router())
                 .nest("/lifecycle", handlers::lifecycle::router())
+                .nest("/storage-gc", handlers::storage_gc::router())
                 .nest("/telemetry", handlers::telemetry::router())
                 .nest("/monitoring", handlers::monitoring::router())
                 .nest("/sso", handlers::sso_admin::router())

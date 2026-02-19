@@ -136,6 +136,52 @@ pub fn spawn_all(db: PgPool, config: Config) {
         });
     }
 
+    // Storage garbage collection (every hour)
+    {
+        let db = db.clone();
+        let config_clone = config.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            let storage = Arc::new(
+                crate::storage::filesystem::FilesystemStorage::new(&config_clone.storage_path),
+            );
+            let service =
+                crate::services::storage_gc_service::StorageGcService::new(db, storage);
+            let mut ticker = interval(Duration::from_secs(3600)); // 1 hour
+
+            loop {
+                ticker.tick().await;
+                tracing::info!("Running scheduled storage garbage collection");
+
+                match service.run_gc(false).await {
+                    Ok(result) => {
+                        if result.storage_keys_deleted > 0 {
+                            tracing::info!(
+                                "Storage GC: deleted {} keys, removed {} artifacts, freed {} bytes",
+                                result.storage_keys_deleted,
+                                result.artifacts_removed,
+                                result.bytes_freed
+                            );
+                            metrics_service::record_cleanup(
+                                "storage_gc",
+                                result.artifacts_removed as u64,
+                            );
+                        }
+                        if !result.errors.is_empty() {
+                            tracing::warn!(
+                                "Storage GC completed with {} errors",
+                                result.errors.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Storage garbage collection failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
     // Backup schedule execution (check every 5 minutes)
     {
         let db = db.clone();
