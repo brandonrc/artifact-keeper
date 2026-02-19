@@ -1,0 +1,62 @@
+queue_rules:
+  - name: default
+    merge_method: squash
+    update_method: rebase
+
+pull_request_rules:
+  - name: Auto-merge Dependabot patch updates
+    conditions:
+      - author=dependabot[bot]
+      - "title~=^Bump .* from .* to .*"
+      - "-title~=major"
+      - check-success=lint-rust
+      - check-success=test-backend-unit
+      - check-success=ci-complete
+      - "#approved-reviews-by>=1"
+    actions:
+      queue:
+        name: default
+
+  - name: Flag Dependabot major updates
+    conditions:
+      - author=dependabot[bot]
+      - "title~=major"
+    actions:
+      label:
+        add:
+          - needs-review
+          - major-update
+      comment:
+        message: |
+          Major version bump detected. Manual review recommended before merging.
+
+  - name: Label migration PRs
+    conditions:
+      - "files~=^backend/migrations/"
+    actions:
+      label:
+        add:
+          - migration
+          - needs-review
+
+  - name: Label API handler changes
+    conditions:
+      - "files~=^backend/src/api/handlers/"
+    actions:
+      label:
+        add:
+          - api-change
+
+  - name: Label format handler changes
+    conditions:
+      - "files~=^backend/src/formats/"
+    actions:
+      label:
+        add:
+          - format-handler
+
+  - name: Clean up merged branches
+    conditions:
+      - merged
+    actions:
+      delete_head_branch: {}
