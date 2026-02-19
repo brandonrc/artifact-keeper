@@ -98,7 +98,7 @@ services:
       retries: 30
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication"]
 
   # PKI service: uses pre-generated files from .pki/ if available (CI), otherwise generates them (local)
   pki:
@@ -132,7 +132,7 @@ services:
       retries: 20
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication"]
 
   # ==========================================================================
   # SMOKE TEST SERVICES (pypi, npm, cargo)
@@ -385,6 +385,27 @@ services:
     networks:
       - e2e-test-network
     profiles: ["proxy", "all"]
+
+  # ==========================================================================
+  # TAG-FILTERED REPLICATION TESTS
+  # ==========================================================================
+
+  tag-replication-test:
+    image: python:3.12-slim
+    container_name: e2e-test-tag-replication
+    depends_on:
+      setup:
+        condition: service_healthy
+    environment:
+      API_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: admin123
+    volumes:
+      - ./scripts/native-tests:/scripts:ro
+    command: ["bash", "/scripts/test-tag-replication.sh"]
+    networks:
+      - e2e-test-network
+    profiles: ["tag-replication", "all"]
 
   # ==========================================================================
   # RED TEAM SECURITY TESTING
