@@ -5,8 +5,8 @@
 //! - S3_BUCKET: Bucket name (required)
 //! - S3_REGION: AWS region (default: us-east-1)
 //! - S3_ENDPOINT: Custom endpoint URL for S3-compatible services
-//! - AWS_ACCESS_KEY_ID: Access key (optional if using instance roles/IRSA)
-//! - AWS_SECRET_ACCESS_KEY: Secret key (optional if using instance roles/IRSA)
+//! - S3_ACCESS_KEY_ID: Access key (preferred, falls back to AWS_ACCESS_KEY_ID)
+//! - S3_SECRET_ACCESS_KEY: Secret key (preferred, falls back to AWS_SECRET_ACCESS_KEY)
 //!
 //! For redirect downloads (302 to presigned URLs):
 //! - S3_REDIRECT_DOWNLOADS: Enable 302 redirects (default: false)

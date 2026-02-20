@@ -452,7 +452,14 @@ async fn download_or_metadata(
     // PEP 658: if filename ends with .metadata, serve extracted METADATA
     if filename.ends_with(".metadata") {
         let real_filename = filename.trim_end_matches(".metadata");
-        return serve_metadata(&state, &state.db, repo.id, &repo.storage_path, real_filename).await;
+        return serve_metadata(
+            &state,
+            &state.db,
+            repo.id,
+            &repo.storage_path,
+            real_filename,
+        )
+        .await;
     }
 
     // Regular file download

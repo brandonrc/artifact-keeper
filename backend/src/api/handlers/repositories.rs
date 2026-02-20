@@ -25,8 +25,6 @@ use crate::services::repository_service::{
     CreateRepositoryRequest as ServiceCreateRepoReq, RepositoryService,
     UpdateRepositoryRequest as ServiceUpdateRepoReq,
 };
-use crate::storage::s3::{S3Backend, S3Config};
-use crate::storage::StorageBackend;
 
 /// Require that the request is authenticated, returning an error if not.
 fn require_auth(auth: Option<AuthExtension>) -> Result<AuthExtension> {
@@ -833,33 +831,33 @@ pub async fn download_artifact(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    // Check if S3 storage with redirect enabled
-    if repo.storage_backend == "s3" {
-        // Try to use S3 with redirect
-        if let Ok(s3_config) = S3Config::from_env() {
-            if s3_config.redirect_downloads {
-                let s3_backend = S3Backend::new(s3_config).await?;
-
-                // Get artifact metadata first using query_as for runtime checking
-                #[derive(sqlx::FromRow)]
-                struct ArtifactRow {
-                    id: Uuid,
-                    storage_key: String,
-                }
-                let artifact: ArtifactRow = sqlx::query_as(
-                    r#"
-                    SELECT id, storage_key
-                    FROM artifacts
-                    WHERE repository_id = $1 AND path = $2 AND is_deleted = false
-                    "#,
-                )
-                .bind(repo.id)
-                .bind(&path)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| AppError::Database(e.to_string()))?
-                .ok_or_else(|| AppError::NotFound("Artifact not found".to_string()))?;
-
+    // Check if the storage backend supports redirect downloads (S3 with presigned URLs)
+    let storage = state.storage_for_repo(&repo.storage_path);
+    if storage.supports_redirect() {
+        // Get artifact metadata first using query_as for runtime checking
+        #[derive(sqlx::FromRow)]
+        struct ArtifactRow {
+            id: Uuid,
+            storage_key: String,
+        }
+        if let Some(artifact) = sqlx::query_as::<_, ArtifactRow>(
+            r#"
+            SELECT id, storage_key
+            FROM artifacts
+            WHERE repository_id = $1 AND path = $2 AND is_deleted = false
+            "#,
+        )
+        .bind(repo.id)
+        .bind(&path)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?
+        {
+            // Try to get presigned URL from the shared storage backend
+            if let Some(presigned) = storage
+                .get_presigned_url(&artifact.storage_key, Duration::from_secs(3600))
+                .await?
+            {
                 // Record download analytics
                 let _ = sqlx::query(
                     r#"
@@ -874,25 +872,18 @@ pub async fn download_artifact(
                 .execute(&state.db)
                 .await;
 
-                // Try to get presigned URL
-                if let Some(presigned) = s3_backend
-                    .get_presigned_url(&artifact.storage_key, Duration::from_secs(3600))
-                    .await?
-                {
-                    tracing::info!(
-                        repo = %key,
-                        path = %path,
-                        source = ?presigned.source,
-                        "Serving artifact via redirect"
-                    );
-                    return Ok(DownloadResponse::redirect(presigned).into_response());
-                }
+                tracing::info!(
+                    repo = %key,
+                    path = %path,
+                    source = ?presigned.source,
+                    "Serving artifact via redirect"
+                );
+                return Ok(DownloadResponse::redirect(presigned).into_response());
             }
         }
     }
 
     // Fall back to proxied download (filesystem or S3 without redirect)
-    let storage = state.storage_for_repo(&repo.storage_path);
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
     let download_result = artifact_service
@@ -975,7 +966,14 @@ pub async fn download_artifact(
                     let state = state.clone();
                     let p = path_clone.clone();
                     async move {
-                        proxy_helpers::local_fetch_by_path(&db, &state, member_id, &storage_path, &p).await
+                        proxy_helpers::local_fetch_by_path(
+                            &db,
+                            &state,
+                            member_id,
+                            &storage_path,
+                            &p,
+                        )
+                        .await
                     }
                 },
             )

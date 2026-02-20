@@ -28,8 +28,6 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -560,7 +558,7 @@ async fn serve_tarball(
     };
 
     // Read from storage
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -745,7 +743,7 @@ async fn publish_package(
 
         // Store the tarball
         let storage_key = format!("npm/{}/{}/{}", package_name, version, tarball_filename);
-        let storage = FilesystemStorage::new(&repo.storage_path);
+        let storage = state.storage_for_repo(&repo.storage_path);
         storage
             .put(&storage_key, Bytes::from(tarball_bytes.clone()))
             .await

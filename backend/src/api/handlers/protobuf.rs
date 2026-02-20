@@ -38,8 +38,6 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -1190,7 +1188,7 @@ async fn upload(
 
         // Store via StorageBackend
         let storage_key = format!("modules/{}/commits/{}", module_name, commit_digest);
-        let storage = FilesystemStorage::new(&repo.storage_path);
+        let storage = state.storage_for_repo(&repo.storage_path);
         storage.put(&storage_key, bundle_bytes).await.map_err(|e| {
             connect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1456,7 +1454,7 @@ async fn download(
 
         // Read bundle from local storage
         let storage_key: String = artifact_row.get("storage_key");
-        let storage = FilesystemStorage::new(&repo.storage_path);
+        let storage = state.storage_for_repo(&repo.storage_path);
         let bundle_data = storage.get(&storage_key).await.map_err(|e| {
             connect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
