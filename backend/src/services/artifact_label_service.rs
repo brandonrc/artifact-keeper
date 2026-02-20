@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn test_label_entry_vec_for_set_labels() {
         // set_labels accepts a slice of LabelEntry; verify vec construction
-        let labels = vec![
+        let labels = [
             LabelEntry {
                 key: "env".to_string(),
                 value: "prod".to_string(),
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_selector_branching_multiple_mixed_selectors() {
-        let selectors = vec![
+        let selectors = [
             LabelEntry {
                 key: "env".to_string(),
                 value: "".to_string(),
