@@ -6,7 +6,7 @@ set -euo pipefail
 
 CERT_SRC="/var/lib/postgresql/certs"
 
-if [ ! -f "$CERT_SRC/server.crt" ]; then
+if [[ ! -f "$CERT_SRC/server.crt" ]]; then
   echo "init-pg-ssl: no certificates found at $CERT_SRC, skipping SSL setup"
   exit 0
 fi

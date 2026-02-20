@@ -297,30 +297,25 @@ async fn search_crates(
 // PUT /cargo/{repo_key}/api/v1/crates/new — Publish crate
 // ---------------------------------------------------------------------------
 
-/// Cargo publish binary protocol:
+/// Result of parsing the Cargo publish binary protocol payload.
+struct ParsedPublishPayload {
+    metadata: serde_json::Value,
+    crate_name: String,
+    crate_version: String,
+    crate_bytes: Bytes,
+}
+
+/// Parse the Cargo publish binary protocol:
 ///   - 4 bytes: JSON metadata length (LE u32)
 ///   - N bytes: JSON metadata
 ///   - 4 bytes: .crate file length (LE u32)
 ///   - Remaining: .crate file bytes (gzipped tar)
-async fn publish(
-    State(state): State<SharedState>,
-    Path(repo_key): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, Response> {
-    // Authenticate
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
-    let repo = resolve_cargo_repo(&state.db, &repo_key).await?;
-
-    // Reject writes to remote/virtual repos
-    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
-
-    // Parse the binary publish payload
+#[allow(clippy::result_large_err)]
+fn parse_publish_payload(body: &Bytes) -> Result<ParsedPublishPayload, Response> {
     if body.len() < 4 {
         return Err((StatusCode::BAD_REQUEST, "Payload too short").into_response());
     }
 
-    // Read JSON metadata length
     let json_len = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
     if body.len() < 4 + json_len + 4 {
         return Err((
@@ -330,7 +325,6 @@ async fn publish(
             .into_response());
     }
 
-    // Parse JSON metadata
     let json_bytes = &body[4..4 + json_len];
     let metadata: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|e| {
         (
@@ -350,7 +344,6 @@ async fn publish(
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'vers' in metadata").into_response())?
         .to_string();
 
-    // Read crate file length
     let crate_len_offset = 4 + json_len;
     let crate_len = u32::from_le_bytes([
         body[crate_len_offset],
@@ -367,21 +360,55 @@ async fn publish(
     let crate_bytes =
         Bytes::copy_from_slice(&body[crate_data_offset..crate_data_offset + crate_len]);
 
-    // Compute SHA256 of the .crate file
-    let mut hasher = Sha256::new();
-    hasher.update(&crate_bytes);
-    let checksum = format!("{:x}", hasher.finalize());
+    Ok(ParsedPublishPayload {
+        metadata,
+        crate_name,
+        crate_version,
+        crate_bytes,
+    })
+}
 
-    let name_lower = crate_name.to_lowercase();
+/// Build the cargo metadata JSON from the publish request metadata, suitable
+/// for storing in the artifact_metadata table.
+fn build_cargo_metadata(
+    metadata: &serde_json::Value,
+    name_lower: &str,
+    crate_version: &str,
+    checksum: &str,
+) -> serde_json::Value {
+    let get_or = |key: &str, default: serde_json::Value| -> serde_json::Value {
+        metadata.get(key).cloned().unwrap_or(default)
+    };
 
-    // Check for duplicate
+    serde_json::json!({
+        "name": name_lower,
+        "vers": crate_version,
+        "deps": get_or("deps", serde_json::json!([])),
+        "features": get_or("features", serde_json::json!({})),
+        "description": metadata.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+        "license": metadata.get("license").and_then(|v| v.as_str()).unwrap_or(""),
+        "keywords": get_or("keywords", serde_json::json!([])),
+        "categories": get_or("categories", serde_json::json!([])),
+        "links": metadata.get("links").cloned(),
+        "rust_version": metadata.get("rust_version").and_then(|v| v.as_str()),
+        "cksum": checksum,
+    })
+}
+
+/// Check whether a crate version already exists and return a CONFLICT error if so.
+async fn check_duplicate_crate(
+    db: &PgPool,
+    repo_id: uuid::Uuid,
+    name: &str,
+    version: &str,
+) -> Result<(), Response> {
     let existing = sqlx::query_scalar!(
         "SELECT id FROM artifacts WHERE repository_id = $1 AND name = $2 AND version = $3 AND is_deleted = false",
-        repo.id,
-        name_lower,
-        crate_version,
+        repo_id,
+        name,
+        version,
     )
-    .fetch_optional(&state.db)
+    .fetch_optional(db)
     .await
     .map_err(|e| {
         (
@@ -398,14 +425,28 @@ async fn publish(
             .body(Body::from(
                 serde_json::json!({"errors": [{"detail": format!(
                     "crate version `{}@{}` already exists",
-                    name_lower, crate_version
+                    name, version
                 )}]})
                 .to_string(),
             ))
             .unwrap());
     }
 
-    // Store the .crate file
+    Ok(())
+}
+
+/// Store the .crate file and insert artifact + metadata records into the database.
+#[allow(clippy::too_many_arguments)]
+async fn store_crate_artifact(
+    state: &SharedState,
+    repo: &RepoInfo,
+    name_lower: &str,
+    crate_version: &str,
+    crate_bytes: Bytes,
+    checksum: &str,
+    cargo_metadata: serde_json::Value,
+    user_id: uuid::Uuid,
+) -> Result<(), Response> {
     let filename = format!("{}-{}.crate", name_lower, crate_version);
     let storage_key = format!("cargo/{}/{}/{}", name_lower, crate_version, filename);
     let storage = state.storage_for_repo(&repo.storage_path);
@@ -423,52 +464,6 @@ async fn publish(
     let artifact_path = format!("{}/{}/{}", name_lower, crate_version, filename);
     let size_bytes = crate_bytes.len() as i64;
 
-    // Build metadata for artifact_metadata table
-    let deps = metadata
-        .get("deps")
-        .cloned()
-        .unwrap_or(serde_json::json!([]));
-    let features = metadata
-        .get("features")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-    let description = metadata
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let license = metadata
-        .get("license")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let keywords = metadata
-        .get("keywords")
-        .cloned()
-        .unwrap_or(serde_json::json!([]));
-    let categories = metadata
-        .get("categories")
-        .cloned()
-        .unwrap_or(serde_json::json!([]));
-    let links = metadata.get("links").cloned();
-    let rust_version = metadata
-        .get("rust_version")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    let cargo_metadata = serde_json::json!({
-        "name": name_lower,
-        "vers": crate_version,
-        "deps": deps,
-        "features": features,
-        "description": description,
-        "license": license,
-        "keywords": keywords,
-        "categories": categories,
-        "links": links,
-        "rust_version": rust_version,
-        "cksum": checksum,
-    });
-
-    // Insert artifact record
     let artifact_id = sqlx::query_scalar!(
         r#"
         INSERT INTO artifacts (
@@ -498,7 +493,6 @@ async fn publish(
             .into_response()
     })?;
 
-    // Store metadata
     let _ = sqlx::query!(
         r#"
         INSERT INTO artifact_metadata (artifact_id, format, metadata)
@@ -511,7 +505,6 @@ async fn publish(
     .execute(&state.db)
     .await;
 
-    // Update repository timestamp
     let _ = sqlx::query!(
         "UPDATE repositories SET updated_at = NOW() WHERE id = $1",
         repo.id,
@@ -519,9 +512,53 @@ async fn publish(
     .execute(&state.db)
     .await;
 
+    Ok(())
+}
+
+async fn publish(
+    State(state): State<SharedState>,
+    Path(repo_key): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let repo = resolve_cargo_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
+
+    let parsed = parse_publish_payload(&body)?;
+    let name_lower = parsed.crate_name.to_lowercase();
+
+    check_duplicate_crate(&state.db, repo.id, &name_lower, &parsed.crate_version).await?;
+
+    // Compute SHA256 of the .crate file
+    let mut hasher = Sha256::new();
+    hasher.update(&parsed.crate_bytes);
+    let checksum = format!("{:x}", hasher.finalize());
+
+    let cargo_metadata = build_cargo_metadata(
+        &parsed.metadata,
+        &name_lower,
+        &parsed.crate_version,
+        &checksum,
+    );
+
+    let size_bytes = parsed.crate_bytes.len() as i64;
+
+    store_crate_artifact(
+        &state,
+        &repo,
+        &name_lower,
+        &parsed.crate_version,
+        parsed.crate_bytes,
+        &checksum,
+        cargo_metadata,
+        user_id,
+    )
+    .await?;
+
     info!(
         "Cargo publish: {} {} ({} bytes) to repo {}",
-        name_lower, crate_version, size_bytes, repo_key
+        name_lower, parsed.crate_version, size_bytes, repo_key
     );
 
     // Cargo expects a JSON response with warnings
@@ -726,6 +763,179 @@ async fn sparse_index_4plus(
     serve_index(&state, &repo_key, &name).await
 }
 
+/// Build a single sparse-index JSON entry from crate metadata.
+fn build_index_entry(
+    crate_name: &str,
+    version: &str,
+    checksum: &str,
+    metadata: Option<&serde_json::Value>,
+) -> String {
+    let (deps, features, links, rust_version) = extract_index_fields(metadata);
+
+    let mut entry = serde_json::json!({
+        "name": crate_name,
+        "vers": version,
+        "deps": deps,
+        "cksum": checksum,
+        "features": features,
+        "yanked": false,
+    });
+
+    if !links.is_null() {
+        entry["links"] = links;
+    }
+    if !rust_version.is_null() {
+        entry["rust-version"] = rust_version;
+    }
+
+    serde_json::to_string(&entry).unwrap()
+}
+
+/// Extract deps, features, links, and rust_version from stored metadata,
+/// returning defaults when metadata is absent.
+fn extract_index_fields(
+    metadata: Option<&serde_json::Value>,
+) -> (
+    serde_json::Value,
+    serde_json::Value,
+    serde_json::Value,
+    serde_json::Value,
+) {
+    let Some(meta) = metadata else {
+        return (
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        );
+    };
+
+    (
+        meta.get("deps").cloned().unwrap_or(serde_json::json!([])),
+        meta.get("features")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+        meta.get("links")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        meta.get("rust_version")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Build a JSON response with cache-control for index responses.
+fn index_response(content: impl Into<Body>, content_type: Option<String>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            CONTENT_TYPE,
+            content_type.unwrap_or_else(|| "application/json".to_string()),
+        )
+        .header("cache-control", "max-age=60")
+        .body(content.into())
+        .unwrap()
+}
+
+/// Try to resolve a crate index from a remote upstream proxy.
+async fn try_remote_index(
+    state: &SharedState,
+    repo: &RepoInfo,
+    repo_key: &str,
+    name_lower: &str,
+) -> Option<Result<Response, Response>> {
+    if repo.repo_type != "remote" {
+        return None;
+    }
+
+    let (upstream_url, proxy) = match (&repo.upstream_url, &state.proxy_service) {
+        (Some(u), Some(p)) => (u, p),
+        _ => return None,
+    };
+
+    let index_path = cargo_sparse_index_path(name_lower);
+    let result =
+        proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, upstream_url, &index_path).await;
+
+    Some(result.map(|(content, content_type)| index_response(content, content_type)))
+}
+
+/// Try to resolve a crate index from a virtual repo's member repositories.
+async fn try_virtual_index(
+    state: &SharedState,
+    repo: &RepoInfo,
+    name_lower: &str,
+) -> Option<Result<Response, Response>> {
+    if repo.repo_type != "virtual" {
+        return None;
+    }
+
+    let index_path = cargo_sparse_index_path(name_lower);
+    let db = state.db.clone();
+    let vname = name_lower.to_string();
+
+    let result = proxy_helpers::resolve_virtual_download(
+        &state.db,
+        state.proxy_service.as_deref(),
+        repo.id,
+        &index_path,
+        |member_id, _storage_path| {
+            let db = db.clone();
+            let vname = vname.clone();
+            async move {
+                use sqlx::Row;
+                let rows = sqlx::query(
+                    r#"
+                    SELECT a.name, a.version, a.checksum_sha256,
+                           am.metadata
+                    FROM artifacts a
+                    LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
+                    WHERE a.repository_id = $1
+                      AND a.name = $2
+                      AND a.is_deleted = false
+                    ORDER BY a.created_at ASC
+                    "#,
+                )
+                .bind(member_id)
+                .bind(&vname)
+                .fetch_all(&db)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Database error: {}", e),
+                    )
+                        .into_response()
+                })?;
+
+                if rows.is_empty() {
+                    return Err((StatusCode::NOT_FOUND, "Crate not found").into_response());
+                }
+
+                let lines: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        let vers: Option<String> = row.get("version");
+                        let vers = vers.as_deref().unwrap_or("0.0.0");
+                        let cksum: String = row.get("checksum_sha256");
+                        let meta: Option<serde_json::Value> = row.get("metadata");
+                        build_index_entry(&vname, vers, &cksum, meta.as_ref())
+                    })
+                    .collect();
+
+                let body = lines.join("\n");
+                Ok((
+                    bytes::Bytes::from(body),
+                    Some("application/json".to_string()),
+                ))
+            }
+        },
+    )
+    .await;
+
+    Some(result.map(|(content, content_type)| index_response(content, content_type)))
+}
+
 /// Serve the sparse index file for a crate (one JSON object per version, per line).
 async fn serve_index(
     state: &SharedState,
@@ -761,205 +971,27 @@ async fn serve_index(
     })?;
 
     if versions.is_empty() {
-        // For remote repos, proxy the sparse index from upstream
-        if repo.repo_type == "remote" {
-            if let (Some(ref upstream_url), Some(ref proxy)) =
-                (&repo.upstream_url, &state.proxy_service)
-            {
-                // Cargo sparse index path layout depends on crate name length
-                let index_path = cargo_sparse_index_path(&name_lower);
-                let (content, content_type) =
-                    proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, upstream_url, &index_path)
-                        .await?;
-
-                return Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header(
-                        CONTENT_TYPE,
-                        content_type.unwrap_or_else(|| "application/json".to_string()),
-                    )
-                    .header("cache-control", "max-age=60")
-                    .body(Body::from(content))
-                    .unwrap());
-            }
+        if let Some(result) = try_remote_index(state, &repo, repo_key, &name_lower).await {
+            return result;
         }
-        // Virtual repo: try each member in priority order for index
-        if repo.repo_type == "virtual" {
-            let index_path = cargo_sparse_index_path(&name_lower);
-            let db = state.db.clone();
-            let vname = name_lower.clone();
-            let (content, content_type) = proxy_helpers::resolve_virtual_download(
-                &state.db,
-                state.proxy_service.as_deref(),
-                repo.id,
-                &index_path,
-                |member_id, _storage_path| {
-                    let db = db.clone();
-                    let vname = vname.clone();
-                    async move {
-                        // For the index, we just need to check if the crate exists in this member.
-                        // We query by name and return the index content if found.
-                        // Using non-macro query to avoid offline cache requirements.
-                        use sqlx::Row;
-                        let rows = sqlx::query(
-                            r#"
-                            SELECT a.name, a.version, a.checksum_sha256,
-                                   am.metadata
-                            FROM artifacts a
-                            LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
-                            WHERE a.repository_id = $1
-                              AND a.name = $2
-                              AND a.is_deleted = false
-                            ORDER BY a.created_at ASC
-                            "#,
-                        )
-                        .bind(member_id)
-                        .bind(&vname)
-                        .fetch_all(&db)
-                        .await
-                        .map_err(|e| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!("Database error: {}", e),
-                            )
-                                .into_response()
-                        })?;
-
-                        if rows.is_empty() {
-                            return Err((StatusCode::NOT_FOUND, "Crate not found").into_response());
-                        }
-
-                        let mut lines = Vec::new();
-                        for row in &rows {
-                            let vers: Option<String> = row.get("version");
-                            let vers = vers.as_deref().unwrap_or("0.0.0");
-                            let cksum: String = row.get("checksum_sha256");
-                            let meta: Option<serde_json::Value> = row.get("metadata");
-
-                            let (deps, features, links, rust_version) = if let Some(ref meta) = meta
-                            {
-                                (
-                                    meta.get("deps").cloned().unwrap_or(serde_json::json!([])),
-                                    meta.get("features")
-                                        .cloned()
-                                        .unwrap_or(serde_json::json!({})),
-                                    meta.get("links")
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null),
-                                    meta.get("rust_version")
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null),
-                                )
-                            } else {
-                                (
-                                    serde_json::json!([]),
-                                    serde_json::json!({}),
-                                    serde_json::Value::Null,
-                                    serde_json::Value::Null,
-                                )
-                            };
-
-                            let mut entry = serde_json::json!({
-                                "name": vname,
-                                "vers": vers,
-                                "deps": deps,
-                                "cksum": cksum,
-                                "features": features,
-                                "yanked": false,
-                            });
-
-                            if !links.is_null() {
-                                entry["links"] = links;
-                            }
-                            if !rust_version.is_null() {
-                                entry["rust-version"] = rust_version;
-                            }
-
-                            lines.push(serde_json::to_string(&entry).unwrap());
-                        }
-
-                        let body = lines.join("\n");
-                        Ok((
-                            bytes::Bytes::from(body),
-                            Some("application/json".to_string()),
-                        ))
-                    }
-                },
-            )
-            .await?;
-
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header(
-                    CONTENT_TYPE,
-                    content_type.unwrap_or_else(|| "application/json".to_string()),
-                )
-                .header("cache-control", "max-age=60")
-                .body(Body::from(content))
-                .unwrap());
+        if let Some(result) = try_virtual_index(state, &repo, &name_lower).await {
+            return result;
         }
         return Err((StatusCode::NOT_FOUND, "Crate not found in index").into_response());
     }
 
     // Build index file: one JSON object per line
-    let mut lines = Vec::new();
-
-    for v in &versions {
-        let vers = v.version.as_deref().unwrap_or("0.0.0");
-        let cksum = &v.checksum_sha256;
-
-        // Extract deps and features from stored metadata
-        let (deps, features, links, rust_version) = if let Some(ref meta) = v.metadata {
-            let deps = meta.get("deps").cloned().unwrap_or(serde_json::json!([]));
-            let features = meta
-                .get("features")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            let links = meta
-                .get("links")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let rust_version = meta
-                .get("rust_version")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            (deps, features, links, rust_version)
-        } else {
-            (
-                serde_json::json!([]),
-                serde_json::json!({}),
-                serde_json::Value::Null,
-                serde_json::Value::Null,
-            )
-        };
-
-        let mut entry = serde_json::json!({
-            "name": name_lower,
-            "vers": vers,
-            "deps": deps,
-            "cksum": cksum,
-            "features": features,
-            "yanked": false,
-        });
-
-        if !links.is_null() {
-            entry["links"] = links;
-        }
-        if !rust_version.is_null() {
-            entry["rust-version"] = rust_version;
-        }
-
-        lines.push(serde_json::to_string(&entry).unwrap());
-    }
+    let lines: Vec<String> = versions
+        .iter()
+        .map(|v| {
+            let vers = v.version.as_deref().unwrap_or("0.0.0");
+            build_index_entry(&name_lower, vers, &v.checksum_sha256, v.metadata.as_ref())
+        })
+        .collect();
 
     let body = lines.join("\n");
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .header("cache-control", "max-age=60")
-        .body(Body::from(body))
-        .unwrap())
+    Ok(index_response(body, Some("application/json".to_string())))
 }
 
 /// Build the sparse index path for a crate name following the Cargo registry layout.

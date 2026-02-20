@@ -19,7 +19,7 @@ for i in $(seq 1 60); do
     break
   fi
   if [ "$i" -eq 60 ]; then
-    echo "[dtrack-init] ERROR: Dependency-Track did not become ready in 5 minutes"
+    echo "[dtrack-init] ERROR: Dependency-Track did not become ready in 5 minutes" >&2
     exit 1
   fi
   sleep 5
@@ -56,7 +56,7 @@ if [ -z "$TOKEN" ] || echo "$TOKEN" | grep -qi "FORCE_PASSWORD_CHANGE"; then
 fi
 
 if [ -z "$TOKEN" ]; then
-  echo "[dtrack-init] ERROR: Could not authenticate with Dependency-Track"
+  echo "[dtrack-init] ERROR: Could not authenticate with Dependency-Track" >&2
   exit 1
 fi
 
@@ -68,7 +68,7 @@ API_KEY=$(curl -sf "$DT_URL/api/v1/team" \
   jq -r '.[] | select(.name == "Automation") | .apiKeys[0].key // empty')
 
 if [ -z "$API_KEY" ]; then
-  echo "[dtrack-init] ERROR: Could not find Automation team API key"
+  echo "[dtrack-init] ERROR: Could not find Automation team API key" >&2
   echo "[dtrack-init] Available teams:"
   curl -sf "$DT_URL/api/v1/team" \
     -H "Authorization: Bearer $TOKEN" | jq -r '.[].name' 2>/dev/null || true

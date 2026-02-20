@@ -20,6 +20,7 @@
 //!   GET    /uploads/{uuid}                     - Check upload progress
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -77,23 +78,11 @@ pub fn router() -> Router<SharedState> {
 /// Stream a request body to a new file, computing SHA256 incrementally.
 /// Returns `(total_bytes, sha256_hex)`.
 async fn stream_body_to_file(body: Body, path: &Path) -> Result<(i64, String), Response> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create directory: {}", e),
-            )
-                .into_response()
-        })?;
-    }
+    ensure_parent_dirs(path).await?;
 
-    let mut file = tokio::fs::File::create(path).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to create temp file: {}", e),
-        )
-            .into_response()
-    })?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| fs_err("create temp file", e))?;
 
     let mut hasher = Sha256::new();
     let mut size: i64 = 0;
@@ -108,23 +97,13 @@ async fn stream_body_to_file(body: Body, path: &Path) -> Result<(i64, String), R
                 .into_response()
         })?;
         hasher.update(&chunk);
-        file.write_all(&chunk).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to write to disk: {}", e),
-            )
-                .into_response()
-        })?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| fs_err("write to disk", e))?;
         size += chunk.len() as i64;
     }
 
-    file.sync_all().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to sync file: {}", e),
-        )
-            .into_response()
-    })?;
+    file.sync_all().await.map_err(|e| fs_err("sync file", e))?;
 
     Ok((size, format!("{:x}", hasher.finalize())))
 }
@@ -135,13 +114,7 @@ async fn append_body_to_file(body: Body, path: &Path) -> Result<i64, Response> {
         .append(true)
         .open(path)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open temp file for append: {}", e),
-            )
-                .into_response()
-        })?;
+        .map_err(|e| fs_err("open temp file for append", e))?;
 
     let mut bytes_written: i64 = 0;
 
@@ -154,23 +127,13 @@ async fn append_body_to_file(body: Body, path: &Path) -> Result<i64, Response> {
             )
                 .into_response()
         })?;
-        file.write_all(&chunk).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to write chunk to disk: {}", e),
-            )
-                .into_response()
-        })?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| fs_err("write chunk to disk", e))?;
         bytes_written += chunk.len() as i64;
     }
 
-    file.sync_all().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to sync file: {}", e),
-        )
-            .into_response()
-    })?;
+    file.sync_all().await.map_err(|e| fs_err("sync file", e))?;
 
     Ok(bytes_written)
 }
@@ -179,24 +142,17 @@ async fn append_body_to_file(body: Body, path: &Path) -> Result<i64, Response> {
 async fn compute_sha256_from_file(path: &Path) -> Result<String, Response> {
     use tokio::io::AsyncReadExt;
 
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to open file for checksum: {}", e),
-        )
-            .into_response()
-    })?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| fs_err("open file for checksum", e))?;
 
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = file.read(&mut buf).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to read file for checksum: {}", e),
-            )
-                .into_response()
-        })?;
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| fs_err("read file for checksum", e))?;
         if n == 0 {
             break;
         }
@@ -277,13 +233,7 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
     .bind(user_id)
     .fetch_one(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     let artifact_id: Uuid = artifact.get("id");
 
@@ -298,13 +248,7 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
     .bind(metadata)
     .execute(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to store metadata: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(|e| fs_err("store metadata", e))?;
 
     Ok(artifact_id)
 }
@@ -377,13 +321,7 @@ async fn resolve_incus_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     .bind(repo_key)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(db_err)?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
 
     let fmt: String = repo.get("format");
@@ -430,13 +368,7 @@ async fn streams_index(
     .bind(_repo.id)
     .fetch_all(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     let products: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
 
@@ -484,13 +416,7 @@ async fn streams_images(
     .bind(repo.id)
     .fetch_all(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     let mut products: HashMap<String, serde_json::Value> = HashMap::new();
 
@@ -625,13 +551,7 @@ async fn download_image(
     .bind(&artifact_path)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(db_err)?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Image file not found").into_response())?;
 
     let storage_key: String = artifact.get("storage_key");
@@ -706,24 +626,7 @@ async fn upload_image(
     // Move temp file to final storage location (atomic rename, same filesystem)
     let storage_key = format!("incus/{}/{}", repo.id, artifact_path);
     let final_path = storage_path_for_key(&repo.storage_path, &storage_key);
-    if let Some(parent) = final_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create directory: {}", e),
-            )
-                .into_response()
-        })?;
-    }
-    tokio::fs::rename(&temp_path, &final_path)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to finalize upload: {}", e),
-            )
-                .into_response()
-        })?;
+    finalize_temp_file(&temp_path, &final_path).await?;
 
     let artifact_id = upsert_artifact(UpsertArtifactParams {
         db: &state.db,
@@ -791,13 +694,7 @@ async fn delete_image(
     .bind(&artifact_path)
     .execute(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     if result.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "Image file not found").into_response());
@@ -826,13 +723,7 @@ async fn get_session(db: &PgPool, session_id: Uuid) -> Result<UploadSession, Res
     .bind(session_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(db_err)?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Upload session not found").into_response())
 }
 
@@ -899,13 +790,7 @@ async fn start_chunked_upload(
     .bind(temp_path.to_string_lossy().as_ref())
     .execute(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     tracing::info!(
         "Started chunked upload session {} for {}/{}/{} ({} initial bytes)",
@@ -961,13 +846,7 @@ async fn upload_chunk(
     .bind(new_total)
     .execute(&state.db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    .map_err(db_err)?;
 
     tracing::debug!(
         "Chunk uploaded for session {}: +{} bytes (total: {})",
@@ -1038,24 +917,7 @@ async fn complete_chunked_upload(
     // Move temp file to final storage location
     let storage_key = format!("incus/{}/{}", session.repository_id, session.artifact_path);
     let final_path = storage_path_for_key(&repo.storage_path, &storage_key);
-    if let Some(parent) = final_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create directory: {}", e),
-            )
-                .into_response()
-        })?;
-    }
-    tokio::fs::rename(&temp_path, &final_path)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to finalize upload: {}", e),
-            )
-                .into_response()
-        })?;
+    finalize_temp_file(&temp_path, &final_path).await?;
 
     // Create artifact record
     let artifact_id = upsert_artifact(UpsertArtifactParams {
@@ -1125,13 +987,7 @@ async fn cancel_chunked_upload(
         .bind(session_id)
         .execute(&state.db)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        })?;
+        .map_err(db_err)?;
 
     tracing::info!("Cancelled chunked upload session {}", session_id);
 
@@ -1197,6 +1053,47 @@ pub async fn cleanup_stale_sessions(db: &PgPool, max_age_hours: i64) -> Result<i
     }
 
     Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Private error helpers — reduce duplicated .map_err() patterns
+// ---------------------------------------------------------------------------
+
+/// Build an `INTERNAL_SERVER_ERROR` response for database errors.
+fn db_err(e: impl Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Database error: {}", e),
+    )
+        .into_response()
+}
+
+/// Build an `INTERNAL_SERVER_ERROR` response for filesystem/IO errors.
+fn fs_err(operation: &str, e: impl Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Failed to {}: {}", operation, e),
+    )
+        .into_response()
+}
+
+/// Ensure all parent directories exist for the given path.
+async fn ensure_parent_dirs(path: &Path) -> Result<(), Response> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| fs_err("create directory", e))?;
+    }
+    Ok(())
+}
+
+/// Move a temp file to its final storage location, creating parent dirs as needed.
+async fn finalize_temp_file(temp_path: &Path, final_path: &Path) -> Result<(), Response> {
+    ensure_parent_dirs(final_path).await?;
+    tokio::fs::rename(temp_path, final_path)
+        .await
+        .map_err(|e| fs_err("finalize upload", e))?;
+    Ok(())
 }
 
 // ===========================================================================

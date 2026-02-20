@@ -281,14 +281,7 @@ impl MigrationWorker {
                     .or_else(|| artifact.actual_sha1.clone());
 
                 // Skip if already completed (resume support)
-                let already_done: Option<(String,)> = sqlx::query_as(
-                    "SELECT status FROM migration_items WHERE job_id = $1 AND source_path = $2 AND status = 'completed'"
-                )
-                .bind(job_id)
-                .bind(&source_path)
-                .fetch_optional(&self.db)
-                .await?;
-                if already_done.is_some() {
+                if self.is_item_already_completed(job_id, &source_path).await? {
                     *skipped += 1;
                     continue;
                 }
@@ -304,104 +297,40 @@ impl MigrationWorker {
                     )
                     .await?;
 
-                // Check for duplicates/conflicts
-                let should_skip = self
-                    .check_artifact_duplicate(
-                        &source_path,
-                        checksum.as_deref(),
-                        conflict_resolution,
-                    )
-                    .await?;
-
-                if should_skip {
-                    self.migration_service
-                        .skip_item(item_id, "Artifact already exists")
-                        .await?;
-                    *skipped += 1;
-                } else {
-                    // Process the artifact
-                    match self
-                        .transfer_artifact(
-                            client.clone(),
-                            repo_key,
-                            &artifact_path,
-                            include_metadata,
-                        )
-                        .await
-                    {
-                        Ok(transfer_result) => {
-                            // Verify checksum if enabled
-                            let checksum_verified = if self.config.verify_checksums {
-                                match (&checksum, &transfer_result.calculated_checksum) {
-                                    (Some(expected), Some(actual)) => expected == actual,
-                                    _ => true, // No checksum to verify
-                                }
-                            } else {
-                                true
-                            };
-
-                            if checksum_verified {
-                                self.migration_service
-                                    .complete_item(
-                                        item_id,
-                                        &transfer_result.target_path,
-                                        transfer_result
-                                            .calculated_checksum
-                                            .as_deref()
-                                            .unwrap_or(""),
-                                    )
-                                    .await?;
-                                *completed += 1;
-                                *transferred += size;
-                            } else {
-                                self.migration_service
-                                    .fail_item(
-                                        item_id,
-                                        &format!(
-                                            "Checksum mismatch: expected {:?}, got {:?}",
-                                            checksum, transfer_result.calculated_checksum
-                                        ),
-                                    )
-                                    .await?;
-                                *failed += 1;
-                            }
-                        }
-                        Err(e) => {
-                            self.migration_service
-                                .fail_item(item_id, &e.to_string())
-                                .await?;
-                            *failed += 1;
-                        }
-                    }
-                }
+                self.process_single_artifact(
+                    item_id,
+                    client.clone(),
+                    repo_key,
+                    &artifact_path,
+                    &source_path,
+                    size,
+                    &checksum,
+                    conflict_resolution,
+                    include_metadata,
+                    completed,
+                    failed,
+                    skipped,
+                    transferred,
+                )
+                .await?;
 
                 // Update progress
                 self.migration_service
                     .update_job_progress(job_id, *completed, *failed, *skipped, *transferred)
                     .await?;
 
-                // Send progress update
-                if let Some(ref tx) = progress_tx {
-                    let _ = tx
-                        .send(ProgressUpdate {
-                            job_id,
-                            completed: *completed,
-                            failed: *failed,
-                            skipped: *skipped,
-                            transferred_bytes: *transferred,
-                            current_item: Some(source_path.clone()),
-                            status: MigrationJobStatus::Running,
-                        })
-                        .await;
-                }
+                self.send_progress_update(
+                    &progress_tx,
+                    job_id,
+                    *completed,
+                    *failed,
+                    *skipped,
+                    *transferred,
+                    Some(source_path.clone()),
+                )
+                .await;
 
-                // Throttle
-                if self.config.throttle_delay_ms > 0 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(
-                        self.config.throttle_delay_ms,
-                    ))
-                    .await;
-                }
+                self.apply_throttle().await;
             }
 
             // Check if we've processed all artifacts
@@ -413,6 +342,166 @@ impl MigrationWorker {
         }
 
         Ok(())
+    }
+
+    /// Check if a migration item was already completed (for resume support)
+    async fn is_item_already_completed(
+        &self,
+        job_id: Uuid,
+        source_path: &str,
+    ) -> Result<bool, MigrationError> {
+        let already_done: Option<(String,)> = sqlx::query_as(
+            "SELECT status FROM migration_items WHERE job_id = $1 AND source_path = $2 AND status = 'completed'"
+        )
+        .bind(job_id)
+        .bind(source_path)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(already_done.is_some())
+    }
+
+    /// Process a single artifact: check duplicates, transfer, verify, and update status
+    #[allow(clippy::too_many_arguments)]
+    async fn process_single_artifact(
+        &self,
+        item_id: Uuid,
+        client: Arc<dyn SourceRegistry>,
+        repo_key: &str,
+        artifact_path: &str,
+        source_path: &str,
+        size: i64,
+        checksum: &Option<String>,
+        conflict_resolution: ConflictResolution,
+        include_metadata: bool,
+        completed: &mut i32,
+        failed: &mut i32,
+        skipped: &mut i32,
+        transferred: &mut i64,
+    ) -> Result<(), MigrationError> {
+        let should_skip = self
+            .check_artifact_duplicate(source_path, checksum.as_deref(), conflict_resolution)
+            .await?;
+
+        if should_skip {
+            self.migration_service
+                .skip_item(item_id, "Artifact already exists")
+                .await?;
+            *skipped += 1;
+            return Ok(());
+        }
+
+        match self
+            .transfer_artifact(client, repo_key, artifact_path, include_metadata)
+            .await
+        {
+            Ok(transfer_result) => {
+                self.finalize_transfer(
+                    item_id,
+                    &transfer_result,
+                    checksum,
+                    size,
+                    completed,
+                    failed,
+                    transferred,
+                )
+                .await?;
+            }
+            Err(e) => {
+                self.migration_service
+                    .fail_item(item_id, &e.to_string())
+                    .await?;
+                *failed += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify checksum and record transfer result as completed or failed
+    #[allow(clippy::too_many_arguments)]
+    async fn finalize_transfer(
+        &self,
+        item_id: Uuid,
+        transfer_result: &TransferResult,
+        expected_checksum: &Option<String>,
+        size: i64,
+        completed: &mut i32,
+        failed: &mut i32,
+        transferred: &mut i64,
+    ) -> Result<(), MigrationError> {
+        if !self.verify_transfer_checksum(expected_checksum, &transfer_result.calculated_checksum) {
+            self.migration_service
+                .fail_item(
+                    item_id,
+                    &format!(
+                        "Checksum mismatch: expected {:?}, got {:?}",
+                        expected_checksum, transfer_result.calculated_checksum
+                    ),
+                )
+                .await?;
+            *failed += 1;
+            return Ok(());
+        }
+
+        self.migration_service
+            .complete_item(
+                item_id,
+                &transfer_result.target_path,
+                transfer_result.calculated_checksum.as_deref().unwrap_or(""),
+            )
+            .await?;
+        *completed += 1;
+        *transferred += size;
+        Ok(())
+    }
+
+    /// Verify a transfer's checksum against the expected value.
+    /// Returns true if verification passes or is not applicable.
+    fn verify_transfer_checksum(&self, expected: &Option<String>, actual: &Option<String>) -> bool {
+        if !self.config.verify_checksums {
+            return true;
+        }
+        match (expected, actual) {
+            (Some(exp), Some(act)) => exp == act,
+            _ => true, // No checksum to verify
+        }
+    }
+
+    /// Send a progress update through the channel, if one is configured
+    #[allow(clippy::too_many_arguments)]
+    async fn send_progress_update(
+        &self,
+        progress_tx: &Option<mpsc::Sender<ProgressUpdate>>,
+        job_id: Uuid,
+        completed: i32,
+        failed: i32,
+        skipped: i32,
+        transferred_bytes: i64,
+        current_item: Option<String>,
+    ) {
+        if let Some(ref tx) = progress_tx {
+            let _ = tx
+                .send(ProgressUpdate {
+                    job_id,
+                    completed,
+                    failed,
+                    skipped,
+                    transferred_bytes,
+                    current_item,
+                    status: MigrationJobStatus::Running,
+                })
+                .await;
+        }
+    }
+
+    /// Apply throttle delay between artifact transfers if configured
+    async fn apply_throttle(&self) {
+        if self.config.throttle_delay_ms > 0 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                self.config.throttle_delay_ms,
+            ))
+            .await;
+        }
     }
 
     /// Add a migration item to the database
@@ -787,68 +876,7 @@ impl MigrationWorker {
                 .add_migration_item(job_id, MigrationItemType::Permission, &source_path, 0, None)
                 .await?;
 
-            // Extract repository permissions
-            if let Some(ref repo) = permission.repo {
-                if let Some(ref repos) = repo.repositories {
-                    // Map each repository permission
-                    for repo_key in repos {
-                        // Find the repository in Artifact Keeper
-                        let ak_repo: Option<(Uuid,)> =
-                            sqlx::query_as("SELECT id FROM repositories WHERE key = $1")
-                                .bind(repo_key)
-                                .fetch_optional(&self.db)
-                                .await?;
-
-                        let repo_id = match ak_repo {
-                            Some((id,)) => id,
-                            None => {
-                                tracing::warn!(
-                                    permission = %permission.name,
-                                    repo = %repo_key,
-                                    "Repository not found, skipping permission"
-                                );
-                                continue;
-                            }
-                        };
-
-                        // Process user permissions
-                        if let Some(ref actions) = repo.actions {
-                            if let Some(ref users) = actions.users {
-                                for (username, perms) in users {
-                                    for perm in perms {
-                                        if let Some(mapped_perm) = crate::services::migration_service::MigrationService::map_permission(perm) {
-                                            // Create permission in AK
-                                            let _ = self.create_permission_rule(
-                                                repo_id,
-                                                Some(username),
-                                                None,
-                                                mapped_perm,
-                                            ).await;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Process group permissions
-                            if let Some(ref groups) = actions.groups {
-                                for (group_name, perms) in groups {
-                                    for perm in perms {
-                                        if let Some(mapped_perm) = crate::services::migration_service::MigrationService::map_permission(perm) {
-                                            // Create permission in AK
-                                            let _ = self.create_permission_rule(
-                                                repo_id,
-                                                None,
-                                                Some(group_name),
-                                                mapped_perm,
-                                            ).await;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            self.process_permission_target(permission).await?;
 
             self.migration_service
                 .complete_item(item_id, &format!("permission:{}", permission.name), "")
@@ -861,6 +889,95 @@ impl MigrationWorker {
                 .await?;
         }
 
+        Ok(())
+    }
+
+    /// Process a single permission target by iterating its repositories and applying rules
+    async fn process_permission_target(
+        &self,
+        permission: &crate::services::artifactory_client::PermissionTarget,
+    ) -> Result<(), MigrationError> {
+        let repo = match permission.repo {
+            Some(ref r) => r,
+            None => return Ok(()),
+        };
+        let repos = match repo.repositories {
+            Some(ref r) => r,
+            None => return Ok(()),
+        };
+
+        for repo_key in repos {
+            let repo_id = match self.lookup_repository_id(repo_key).await? {
+                Some(id) => id,
+                None => {
+                    tracing::warn!(
+                        permission = %permission.name,
+                        repo = %repo_key,
+                        "Repository not found, skipping permission"
+                    );
+                    continue;
+                }
+            };
+
+            self.apply_repo_permission_actions(repo_id, repo).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Look up a repository ID by its key
+    async fn lookup_repository_id(&self, repo_key: &str) -> Result<Option<Uuid>, MigrationError> {
+        let ak_repo: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM repositories WHERE key = $1")
+            .bind(repo_key)
+            .fetch_optional(&self.db)
+            .await?;
+        Ok(ak_repo.map(|(id,)| id))
+    }
+
+    /// Apply user and group permission actions for a single repository
+    async fn apply_repo_permission_actions(
+        &self,
+        repo_id: Uuid,
+        repo: &crate::services::artifactory_client::PermissionRepo,
+    ) -> Result<(), MigrationError> {
+        let actions = match repo.actions {
+            Some(ref a) => a,
+            None => return Ok(()),
+        };
+
+        if let Some(ref users) = actions.users {
+            for (username, perms) in users {
+                self.apply_principal_permissions(repo_id, Some(username), None, perms)
+                    .await?;
+            }
+        }
+
+        if let Some(ref groups) = actions.groups {
+            for (group_name, perms) in groups {
+                self.apply_principal_permissions(repo_id, None, Some(group_name), perms)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Apply mapped permissions for a single user or group principal
+    async fn apply_principal_permissions(
+        &self,
+        repo_id: Uuid,
+        username: Option<&str>,
+        group_name: Option<&str>,
+        perms: &[String],
+    ) -> Result<(), MigrationError> {
+        for perm in perms {
+            let mapped = crate::services::migration_service::MigrationService::map_permission(perm);
+            if let Some(mapped_perm) = mapped {
+                let _ = self
+                    .create_permission_rule(repo_id, username, group_name, mapped_perm)
+                    .await;
+            }
+        }
         Ok(())
     }
 

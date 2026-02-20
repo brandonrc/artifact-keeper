@@ -610,23 +610,28 @@ async fn publish_scoped(
     publish_package(&state, &repo_key, &full_name, &headers, body).await
 }
 
-/// Handle npm publish. The request body is JSON with versions and base64-encoded attachments.
-async fn publish_package(
-    state: &SharedState,
-    repo_key: &str,
+/// Parsed and validated npm publish payload ready for storage.
+struct ParsedNpmPublish {
+    versions: Vec<NpmVersionToPublish>,
+}
+
+/// A single version extracted from the npm publish payload.
+struct NpmVersionToPublish {
+    version: String,
+    version_data: serde_json::Value,
+    tarball_filename: String,
+    tarball_bytes: Vec<u8>,
+    sha256: String,
+}
+
+/// Parse and validate the raw npm publish JSON body into structured data.
+/// Returns an error response if the payload is malformed.
+#[allow(clippy::result_large_err)]
+fn parse_npm_publish_payload(
+    body: &Bytes,
     package_name: &str,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Result<Response, Response> {
-    // Authenticate
-    let user_id = authenticate(&state.db, &state.config, headers).await?;
-    let repo = resolve_npm_repo(&state.db, repo_key).await?;
-
-    // Reject writes to remote/virtual repos
-    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
-
-    // Parse the npm publish payload
-    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+) -> Result<ParsedNpmPublish, Response> {
+    let payload: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Invalid JSON payload: {}", e),
@@ -639,7 +644,6 @@ async fn publish_package(
         .and_then(|v| v.as_str())
         .unwrap_or(package_name);
 
-    // Validate name matches the URL
     if name != package_name {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -665,171 +669,226 @@ async fn publish_package(
             (StatusCode::BAD_REQUEST, "Missing '_attachments' in payload").into_response()
         })?;
 
-    // Process each version
+    let mut versions = Vec::new();
     for (version, version_data) in versions_obj {
-        // Determine the expected tarball filename
-        let tarball_filename = if package_name.starts_with('@') {
-            // Scoped: @scope/pkg -> pkg-1.0.0.tgz
-            let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
-            format!("{}-{}.tgz", short_name, version)
-        } else {
-            format!("{}-{}.tgz", package_name, version)
-        };
+        let parsed =
+            extract_version_tarball(package_name, version, version_data.clone(), attachments_obj)?;
+        versions.push(parsed);
+    }
 
-        // Find the attachment — try the exact filename first, then any available
-        let attachment_data = attachments_obj
-            .get(&tarball_filename)
-            .or_else(|| {
-                // npm may use the full scoped name in the attachment key
-                attachments_obj.values().next()
-            })
-            .ok_or_else(|| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("No attachment found for version {}", version),
-                )
-                    .into_response()
-            })?;
+    Ok(ParsedNpmPublish { versions })
+}
 
-        let base64_data = attachment_data
-            .get("data")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                (StatusCode::BAD_REQUEST, "Missing 'data' in attachment").into_response()
-            })?;
+/// Extract and decode the tarball for a single version from the attachments map.
+#[allow(clippy::result_large_err)]
+fn extract_version_tarball(
+    package_name: &str,
+    version: &str,
+    version_data: serde_json::Value,
+    attachments_obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<NpmVersionToPublish, Response> {
+    let tarball_filename = if package_name.starts_with('@') {
+        let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
+        format!("{}-{}.tgz", short_name, version)
+    } else {
+        format!("{}-{}.tgz", package_name, version)
+    };
 
-        // Decode the base64 tarball
-        let tarball_bytes = base64::engine::general_purpose::STANDARD
-            .decode(base64_data)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid base64 data: {}", e),
-                )
-                    .into_response()
-            })?;
-
-        // Compute SHA256
-        let mut hasher = Sha256::new();
-        hasher.update(&tarball_bytes);
-        let sha256 = format!("{:x}", hasher.finalize());
-
-        // Build artifact path
-        let artifact_path = format!("{}/{}/{}", package_name, version, tarball_filename);
-
-        // Check for duplicate
-        let existing = sqlx::query_scalar!(
-            "SELECT id FROM artifacts WHERE repository_id = $1 AND path = $2 AND is_deleted = false",
-            repo.id,
-            artifact_path
-        )
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| {
+    let attachment_data = attachments_obj
+        .get(&tarball_filename)
+        .or_else(|| attachments_obj.values().next())
+        .ok_or_else(|| {
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
+                StatusCode::BAD_REQUEST,
+                format!("No attachment found for version {}", version),
             )
                 .into_response()
         })?;
 
-        if existing.is_some() {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("Version {} of {} already exists", version, package_name),
+    let base64_data = attachment_data
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing 'data' in attachment").into_response())?;
+
+    let tarball_bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid base64 data: {}", e),
             )
-                .into_response());
-        }
+                .into_response()
+        })?;
 
-        // Store the tarball
-        let storage_key = format!("npm/{}/{}/{}", package_name, version, tarball_filename);
-        let storage = state.storage_for_repo(&repo.storage_path);
-        storage
-            .put(&storage_key, Bytes::from(tarball_bytes.clone()))
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Storage error: {}", e),
-                )
-                    .into_response()
-            })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&tarball_bytes);
+    let sha256 = format!("{:x}", hasher.finalize());
 
-        let size_bytes = tarball_bytes.len() as i64;
+    Ok(NpmVersionToPublish {
+        version: version.to_string(),
+        version_data,
+        tarball_filename,
+        tarball_bytes,
+        sha256,
+    })
+}
 
-        // Insert artifact record
-        let artifact_id = sqlx::query_scalar!(
-            r#"
-            INSERT INTO artifacts (
-                repository_id, path, name, version, size_bytes,
-                checksum_sha256, content_type, storage_key, uploaded_by
+/// Store a single npm version: check duplicates, write to storage, insert DB
+/// records, and update the package_versions table.
+#[allow(clippy::too_many_arguments)]
+async fn store_npm_version(
+    state: &SharedState,
+    repo_id: uuid::Uuid,
+    repo_key: &str,
+    storage_path: &str,
+    package_name: &str,
+    user_id: uuid::Uuid,
+    ver: &NpmVersionToPublish,
+) -> Result<(), Response> {
+    let artifact_path = format!("{}/{}/{}", package_name, ver.version, ver.tarball_filename);
+
+    // Check for duplicate
+    let existing = sqlx::query_scalar!(
+        "SELECT id FROM artifacts WHERE repository_id = $1 AND path = $2 AND is_deleted = false",
+        repo_id,
+        artifact_path
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response()
+    })?;
+
+    if existing.is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("Version {} of {} already exists", ver.version, package_name),
+        )
+            .into_response());
+    }
+
+    // Store the tarball
+    let storage_key = format!(
+        "npm/{}/{}/{}",
+        package_name, ver.version, ver.tarball_filename
+    );
+    let storage = state.storage_for_repo(storage_path);
+    storage
+        .put(&storage_key, Bytes::from(ver.tarball_bytes.clone()))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Storage error: {}", e),
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id
-            "#,
-            repo.id,
-            artifact_path,
+                .into_response()
+        })?;
+
+    let size_bytes = ver.tarball_bytes.len() as i64;
+
+    // Insert artifact record
+    let artifact_id = sqlx::query_scalar!(
+        r#"
+        INSERT INTO artifacts (
+            repository_id, path, name, version, size_bytes,
+            checksum_sha256, content_type, storage_key, uploaded_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id
+        "#,
+        repo_id,
+        artifact_path,
+        package_name,
+        ver.version,
+        size_bytes,
+        ver.sha256,
+        "application/gzip",
+        storage_key,
+        user_id,
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response()
+    })?;
+
+    // Store metadata
+    let npm_metadata = serde_json::json!({
+        "name": package_name,
+        "version": ver.version,
+        "version_data": ver.version_data,
+    });
+
+    let _ = sqlx::query(
+        "INSERT INTO artifact_metadata (artifact_id, format, metadata) \
+         VALUES ($1, 'npm', $2) \
+         ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2",
+    )
+    .bind(artifact_id)
+    .bind(&npm_metadata)
+    .execute(&state.db)
+    .await;
+
+    // Populate packages / package_versions tables (best-effort)
+    let pkg_svc = crate::services::package_service::PackageService::new(state.db.clone());
+    let description = ver
+        .version_data
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    pkg_svc
+        .try_create_or_update_from_artifact(
+            repo_id,
             package_name,
-            version.clone(),
+            &ver.version,
             size_bytes,
-            sha256,
-            "application/gzip",
-            storage_key,
-            user_id,
+            &ver.sha256,
+            description.as_deref(),
+            Some(serde_json::json!({ "format": "npm" })),
         )
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database error: {}", e),
-            )
-                .into_response()
-        })?;
-
-        // Store metadata (version_data from the publish payload)
-        let npm_metadata = serde_json::json!({
-            "name": package_name,
-            "version": version,
-            "version_data": version_data,
-        });
-
-        let _ = sqlx::query!(
-            r#"
-            INSERT INTO artifact_metadata (artifact_id, format, metadata)
-            VALUES ($1, 'npm', $2)
-            ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2
-            "#,
-            artifact_id,
-            npm_metadata,
-        )
-        .execute(&state.db)
         .await;
 
-        // Populate packages / package_versions tables (best-effort)
-        {
-            let pkg_svc = crate::services::package_service::PackageService::new(state.db.clone());
-            let description = version_data
-                .get("description")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            pkg_svc
-                .try_create_or_update_from_artifact(
-                    repo.id,
-                    package_name,
-                    version,
-                    size_bytes,
-                    &sha256,
-                    description.as_deref(),
-                    Some(serde_json::json!({ "format": "npm" })),
-                )
-                .await;
-        }
+    info!(
+        "npm publish: {} {} ({}) to repo {}",
+        package_name, ver.version, ver.tarball_filename, repo_key
+    );
 
-        info!(
-            "npm publish: {} {} ({}) to repo {}",
-            package_name, version, tarball_filename, repo_key
-        );
+    Ok(())
+}
+
+/// Handle npm publish. The request body is JSON with versions and base64-encoded attachments.
+async fn publish_package(
+    state: &SharedState,
+    repo_key: &str,
+    package_name: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user_id = authenticate(&state.db, &state.config, headers).await?;
+    let repo = resolve_npm_repo(&state.db, repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
+
+    let parsed = parse_npm_publish_payload(&body, package_name)?;
+
+    for ver in &parsed.versions {
+        store_npm_version(
+            state,
+            repo.id,
+            repo_key,
+            &repo.storage_path,
+            package_name,
+            user_id,
+            ver,
+        )
+        .await?;
     }
 
     // Update repository timestamp

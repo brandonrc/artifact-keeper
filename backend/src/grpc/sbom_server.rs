@@ -10,7 +10,15 @@ use uuid::Uuid;
 use super::generated::{
     cve_history_service_server::CveHistoryService as CveHistoryServiceTrait,
     sbom_service_server::SbomService as SbomServiceTrait,
-    security_policy_service_server::SecurityPolicyService as SecurityPolicyServiceTrait, *,
+    security_policy_service_server::SecurityPolicyService as SecurityPolicyServiceTrait,
+    CheckLicenseComplianceRequest, ConvertSbomRequest, CveHistoryEntry, CveTrendsResponse,
+    DeleteLicensePolicyRequest, DeleteLicensePolicyResponse, DeleteSbomRequest, DeleteSbomResponse,
+    GenerateSbomRequest, GetCveHistoryRequest, GetCveHistoryResponse, GetCveTrendsRequest,
+    GetLicensePolicyRequest, GetSbomByArtifactRequest, GetSbomComponentsRequest,
+    GetSbomComponentsResponse, GetSbomRequest, LicenseComplianceResponse, LicensePolicy,
+    ListLicensePoliciesRequest, ListLicensePoliciesResponse, ListSbomsRequest, ListSbomsResponse,
+    RegenerateSbomRequest, RetroactiveScanRequest, RetroactiveScanResponse, SbomComponent,
+    SbomDocument, UpdateCveStatusRequest, UpsertLicensePolicyRequest,
 };
 
 /// gRPC server for SBOM operations.

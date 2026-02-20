@@ -223,6 +223,87 @@ fn evaluate_license_policy(
     violations
 }
 
+/// Escalate the current action based on a violation's severity.
+/// "critical" or "high" severity always escalates to Block; anything else
+/// escalates to Warn unless already at Block.
+fn escalate_action_by_severity(current: PolicyAction, severity: &str) -> PolicyAction {
+    if severity == "critical" || severity == "high" {
+        return PolicyAction::Block;
+    }
+    if current != PolicyAction::Block {
+        return PolicyAction::Warn;
+    }
+    current
+}
+
+/// Escalate the current action based on a policy's configured action.
+fn escalate_action_by_policy(current: PolicyAction, policy_action: &PolicyAction) -> PolicyAction {
+    match policy_action {
+        PolicyAction::Block => PolicyAction::Block,
+        PolicyAction::Warn if current != PolicyAction::Block => PolicyAction::Warn,
+        _ => current,
+    }
+}
+
+/// Collect violations and escalate the action for each one using a severity-based
+/// escalation strategy.
+fn collect_with_severity_escalation(
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+    new_violations: Vec<PolicyViolation>,
+) {
+    for v in new_violations {
+        *action = escalate_action_by_severity(*action, &v.severity);
+        violations.push(v);
+    }
+}
+
+/// Evaluate CVEs against a scan policy, or apply the default critical-CVE policy
+/// when no scan policy is configured.
+fn evaluate_cves_against_policy(
+    summary: &CveSummary,
+    scan_policy: Option<&ScanPolicyConfig>,
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+) {
+    if let Some(policy) = scan_policy {
+        let cve_violations =
+            evaluate_cve_thresholds(summary, &policy.max_severity, policy.block_on_fail);
+        collect_with_severity_escalation(violations, action, cve_violations);
+        return;
+    }
+
+    // Default policy: block on any critical CVEs
+    if summary.critical_count > 0 {
+        *action = PolicyAction::Block;
+        violations.push(PolicyViolation {
+            rule: "default-cve-policy".to_string(),
+            severity: "critical".to_string(),
+            message: format!(
+                "Artifact has {} critical vulnerabilities",
+                summary.critical_count
+            ),
+            details: Some(serde_json::json!({
+                "cves": summary.open_cves
+            })),
+        });
+    }
+}
+
+/// Evaluate licenses against a license policy.
+fn evaluate_licenses_against_policy(
+    summary: &LicenseSummary,
+    policy: &LicensePolicyConfig,
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+) {
+    let license_violations = evaluate_license_policy(summary, policy);
+    for v in license_violations {
+        *action = escalate_action_by_policy(*action, &policy.action);
+        violations.push(v);
+    }
+}
+
 pub struct PromotionPolicyService {
     db: PgPool,
 }
@@ -246,84 +327,27 @@ impl PromotionPolicyService {
         let license_policy = self.get_license_policy(repository_id).await?;
 
         if let Some(ref summary) = cve_summary {
-            if let Some(ref policy) = scan_policy {
-                let cve_violations =
-                    evaluate_cve_thresholds(summary, &policy.max_severity, policy.block_on_fail);
-
-                for v in cve_violations {
-                    if v.severity == "critical" || v.severity == "high" {
-                        action = PolicyAction::Block;
-                    } else if action != PolicyAction::Block {
-                        action = PolicyAction::Warn;
-                    }
-                    violations.push(v);
-                }
-            } else if summary.critical_count > 0 {
-                // Default policy: block on any critical CVEs
-                action = PolicyAction::Block;
-                violations.push(PolicyViolation {
-                    rule: "default-cve-policy".to_string(),
-                    severity: "critical".to_string(),
-                    message: format!(
-                        "Artifact has {} critical vulnerabilities",
-                        summary.critical_count
-                    ),
-                    details: Some(serde_json::json!({
-                        "cves": summary.open_cves
-                    })),
-                });
-            }
+            evaluate_cves_against_policy(
+                summary,
+                scan_policy.as_ref(),
+                &mut violations,
+                &mut action,
+            );
         }
 
-        if let Some(ref summary) = license_summary {
-            if let Some(ref policy) = license_policy {
-                let license_violations = evaluate_license_policy(summary, policy);
-
-                for v in license_violations {
-                    match policy.action {
-                        PolicyAction::Block => action = PolicyAction::Block,
-                        PolicyAction::Warn if action != PolicyAction::Block => {
-                            action = PolicyAction::Warn
-                        }
-                        _ => {}
-                    }
-                    violations.push(v);
-                }
-            }
+        if let (Some(ref summary), Some(ref policy)) = (&license_summary, &license_policy) {
+            evaluate_licenses_against_policy(summary, policy, &mut violations, &mut action);
         }
 
-        // Evaluate age-based gates
         if let Some(ref policy) = scan_policy {
-            if policy.min_staging_hours.is_some() || policy.max_artifact_age_days.is_some() {
-                if let Some(artifact_created_at) = self.get_artifact_created_at(artifact_id).await?
-                {
-                    let age_violations = evaluate_age_gates(
-                        artifact_created_at,
-                        policy.min_staging_hours,
-                        policy.max_artifact_age_days,
-                    );
-                    for v in age_violations {
-                        if v.severity == "high" {
-                            action = PolicyAction::Block;
-                        } else if action != PolicyAction::Block {
-                            action = PolicyAction::Warn;
-                        }
-                        violations.push(v);
-                    }
-                }
-            }
-
-            // Evaluate signature requirement
-            if policy.require_signature {
-                let has_signature = self
-                    .check_artifact_signature(artifact_id, repository_id)
-                    .await?;
-                let sig_violations = evaluate_signature_requirement(has_signature);
-                for v in sig_violations {
-                    action = PolicyAction::Block;
-                    violations.push(v);
-                }
-            }
+            self.evaluate_age_and_signature(
+                artifact_id,
+                repository_id,
+                policy,
+                &mut violations,
+                &mut action,
+            )
+            .await?;
         }
 
         let passed = violations.is_empty();
@@ -335,6 +359,43 @@ impl PromotionPolicyService {
             cve_summary,
             license_summary,
         })
+    }
+
+    /// Evaluate age gates and signature requirements from a scan policy.
+    async fn evaluate_age_and_signature(
+        &self,
+        artifact_id: Uuid,
+        repository_id: Uuid,
+        policy: &ScanPolicyConfig,
+        violations: &mut Vec<PolicyViolation>,
+        action: &mut PolicyAction,
+    ) -> Result<()> {
+        let has_age_constraints =
+            policy.min_staging_hours.is_some() || policy.max_artifact_age_days.is_some();
+
+        if has_age_constraints {
+            if let Some(created_at) = self.get_artifact_created_at(artifact_id).await? {
+                let age_violations = evaluate_age_gates(
+                    created_at,
+                    policy.min_staging_hours,
+                    policy.max_artifact_age_days,
+                );
+                collect_with_severity_escalation(violations, action, age_violations);
+            }
+        }
+
+        if policy.require_signature {
+            let has_signature = self
+                .check_artifact_signature(artifact_id, repository_id)
+                .await?;
+            let sig_violations = evaluate_signature_requirement(has_signature);
+            for v in sig_violations {
+                *action = PolicyAction::Block;
+                violations.push(v);
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_cve_summary(&self, artifact_id: Uuid) -> Result<Option<CveSummary>> {
@@ -1263,5 +1324,582 @@ mod tests {
         assert!(violations[0]
             .message
             .contains("does not have a valid signature"));
+    }
+
+    // =======================================================================
+    // escalate_action_by_severity tests
+    // =======================================================================
+
+    #[test]
+    fn test_escalate_action_by_severity_critical_always_blocks() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, "critical"),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Warn, "critical"),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Block, "critical"),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_high_always_blocks() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, "high"),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Warn, "high"),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Block, "high"),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_medium_escalates_to_warn() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, "medium"),
+            PolicyAction::Warn
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Warn, "medium"),
+            PolicyAction::Warn
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_medium_does_not_downgrade_block() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Block, "medium"),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_low_escalates_to_warn() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, "low"),
+            PolicyAction::Warn
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_low_does_not_downgrade_block() {
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Block, "low"),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_severity_unknown_severity_escalates_to_warn() {
+        // Any severity string that is not "critical" or "high" follows the else branch
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, "unknown"),
+            PolicyAction::Warn
+        );
+        assert_eq!(
+            escalate_action_by_severity(PolicyAction::Allow, ""),
+            PolicyAction::Warn
+        );
+    }
+
+    // =======================================================================
+    // escalate_action_by_policy tests
+    // =======================================================================
+
+    #[test]
+    fn test_escalate_action_by_policy_block_always_wins() {
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Allow, &PolicyAction::Block),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Warn, &PolicyAction::Block),
+            PolicyAction::Block
+        );
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Block, &PolicyAction::Block),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_policy_warn_escalates_from_allow() {
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Allow, &PolicyAction::Warn),
+            PolicyAction::Warn
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_policy_warn_keeps_warn() {
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Warn, &PolicyAction::Warn),
+            PolicyAction::Warn
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_policy_warn_does_not_downgrade_block() {
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Block, &PolicyAction::Warn),
+            PolicyAction::Block
+        );
+    }
+
+    #[test]
+    fn test_escalate_action_by_policy_allow_preserves_current() {
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Allow, &PolicyAction::Allow),
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Warn, &PolicyAction::Allow),
+            PolicyAction::Warn
+        );
+        assert_eq!(
+            escalate_action_by_policy(PolicyAction::Block, &PolicyAction::Allow),
+            PolicyAction::Block
+        );
+    }
+
+    // =======================================================================
+    // collect_with_severity_escalation tests
+    // =======================================================================
+
+    #[test]
+    fn test_collect_with_severity_escalation_empty_input() {
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+        collect_with_severity_escalation(&mut violations, &mut action, vec![]);
+        assert!(violations.is_empty());
+        assert_eq!(action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_collect_with_severity_escalation_single_critical() {
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+        let new = vec![PolicyViolation {
+            rule: "test".to_string(),
+            severity: "critical".to_string(),
+            message: "critical issue".to_string(),
+            details: None,
+        }];
+        collect_with_severity_escalation(&mut violations, &mut action, new);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_collect_with_severity_escalation_single_medium() {
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+        let new = vec![PolicyViolation {
+            rule: "test".to_string(),
+            severity: "medium".to_string(),
+            message: "medium issue".to_string(),
+            details: None,
+        }];
+        collect_with_severity_escalation(&mut violations, &mut action, new);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(action, PolicyAction::Warn);
+    }
+
+    #[test]
+    fn test_collect_with_severity_escalation_mixed_severities() {
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+        let new = vec![
+            PolicyViolation {
+                rule: "rule-1".to_string(),
+                severity: "low".to_string(),
+                message: "low issue".to_string(),
+                details: None,
+            },
+            PolicyViolation {
+                rule: "rule-2".to_string(),
+                severity: "medium".to_string(),
+                message: "medium issue".to_string(),
+                details: None,
+            },
+            PolicyViolation {
+                rule: "rule-3".to_string(),
+                severity: "high".to_string(),
+                message: "high issue".to_string(),
+                details: None,
+            },
+        ];
+        collect_with_severity_escalation(&mut violations, &mut action, new);
+        assert_eq!(violations.len(), 3);
+        // After processing low -> Warn, medium -> Warn (already), high -> Block
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_collect_with_severity_escalation_appends_to_existing() {
+        let mut violations = vec![PolicyViolation {
+            rule: "existing".to_string(),
+            severity: "low".to_string(),
+            message: "pre-existing violation".to_string(),
+            details: None,
+        }];
+        let mut action = PolicyAction::Warn;
+        let new = vec![PolicyViolation {
+            rule: "new".to_string(),
+            severity: "medium".to_string(),
+            message: "new violation".to_string(),
+            details: None,
+        }];
+        collect_with_severity_escalation(&mut violations, &mut action, new);
+        assert_eq!(violations.len(), 2);
+        assert_eq!(violations[0].rule, "existing");
+        assert_eq!(violations[1].rule, "new");
+        // medium with current=Warn stays Warn
+        assert_eq!(action, PolicyAction::Warn);
+    }
+
+    #[test]
+    fn test_collect_with_severity_escalation_does_not_downgrade() {
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Block;
+        let new = vec![PolicyViolation {
+            rule: "test".to_string(),
+            severity: "low".to_string(),
+            message: "low issue".to_string(),
+            details: None,
+        }];
+        collect_with_severity_escalation(&mut violations, &mut action, new);
+        assert_eq!(violations.len(), 1);
+        // Block should not be downgraded by a low severity violation
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    // =======================================================================
+    // evaluate_cves_against_policy tests
+    // =======================================================================
+
+    #[test]
+    fn test_evaluate_cves_with_scan_policy() {
+        let summary = CveSummary {
+            critical_count: 2,
+            high_count: 3,
+            medium_count: 0,
+            low_count: 0,
+            total_count: 5,
+            open_cves: vec!["CVE-2025-001".to_string()],
+        };
+        let scan_policy = ScanPolicyConfig {
+            max_severity: "high".to_string(),
+            block_on_fail: true,
+            min_staging_hours: None,
+            max_artifact_age_days: None,
+            require_signature: false,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_cves_against_policy(&summary, Some(&scan_policy), &mut violations, &mut action);
+
+        // "high" threshold: max_critical=0, max_high=0
+        // critical_count=2 > 0, high_count=3 > 0 => 2 violations
+        assert_eq!(violations.len(), 2);
+        // Both critical and high are >= "high" severity, so action should be Block
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_evaluate_cves_with_scan_policy_no_violations() {
+        let summary = CveSummary {
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 5,
+            low_count: 10,
+            total_count: 15,
+            open_cves: vec![],
+        };
+        let scan_policy = ScanPolicyConfig {
+            max_severity: "critical".to_string(),
+            block_on_fail: false,
+            min_staging_hours: None,
+            max_artifact_age_days: None,
+            require_signature: false,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_cves_against_policy(&summary, Some(&scan_policy), &mut violations, &mut action);
+
+        assert!(violations.is_empty());
+        assert_eq!(action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_evaluate_cves_default_policy_blocks_on_critical() {
+        let summary = CveSummary {
+            critical_count: 3,
+            high_count: 10,
+            medium_count: 20,
+            low_count: 30,
+            total_count: 63,
+            open_cves: vec!["CVE-2025-100".to_string(), "CVE-2025-101".to_string()],
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_cves_against_policy(&summary, None, &mut violations, &mut action);
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, "default-cve-policy");
+        assert_eq!(violations[0].severity, "critical");
+        assert!(violations[0].message.contains("3 critical"));
+        assert_eq!(action, PolicyAction::Block);
+
+        // Check that details include the open CVEs
+        let details = violations[0].details.as_ref().unwrap();
+        let cves = details["cves"].as_array().unwrap();
+        assert_eq!(cves.len(), 2);
+    }
+
+    #[test]
+    fn test_evaluate_cves_default_policy_ignores_non_critical() {
+        let summary = CveSummary {
+            critical_count: 0,
+            high_count: 50,
+            medium_count: 100,
+            low_count: 200,
+            total_count: 350,
+            open_cves: vec![],
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_cves_against_policy(&summary, None, &mut violations, &mut action);
+
+        // Default policy only cares about critical CVEs
+        assert!(violations.is_empty());
+        assert_eq!(action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_evaluate_cves_against_policy_preserves_existing_violations() {
+        let summary = CveSummary {
+            critical_count: 1,
+            high_count: 0,
+            medium_count: 0,
+            low_count: 0,
+            total_count: 1,
+            open_cves: vec![],
+        };
+        let mut violations = vec![PolicyViolation {
+            rule: "pre-existing".to_string(),
+            severity: "low".to_string(),
+            message: "already here".to_string(),
+            details: None,
+        }];
+        let mut action = PolicyAction::Warn;
+
+        evaluate_cves_against_policy(&summary, None, &mut violations, &mut action);
+
+        // Should have the pre-existing + the new default-cve-policy violation
+        assert_eq!(violations.len(), 2);
+        assert_eq!(violations[0].rule, "pre-existing");
+        assert_eq!(violations[1].rule, "default-cve-policy");
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_evaluate_cves_with_medium_threshold_policy() {
+        let summary = CveSummary {
+            critical_count: 0,
+            high_count: 0,
+            medium_count: 5,
+            low_count: 0,
+            total_count: 5,
+            open_cves: vec![],
+        };
+        let scan_policy = ScanPolicyConfig {
+            max_severity: "medium".to_string(),
+            block_on_fail: true,
+            min_staging_hours: None,
+            max_artifact_age_days: None,
+            require_signature: false,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_cves_against_policy(&summary, Some(&scan_policy), &mut violations, &mut action);
+
+        // "medium" threshold: (0, 0, 0) - medium_count=5 > 0 => violation
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].severity, "medium");
+        // medium severity escalates to Warn (not Block)
+        assert_eq!(action, PolicyAction::Warn);
+    }
+
+    // =======================================================================
+    // evaluate_licenses_against_policy tests
+    // =======================================================================
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_denied_license_with_block() {
+        let summary = LicenseSummary {
+            licenses_found: vec!["GPL-3.0".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "strict".to_string(),
+            allowed_licenses: vec![],
+            denied_licenses: vec!["GPL-3.0".to_string()],
+            allow_unknown: false,
+            action: PolicyAction::Block,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("denied"));
+        // Policy action is Block, so escalate_action_by_policy should set Block
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_denied_license_with_warn() {
+        let summary = LicenseSummary {
+            licenses_found: vec!["GPL-3.0".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "lenient".to_string(),
+            allowed_licenses: vec![],
+            denied_licenses: vec!["GPL-3.0".to_string()],
+            allow_unknown: false,
+            action: PolicyAction::Warn,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        assert_eq!(violations.len(), 1);
+        // Policy action is Warn, current is Allow => escalated to Warn
+        assert_eq!(action, PolicyAction::Warn);
+    }
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_no_violations() {
+        let summary = LicenseSummary {
+            licenses_found: vec!["MIT".to_string(), "Apache-2.0".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "permissive".to_string(),
+            allowed_licenses: vec!["MIT".to_string(), "Apache-2.0".to_string()],
+            denied_licenses: vec![],
+            allow_unknown: false,
+            action: PolicyAction::Block,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        assert!(violations.is_empty());
+        assert_eq!(action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_preserves_existing_state() {
+        let summary = LicenseSummary {
+            licenses_found: vec!["AGPL-3.0".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "test".to_string(),
+            allowed_licenses: vec![],
+            denied_licenses: vec!["AGPL-3.0".to_string()],
+            allow_unknown: false,
+            action: PolicyAction::Warn,
+        };
+        let mut violations = vec![PolicyViolation {
+            rule: "earlier-rule".to_string(),
+            severity: "low".to_string(),
+            message: "earlier".to_string(),
+            details: None,
+        }];
+        let mut action = PolicyAction::Block;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        // Should append the new violation
+        assert_eq!(violations.len(), 2);
+        assert_eq!(violations[0].rule, "earlier-rule");
+        assert_eq!(violations[1].rule, "license-compliance");
+        // Block should not be downgraded by Warn policy
+        assert_eq!(action, PolicyAction::Block);
+    }
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_allow_action_preserves_current() {
+        let summary = LicenseSummary {
+            licenses_found: vec!["GPL-3.0".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "report-only".to_string(),
+            allowed_licenses: vec![],
+            denied_licenses: vec!["GPL-3.0".to_string()],
+            allow_unknown: false,
+            action: PolicyAction::Allow,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        // Violations are still recorded even with Allow policy
+        assert_eq!(violations.len(), 1);
+        // Allow policy does not escalate the action
+        assert_eq!(action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_evaluate_licenses_against_policy_multiple_violations_escalate_once() {
+        // Both denied and unknown violations with a Block policy
+        let summary = LicenseSummary {
+            licenses_found: vec!["GPL-3.0".to_string(), "WTFPL".to_string()],
+            denied_licenses: vec![],
+            unknown_licenses: vec![],
+        };
+        let policy = LicensePolicyConfig {
+            name: "strict-multi".to_string(),
+            allowed_licenses: vec!["MIT".to_string()],
+            denied_licenses: vec!["GPL-3.0".to_string()],
+            allow_unknown: false,
+            action: PolicyAction::Block,
+        };
+        let mut violations = Vec::new();
+        let mut action = PolicyAction::Allow;
+
+        evaluate_licenses_against_policy(&summary, &policy, &mut violations, &mut action);
+
+        // 1 denied (GPL-3.0) + 1 unknown (WTFPL not in allowed list)
+        assert_eq!(violations.len(), 2);
+        assert_eq!(action, PolicyAction::Block);
     }
 }

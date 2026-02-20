@@ -2,13 +2,13 @@
 FROM rust:1.93-bookworm
 
 # Install build dependencies, cargo-watch, and sccache
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    zlib1g-dev \
-    liblzma-dev \
-    protobuf-compiler \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    liblzma-dev \
+    libssl-dev \
+    pkg-config \
+    protobuf-compiler \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && cargo install cargo-watch@8.5.3 --locked \
     && cargo install sccache --locked
@@ -22,5 +22,8 @@ WORKDIR /app
 
 # Source and target will be mounted at runtime
 EXPOSE 8080 9090
+
+RUN groupadd -r appuser && useradd -r -g appuser -d /app appuser
+USER appuser
 
 CMD ["cargo", "watch", "-x", "run --bin artifact-keeper"]
