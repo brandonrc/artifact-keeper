@@ -429,4 +429,252 @@ mod tests {
         let result = serde_json::from_str::<SetArtifactLabelsRequest>(json);
         assert!(result.is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // require_auth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_auth_none_returns_error() {
+        let result = require_auth(None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_require_auth_some_returns_ok() {
+        let auth = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "admin".to_string(),
+            email: "admin@example.com".to_string(),
+            is_admin: true,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        };
+        let result = require_auth(Some(auth.clone()));
+        assert!(result.is_ok());
+        let returned = result.unwrap();
+        assert_eq!(returned.user_id, auth.user_id);
+        assert_eq!(returned.username, "admin");
+    }
+
+    // -----------------------------------------------------------------------
+    // label_to_response field mapping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_label_to_response_maps_label_key_to_key() {
+        let id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let ts = chrono::Utc::now();
+        let label = ArtifactLabel {
+            id,
+            artifact_id,
+            label_key: "environment".to_string(),
+            label_value: "staging".to_string(),
+            created_at: ts,
+        };
+        let resp = label_to_response(label);
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.artifact_id, artifact_id);
+        assert_eq!(resp.key, "environment");
+        assert_eq!(resp.value, "staging");
+        assert_eq!(resp.created_at, ts);
+    }
+
+    #[test]
+    fn test_label_to_response_empty_value() {
+        let label = ArtifactLabel {
+            id: Uuid::nil(),
+            artifact_id: Uuid::nil(),
+            label_key: "flag".to_string(),
+            label_value: "".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        let resp = label_to_response(label);
+        assert_eq!(resp.key, "flag");
+        assert_eq!(resp.value, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // labels_list_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_labels_list_response_total_matches_items() {
+        let labels = vec![
+            ArtifactLabel {
+                id: Uuid::new_v4(),
+                artifact_id: Uuid::nil(),
+                label_key: "x".to_string(),
+                label_value: "1".to_string(),
+                created_at: chrono::Utc::now(),
+            },
+            ArtifactLabel {
+                id: Uuid::new_v4(),
+                artifact_id: Uuid::nil(),
+                label_key: "y".to_string(),
+                label_value: "2".to_string(),
+                created_at: chrono::Utc::now(),
+            },
+            ArtifactLabel {
+                id: Uuid::new_v4(),
+                artifact_id: Uuid::nil(),
+                label_key: "z".to_string(),
+                label_value: "3".to_string(),
+                created_at: chrono::Utc::now(),
+            },
+        ];
+        let resp = labels_list_response(labels);
+        assert_eq!(resp.total, 3);
+        assert_eq!(resp.items.len(), 3);
+        assert_eq!(resp.items[0].key, "x");
+        assert_eq!(resp.items[1].key, "y");
+        assert_eq!(resp.items[2].key, "z");
+    }
+
+    #[test]
+    fn test_labels_list_response_maps_all_fields() {
+        let id = Uuid::new_v4();
+        let artifact_id = Uuid::new_v4();
+        let labels = vec![ArtifactLabel {
+            id,
+            artifact_id,
+            label_key: "env".to_string(),
+            label_value: "prod".to_string(),
+            created_at: chrono::Utc::now(),
+        }];
+        let resp = labels_list_response(labels);
+        assert_eq!(resp.items[0].id, id);
+        assert_eq!(resp.items[0].artifact_id, artifact_id);
+        assert_eq!(resp.items[0].key, "env");
+        assert_eq!(resp.items[0].value, "prod");
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactLabelEntrySchema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_label_entry_schema_with_value() {
+        let json = r#"{"key": "env", "value": "prod"}"#;
+        let entry: ArtifactLabelEntrySchema = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.key, "env");
+        assert_eq!(entry.value, "prod");
+    }
+
+    #[test]
+    fn test_label_entry_schema_serialization() {
+        let entry = ArtifactLabelEntrySchema {
+            key: "tier".to_string(),
+            value: "critical".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"key\":\"tier\""));
+        assert!(json.contains("\"value\":\"critical\""));
+    }
+
+    #[test]
+    fn test_label_entry_schema_clone() {
+        let entry = ArtifactLabelEntrySchema {
+            key: "region".to_string(),
+            value: "us-east-1".to_string(),
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.key, entry.key);
+        assert_eq!(cloned.value, entry.value);
+    }
+
+    // -----------------------------------------------------------------------
+    // SetArtifactLabelsRequest -> LabelEntry conversion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_labels_to_label_entries_conversion() {
+        let json =
+            r#"{"labels": [{"key": "env", "value": "prod"}, {"key": "tier", "value": "1"}]}"#;
+        let req: SetArtifactLabelsRequest = serde_json::from_str(json).unwrap();
+        let entries: Vec<LabelEntry> = req
+            .labels
+            .into_iter()
+            .map(|l| LabelEntry {
+                key: l.key,
+                value: l.value,
+            })
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "env");
+        assert_eq!(entries[0].value, "prod");
+        assert_eq!(entries[1].key, "tier");
+        assert_eq!(entries[1].value, "1");
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactLabelsListResponse JSON contract
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_labels_list_response_json_contract() {
+        let resp = ArtifactLabelsListResponse {
+            items: vec![ArtifactLabelResponse {
+                id: Uuid::nil(),
+                artifact_id: Uuid::nil(),
+                key: "a".to_string(),
+                value: "1".to_string(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            }],
+            total: 1,
+        };
+        let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 2);
+        assert!(obj.contains_key("items"));
+        assert!(obj.contains_key("total"));
+        let items = json["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        let item_obj = item.as_object().unwrap();
+        assert_eq!(item_obj.len(), 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // AddArtifactLabelRequest edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_add_label_request_explicit_empty_value() {
+        let json = r#"{"value": ""}"#;
+        let req: AddArtifactLabelRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.value, "");
+    }
+
+    #[test]
+    fn test_add_label_request_unicode_value() {
+        let json = r#"{"value": "production-日本"}"#;
+        let req: AddArtifactLabelRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.value, "production-日本");
+    }
+
+    // -----------------------------------------------------------------------
+    // ArtifactLabelResponse serialization field names
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_label_response_uses_key_not_label_key() {
+        let resp = ArtifactLabelResponse {
+            id: Uuid::nil(),
+            artifact_id: Uuid::nil(),
+            key: "test".to_string(),
+            value: "val".to_string(),
+            created_at: chrono::Utc::now(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("key").is_some());
+        assert!(json.get("value").is_some());
+        assert!(json.get("label_key").is_none());
+        assert!(json.get("label_value").is_none());
+    }
 }

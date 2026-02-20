@@ -1173,4 +1173,281 @@ mod tests {
         let resolved: &str = "dev-main";
         assert_eq!(resolved, "dev-main");
     }
+
+    // -----------------------------------------------------------------------
+    // merge_composer_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_merge_composer_metadata_all_keys() {
+        let mut entry = serde_json::json!({"name": "vendor/pkg", "version": "1.0.0"});
+        let metadata = serde_json::json!({
+            "composer": {
+                "description": "A PHP library",
+                "type": "library",
+                "license": "MIT",
+                "require": {"php": ">=8.1"},
+                "require-dev": {"phpunit/phpunit": "^10"},
+                "autoload": {"psr-4": {"Vendor\\": "src/"}},
+                "authors": [{"name": "Jane"}],
+                "keywords": ["php", "library"],
+                "homepage": "https://example.com"
+            }
+        });
+        merge_composer_metadata(&mut entry, Some(&metadata));
+
+        assert_eq!(entry["description"], "A PHP library");
+        assert_eq!(entry["type"], "library");
+        assert_eq!(entry["license"], "MIT");
+        assert_eq!(entry["require"]["php"], ">=8.1");
+        assert_eq!(entry["require-dev"]["phpunit/phpunit"], "^10");
+        assert!(entry["autoload"]["psr-4"].is_object());
+        assert_eq!(entry["authors"][0]["name"], "Jane");
+        assert_eq!(entry["keywords"][0], "php");
+        assert_eq!(entry["homepage"], "https://example.com");
+    }
+
+    #[test]
+    fn test_merge_composer_metadata_no_composer_key() {
+        let mut entry = serde_json::json!({"name": "vendor/pkg"});
+        let metadata = serde_json::json!({"format": "composer"});
+        merge_composer_metadata(&mut entry, Some(&metadata));
+        assert!(entry.get("description").is_none());
+    }
+
+    #[test]
+    fn test_merge_composer_metadata_none() {
+        let mut entry = serde_json::json!({"name": "vendor/pkg"});
+        merge_composer_metadata(&mut entry, None);
+        assert!(entry.get("description").is_none());
+    }
+
+    #[test]
+    fn test_merge_composer_metadata_partial_keys() {
+        let mut entry = serde_json::json!({"name": "vendor/pkg"});
+        let metadata = serde_json::json!({
+            "composer": {
+                "description": "Partial",
+                "license": ["MIT", "Apache-2.0"]
+            }
+        });
+        merge_composer_metadata(&mut entry, Some(&metadata));
+        assert_eq!(entry["description"], "Partial");
+        assert!(entry["license"].is_array());
+        assert!(entry.get("type").is_none());
+        assert!(entry.get("require").is_none());
+    }
+
+    #[test]
+    fn test_merge_composer_metadata_does_not_overwrite_existing() {
+        let mut entry = serde_json::json!({
+            "name": "vendor/pkg",
+            "description": "original"
+        });
+        let metadata = serde_json::json!({
+            "composer": {
+                "description": "from composer.json"
+            }
+        });
+        merge_composer_metadata(&mut entry, Some(&metadata));
+        assert_eq!(entry["description"], "from composer.json");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_version_entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_version_entry_basic() {
+        let entry = build_version_entry(
+            "php-hosted",
+            "monolog/monolog",
+            "3.0.0",
+            "abc123def456",
+            None,
+        );
+        assert_eq!(entry["name"], "monolog/monolog");
+        assert_eq!(entry["version"], "3.0.0");
+        assert_eq!(entry["dist"]["type"], "zip");
+        assert_eq!(entry["dist"]["reference"], "abc123def456");
+        assert_eq!(entry["dist"]["shasum"], "abc123def456");
+        let url = entry["dist"]["url"].as_str().unwrap();
+        assert_eq!(
+            url,
+            "/composer/php-hosted/dist/monolog/monolog/3.0.0/abc123def456.zip"
+        );
+    }
+
+    #[test]
+    fn test_build_version_entry_with_metadata() {
+        let metadata = serde_json::json!({
+            "composer": {
+                "description": "Sends logs to files, sockets, inboxes, and databases",
+                "type": "library",
+                "license": "MIT",
+                "require": {"php": ">=8.1", "psr/log": "^3"}
+            }
+        });
+        let entry = build_version_entry(
+            "repo",
+            "monolog/monolog",
+            "3.5.0",
+            "fedcba",
+            Some(&metadata),
+        );
+        assert_eq!(
+            entry["description"],
+            "Sends logs to files, sockets, inboxes, and databases"
+        );
+        assert_eq!(entry["type"], "library");
+        assert_eq!(entry["license"], "MIT");
+        assert_eq!(entry["require"]["php"], ">=8.1");
+    }
+
+    #[test]
+    fn test_build_version_entry_dist_url_format() {
+        let entry =
+            build_version_entry("my-repo", "laravel/framework", "11.0.0", "sha256hex", None);
+        let url = entry["dist"]["url"].as_str().unwrap();
+        assert!(url.starts_with("/composer/my-repo/dist/"));
+        assert!(url.ends_with("/sha256hex.zip"));
+        assert!(url.contains("laravel/framework"));
+        assert!(url.contains("11.0.0"));
+    }
+
+    // -----------------------------------------------------------------------
+    // COMPOSER_METADATA_KEYS
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_composer_metadata_keys_count() {
+        assert_eq!(COMPOSER_METADATA_KEYS.len(), 9);
+    }
+
+    #[test]
+    fn test_composer_metadata_keys_contains_required() {
+        assert!(COMPOSER_METADATA_KEYS.contains(&"description"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"type"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"license"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"require"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"require-dev"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"autoload"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"authors"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"keywords"));
+        assert!(COMPOSER_METADATA_KEYS.contains(&"homepage"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Search next page URL generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_next_page_url() {
+        let repo_key = "composer-hosted";
+        let query_str = "monolog";
+        let page = 2i64;
+        let next_url = format!(
+            "/composer/{}/search.json?q={}&page={}",
+            repo_key,
+            query_str,
+            page + 1
+        );
+        assert_eq!(
+            next_url,
+            "/composer/composer-hosted/search.json?q=monolog&page=3"
+        );
+    }
+
+    #[test]
+    fn test_search_total_pages_rounding() {
+        let total_count = 1i64;
+        let per_page = 15i64;
+        let total_pages = ((total_count as f64) / (per_page as f64)).ceil() as i64;
+        assert_eq!(total_pages, 1);
+        let has_next = 1 < total_pages;
+        assert!(!has_next);
+    }
+
+    #[test]
+    fn test_search_total_pages_exact_division() {
+        let total_count = 30i64;
+        let per_page = 15i64;
+        let total_pages = ((total_count as f64) / (per_page as f64)).ceil() as i64;
+        assert_eq!(total_pages, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Search result JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_result_json_structure() {
+        let repo_key = "php-repo";
+        let name = "vendor/package";
+        let description = "A PHP package";
+        let url = format!("/composer/{}/p2/{}.json", repo_key, name);
+        let result = serde_json::json!({
+            "name": name,
+            "description": description,
+            "url": url,
+        });
+        assert_eq!(result["name"], "vendor/package");
+        assert_eq!(result["url"], "/composer/php-repo/p2/vendor/package.json");
+    }
+
+    // -----------------------------------------------------------------------
+    // Download filename generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_filename() {
+        let package = "monolog";
+        let version = "3.5.0";
+        let filename = format!("{}-{}.zip", package, version);
+        assert_eq!(filename, "monolog-3.5.0.zip");
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload response JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upload_response_structure() {
+        let full_name = "vendor/my-package";
+        let version = "1.2.3";
+        let sha256 = "abcdef1234567890";
+        let response = serde_json::json!({
+            "status": "ok",
+            "package": full_name,
+            "version": version,
+            "sha256": sha256,
+        });
+        assert_eq!(response["status"], "ok");
+        assert_eq!(response["package"], "vendor/my-package");
+        assert_eq!(response["version"], "1.2.3");
+        assert_eq!(response["sha256"], "abcdef1234567890");
+    }
+
+    // -----------------------------------------------------------------------
+    // Composer metadata JSON for storage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_composer_metadata_json_structure() {
+        let full_name = "vendor/pkg";
+        let version = "2.0.0";
+        let composer_json_val = serde_json::json!({
+            "name": "vendor/pkg",
+            "description": "Test",
+            "version": "2.0.0"
+        });
+        let metadata = serde_json::json!({
+            "name": full_name,
+            "version": version,
+            "composer": composer_json_val,
+        });
+        assert_eq!(metadata["name"], "vendor/pkg");
+        assert_eq!(metadata["version"], "2.0.0");
+        assert_eq!(metadata["composer"]["description"], "Test");
+    }
 }

@@ -163,15 +163,136 @@ async fn compute_sha256_from_file(path: &Path) -> Result<String, Response> {
 }
 
 /// Compute the on-disk path for a storage key (mirrors FilesystemStorage::key_to_path).
-fn storage_path_for_key(storage_base: &str, key: &str) -> PathBuf {
+pub(crate) fn storage_path_for_key(storage_base: &str, key: &str) -> PathBuf {
     let prefix = &key[..2.min(key.len())];
     PathBuf::from(storage_base).join(prefix).join(key)
 }
 
 /// Temp file path for an upload session.
-fn temp_upload_path(storage_base: &str, session_id: &Uuid) -> PathBuf {
+pub(crate) fn temp_upload_path(storage_base: &str, session_id: &Uuid) -> PathBuf {
     let key = format!("incus-uploads/{}", session_id);
     storage_path_for_key(storage_base, &key)
+}
+
+/// Determine the content type for an Incus artifact based on its path.
+pub(crate) fn content_type_for_artifact(artifact_path: &str) -> &'static str {
+    if artifact_path.ends_with(".tar.xz") {
+        "application/x-xz"
+    } else if artifact_path.ends_with(".tar.gz") {
+        "application/gzip"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Determine the content type for downloading an Incus image file.
+pub(crate) fn content_type_for_download(filename: &str) -> &'static str {
+    if filename.ends_with(".tar.xz") {
+        "application/x-xz"
+    } else if filename.ends_with(".tar.gz") {
+        "application/gzip"
+    } else if filename.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Classify a filename into a SimpleStreams file type string.
+pub(crate) fn simplestreams_ftype(filename: &str) -> &str {
+    if filename.ends_with(".squashfs") {
+        "squashfs"
+    } else if filename.ends_with(".img") || filename.ends_with(".qcow2") {
+        "disk-kvm.img"
+    } else if filename.ends_with(".tar.xz") {
+        "incus.tar.xz"
+    } else if filename.ends_with(".tar.gz") {
+        "incus.tar.gz"
+    } else {
+        filename
+    }
+}
+
+/// Determine the item key used in a SimpleStreams version entry.
+pub(crate) fn simplestreams_item_key(ftype: &str) -> &str {
+    if ftype.contains("tar") {
+        "incus.tar.xz"
+    } else {
+        "rootfs"
+    }
+}
+
+/// Build the download URL for an image in the SimpleStreams catalog.
+pub(crate) fn build_download_url(
+    repo_key: &str,
+    product: &str,
+    version: &str,
+    filename: &str,
+) -> String {
+    format!(
+        "/incus/{}/images/{}/{}/{}",
+        repo_key, product, version, filename
+    )
+}
+
+/// Build the artifact path from product, version, and filename.
+pub(crate) fn build_artifact_path(product: &str, version: &str, filename: &str) -> String {
+    format!("{}/{}/{}", product, version, filename)
+}
+
+/// Build the storage key for an Incus artifact.
+pub(crate) fn build_storage_key(repo_id: &Uuid, artifact_path: &str) -> String {
+    format!("incus/{}/{}", repo_id, artifact_path)
+}
+
+/// Extract the architecture from Incus image metadata JSON.
+pub(crate) fn extract_arch_from_metadata(metadata: Option<&serde_json::Value>) -> &str {
+    metadata
+        .and_then(|m| m.get("image_metadata"))
+        .and_then(|im| im.get("architecture"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("amd64")
+}
+
+/// Extract the OS from Incus image metadata JSON.
+pub(crate) fn extract_os_from_metadata(metadata: Option<&serde_json::Value>) -> Option<&str> {
+    metadata
+        .and_then(|m| m.get("image_metadata"))
+        .and_then(|im| im.get("os"))
+        .and_then(|v| v.as_str())
+}
+
+/// Extract the release from Incus image metadata JSON.
+pub(crate) fn extract_release_from_metadata(metadata: Option<&serde_json::Value>) -> Option<&str> {
+    metadata
+        .and_then(|m| m.get("image_metadata"))
+        .and_then(|im| im.get("release"))
+        .and_then(|v| v.as_str())
+}
+
+/// Extract the filename portion from an artifact path.
+pub(crate) fn filename_from_path(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Build the Location header for chunked upload responses.
+pub(crate) fn build_upload_location(repo_key: &str, session_id: &Uuid) -> String {
+    format!("/incus/{}/uploads/{}", repo_key, session_id)
+}
+
+/// Build the SimpleStreams index JSON structure.
+pub(crate) fn build_streams_index_json(products: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "format": "index:1.0",
+        "index": {
+            "images": {
+                "datatype": "image-downloads",
+                "format": "products:1.0",
+                "path": "streams/v1/images.json",
+                "products": products
+            }
+        }
+    })
 }
 
 /// Parameters for creating or updating an artifact record.
@@ -203,13 +324,7 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
         user_id,
         metadata,
     } = p;
-    let content_type = if artifact_path.ends_with(".tar.xz") {
-        "application/x-xz"
-    } else if artifact_path.ends_with(".tar.gz") {
-        "application/gzip"
-    } else {
-        "application/octet-stream"
-    };
+    let content_type = content_type_for_artifact(artifact_path);
 
     let artifact = sqlx::query(
         r#"
@@ -372,17 +487,7 @@ async fn streams_index(
 
     let products: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
 
-    let index = serde_json::json!({
-        "format": "index:1.0",
-        "index": {
-            "images": {
-                "datatype": "image-downloads",
-                "format": "products:1.0",
-                "path": "streams/v1/images.json",
-                "products": products
-            }
-        }
-    });
+    let index = build_streams_index_json(&products);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -433,42 +538,13 @@ async fn streams_images(
             None => continue,
         };
 
-        let arch = metadata
-            .as_ref()
-            .and_then(|m| m.get("image_metadata"))
-            .and_then(|im| im.get("architecture"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("amd64");
+        let arch = extract_arch_from_metadata(metadata.as_ref());
+        let os = extract_os_from_metadata(metadata.as_ref());
+        let release = extract_release_from_metadata(metadata.as_ref());
 
-        let os = metadata
-            .as_ref()
-            .and_then(|m| m.get("image_metadata"))
-            .and_then(|im| im.get("os"))
-            .and_then(|v| v.as_str());
-
-        let release = metadata
-            .as_ref()
-            .and_then(|m| m.get("image_metadata"))
-            .and_then(|im| im.get("release"))
-            .and_then(|v| v.as_str());
-
-        let filename = path.rsplit('/').next().unwrap_or(&path);
-        let ftype = if filename.ends_with(".squashfs") {
-            "squashfs"
-        } else if filename.ends_with(".img") || filename.ends_with(".qcow2") {
-            "disk-kvm.img"
-        } else if filename.ends_with(".tar.xz") {
-            "incus.tar.xz"
-        } else if filename.ends_with(".tar.gz") {
-            "incus.tar.gz"
-        } else {
-            filename
-        };
-
-        let download_url = format!(
-            "/incus/{}/images/{}/{}/{}",
-            repo_key, name, version, filename
-        );
+        let filename = filename_from_path(&path);
+        let ftype = simplestreams_ftype(filename);
+        let download_url = build_download_url(&repo_key, &name, &version, filename);
 
         let item = serde_json::json!({
             "ftype": ftype,
@@ -504,12 +580,7 @@ async fn streams_images(
             .get_mut("items")
             .and_then(|i| i.as_object_mut())
         {
-            let item_key = if ftype.contains("tar") {
-                "incus.tar.xz".to_string()
-            } else {
-                "rootfs".to_string()
-            };
-            items.insert(item_key, item);
+            items.insert(simplestreams_item_key(ftype).to_string(), item);
         }
     }
 
@@ -535,7 +606,7 @@ async fn download_image(
 ) -> Result<Response, Response> {
     let repo = resolve_incus_repo(&state.db, &repo_key).await?;
 
-    let artifact_path = format!("{}/{}/{}", product, version, filename);
+    let artifact_path = build_artifact_path(&product, &version, &filename);
 
     let artifact = sqlx::query(
         r#"
@@ -567,15 +638,7 @@ async fn download_image(
             .into_response()
     })?;
 
-    let content_type = if filename.ends_with(".tar.xz") {
-        "application/x-xz"
-    } else if filename.ends_with(".tar.gz") {
-        "application/gzip"
-    } else if filename.ends_with(".json") {
-        "application/json"
-    } else {
-        "application/octet-stream"
-    };
+    let content_type = content_type_for_download(&filename);
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -605,7 +668,7 @@ async fn upload_image(
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
-    let artifact_path = format!("{}/{}/{}", product, version, filename);
+    let artifact_path = build_artifact_path(&product, &version, &filename);
     IncusHandler::parse_path(&artifact_path).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -624,7 +687,7 @@ async fn upload_image(
         .unwrap_or_else(|_| serde_json::json!({"file_type": "unknown"}));
 
     // Move temp file to final storage location (atomic rename, same filesystem)
-    let storage_key = format!("incus/{}/{}", repo.id, artifact_path);
+    let storage_key = build_storage_key(&repo.id, &artifact_path);
     let final_path = storage_path_for_key(&repo.storage_path, &storage_key);
     finalize_temp_file(&temp_path, &final_path).await?;
 
@@ -682,7 +745,7 @@ async fn delete_image(
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
-    let artifact_path = format!("{}/{}/{}", product, version, filename);
+    let artifact_path = build_artifact_path(&product, &version, &filename);
 
     let result = sqlx::query(
         r#"
@@ -755,7 +818,7 @@ async fn start_chunked_upload(
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
-    let artifact_path = format!("{}/{}/{}", product, version, filename);
+    let artifact_path = build_artifact_path(&product, &version, &filename);
     IncusHandler::parse_path(&artifact_path).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -803,10 +866,7 @@ async fn start_chunked_upload(
 
     Ok(Response::builder()
         .status(StatusCode::ACCEPTED)
-        .header(
-            "Location",
-            format!("/incus/{}/uploads/{}", repo_key, session_id),
-        )
+        .header("Location", build_upload_location(&repo_key, &session_id))
         .header("Upload-UUID", session_id.to_string())
         .header("Range", format!("0-{}", initial_bytes))
         .header(CONTENT_TYPE, "application/json")
@@ -857,10 +917,7 @@ async fn upload_chunk(
 
     Ok(Response::builder()
         .status(StatusCode::ACCEPTED)
-        .header(
-            "Location",
-            format!("/incus/{}/uploads/{}", repo_key, session_id),
-        )
+        .header("Location", build_upload_location(&repo_key, &session_id))
         .header("Upload-UUID", session_id.to_string())
         .header("Range", format!("0-{}", new_total))
         .body(Body::empty())
@@ -915,7 +972,7 @@ async fn complete_chunked_upload(
         .unwrap_or_else(|_| serde_json::json!({"file_type": "unknown"}));
 
     // Move temp file to final storage location
-    let storage_key = format!("incus/{}/{}", session.repository_id, session.artifact_path);
+    let storage_key = build_storage_key(&session.repository_id, &session.artifact_path);
     let final_path = storage_path_for_key(&repo.storage_path, &storage_key);
     finalize_temp_file(&temp_path, &final_path).await?;
 
@@ -1103,27 +1160,110 @@ async fn finalize_temp_file(temp_path: &Path, final_path: &Path) -> Result<(), R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+
+    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        headers
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_basic_credentials
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_extract_basic_credentials_valid() {
-        let mut headers = HeaderMap::new();
-        // "admin:password" base64 = "YWRtaW46cGFzc3dvcmQ="
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            "Basic YWRtaW46cGFzc3dvcmQ=".parse().unwrap(),
-        );
-        let creds = extract_basic_credentials(&headers);
-        assert!(creds.is_some());
-        let (user, pass) = creds.unwrap();
-        assert_eq!(user, "admin");
-        assert_eq!(pass, "password");
+        let headers = make_basic_header("admin", "password");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "password".to_string())));
     }
 
     #[test]
     fn test_extract_basic_credentials_missing() {
-        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_lowercase_prefix() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
+        );
+        assert_eq!(
+            extract_basic_credentials(&headers),
+            Some(("user".to_string(), "pass".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
         assert!(extract_basic_credentials(&headers).is_none());
     }
+
+    #[test]
+    fn test_extract_basic_credentials_invalid_base64() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic !!!not-base64!!!"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_no_colon() {
+        let encoded = base64::engine::general_purpose::STANDARD.encode("justusername");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_empty_password() {
+        let headers = make_basic_header("admin", "");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("admin".to_string(), "".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_password_with_colon() {
+        let headers = make_basic_header("admin", "pass:word:extra");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("admin".to_string(), "pass:word:extra".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_unicode() {
+        let headers = make_basic_header("user", "\u{00e9}l\u{00e8}ve");
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "\u{00e9}l\u{00e8}ve".to_string()))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // storage_path_for_key
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_storage_path_for_key() {
@@ -1132,12 +1272,830 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_path_for_key_short_key() {
+        let path = storage_path_for_key("/data", "a");
+        assert_eq!(path, PathBuf::from("/data/a/a"));
+    }
+
+    #[test]
+    fn test_storage_path_for_key_two_char_key() {
+        let path = storage_path_for_key("/data", "ab");
+        assert_eq!(path, PathBuf::from("/data/ab/ab"));
+    }
+
+    #[test]
+    fn test_storage_path_for_key_nested_base() {
+        let path = storage_path_for_key("/mnt/storage/repos", "incus/repo-id/img.tar.xz");
+        assert_eq!(
+            path,
+            PathBuf::from("/mnt/storage/repos/in/incus/repo-id/img.tar.xz")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // temp_upload_path
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn test_temp_upload_path() {
         let id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let path = temp_upload_path("/data", &id);
         assert_eq!(
             path,
             PathBuf::from("/data/in/incus-uploads/550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn test_temp_upload_path_different_base() {
+        let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        let path = temp_upload_path("/mnt/artifacts", &id);
+        assert_eq!(
+            path,
+            PathBuf::from("/mnt/artifacts/in/incus-uploads/00000000-0000-0000-0000-000000000001")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // content_type_for_artifact
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_for_artifact_tar_xz() {
+        assert_eq!(
+            content_type_for_artifact("ubuntu/20240215/incus.tar.xz"),
+            "application/x-xz"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_artifact_tar_gz() {
+        assert_eq!(
+            content_type_for_artifact("ubuntu/20240215/incus.tar.gz"),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_artifact_squashfs() {
+        assert_eq!(
+            content_type_for_artifact("ubuntu/20240215/rootfs.squashfs"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_artifact_qcow2() {
+        assert_eq!(
+            content_type_for_artifact("ubuntu/20240215/rootfs.qcow2"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_artifact_img() {
+        assert_eq!(
+            content_type_for_artifact("ubuntu/20240215/rootfs.img"),
+            "application/octet-stream"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // content_type_for_download
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_type_for_download_tar_xz() {
+        assert_eq!(
+            content_type_for_download("incus.tar.xz"),
+            "application/x-xz"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_download_tar_gz() {
+        assert_eq!(
+            content_type_for_download("incus.tar.gz"),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_download_json() {
+        assert_eq!(
+            content_type_for_download("metadata.json"),
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_download_squashfs() {
+        assert_eq!(
+            content_type_for_download("rootfs.squashfs"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_download_qcow2() {
+        assert_eq!(
+            content_type_for_download("rootfs.qcow2"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_content_type_for_download_img() {
+        assert_eq!(
+            content_type_for_download("rootfs.img"),
+            "application/octet-stream"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // simplestreams_ftype
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_simplestreams_ftype_squashfs() {
+        assert_eq!(simplestreams_ftype("rootfs.squashfs"), "squashfs");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_img() {
+        assert_eq!(simplestreams_ftype("rootfs.img"), "disk-kvm.img");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_qcow2() {
+        assert_eq!(simplestreams_ftype("rootfs.qcow2"), "disk-kvm.img");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_tar_xz() {
+        assert_eq!(simplestreams_ftype("incus.tar.xz"), "incus.tar.xz");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_tar_gz() {
+        assert_eq!(simplestreams_ftype("incus.tar.gz"), "incus.tar.gz");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_unknown_fallback() {
+        assert_eq!(simplestreams_ftype("custom-file.bin"), "custom-file.bin");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_metadata_tar_xz() {
+        assert_eq!(simplestreams_ftype("metadata.tar.xz"), "incus.tar.xz");
+    }
+
+    #[test]
+    fn test_simplestreams_ftype_custom_squashfs() {
+        assert_eq!(simplestreams_ftype("custom-rootfs.squashfs"), "squashfs");
+    }
+
+    // -----------------------------------------------------------------------
+    // simplestreams_item_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_simplestreams_item_key_tarball() {
+        assert_eq!(simplestreams_item_key("incus.tar.xz"), "incus.tar.xz");
+    }
+
+    #[test]
+    fn test_simplestreams_item_key_tar_gz() {
+        assert_eq!(simplestreams_item_key("incus.tar.gz"), "incus.tar.xz");
+    }
+
+    #[test]
+    fn test_simplestreams_item_key_squashfs() {
+        assert_eq!(simplestreams_item_key("squashfs"), "rootfs");
+    }
+
+    #[test]
+    fn test_simplestreams_item_key_disk_kvm() {
+        assert_eq!(simplestreams_item_key("disk-kvm.img"), "rootfs");
+    }
+
+    #[test]
+    fn test_simplestreams_item_key_unknown() {
+        assert_eq!(simplestreams_item_key("something-else"), "rootfs");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_download_url
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_download_url() {
+        assert_eq!(
+            build_download_url("my-repo", "ubuntu-noble", "20240215", "incus.tar.xz"),
+            "/incus/my-repo/images/ubuntu-noble/20240215/incus.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_download_url_with_squashfs() {
+        assert_eq!(
+            build_download_url("repo", "alpine", "v3.19", "rootfs.squashfs"),
+            "/incus/repo/images/alpine/v3.19/rootfs.squashfs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_artifact_path() {
+        assert_eq!(
+            build_artifact_path("ubuntu-noble", "20240215", "incus.tar.xz"),
+            "ubuntu-noble/20240215/incus.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_path_squashfs() {
+        assert_eq!(
+            build_artifact_path("alpine", "v3.19", "rootfs.squashfs"),
+            "alpine/v3.19/rootfs.squashfs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_storage_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_storage_key() {
+        let repo_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(
+            build_storage_key(&repo_id, "ubuntu/20240215/incus.tar.xz"),
+            "incus/550e8400-e29b-41d4-a716-446655440000/ubuntu/20240215/incus.tar.xz"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_arch_from_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_arch_from_metadata_present() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "architecture": "arm64"
+            }
+        });
+        assert_eq!(extract_arch_from_metadata(Some(&metadata)), "arm64");
+    }
+
+    #[test]
+    fn test_extract_arch_from_metadata_missing() {
+        let metadata = serde_json::json!({
+            "image_metadata": {}
+        });
+        assert_eq!(extract_arch_from_metadata(Some(&metadata)), "amd64");
+    }
+
+    #[test]
+    fn test_extract_arch_from_metadata_none() {
+        assert_eq!(extract_arch_from_metadata(None), "amd64");
+    }
+
+    #[test]
+    fn test_extract_arch_from_metadata_no_image_metadata_key() {
+        let metadata = serde_json::json!({"file_type": "unified_tarball"});
+        assert_eq!(extract_arch_from_metadata(Some(&metadata)), "amd64");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_os_from_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_os_from_metadata_present() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "os": "Ubuntu"
+            }
+        });
+        assert_eq!(extract_os_from_metadata(Some(&metadata)), Some("Ubuntu"));
+    }
+
+    #[test]
+    fn test_extract_os_from_metadata_missing() {
+        let metadata = serde_json::json!({
+            "image_metadata": {}
+        });
+        assert_eq!(extract_os_from_metadata(Some(&metadata)), None);
+    }
+
+    #[test]
+    fn test_extract_os_from_metadata_none() {
+        assert_eq!(extract_os_from_metadata(None), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_release_from_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_release_from_metadata_present() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "release": "noble"
+            }
+        });
+        assert_eq!(
+            extract_release_from_metadata(Some(&metadata)),
+            Some("noble")
+        );
+    }
+
+    #[test]
+    fn test_extract_release_from_metadata_missing() {
+        assert_eq!(extract_release_from_metadata(None), None);
+    }
+
+    #[test]
+    fn test_extract_release_from_metadata_no_release_field() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "os": "Ubuntu",
+                "architecture": "amd64"
+            }
+        });
+        assert_eq!(extract_release_from_metadata(Some(&metadata)), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // filename_from_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filename_from_path_nested() {
+        assert_eq!(
+            filename_from_path("ubuntu/20240215/incus.tar.xz"),
+            "incus.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_filename_from_path_no_slash() {
+        assert_eq!(filename_from_path("incus.tar.xz"), "incus.tar.xz");
+    }
+
+    #[test]
+    fn test_filename_from_path_deep() {
+        assert_eq!(
+            filename_from_path("a/b/c/d/rootfs.squashfs"),
+            "rootfs.squashfs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_upload_location
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_upload_location() {
+        let session_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(
+            build_upload_location("my-repo", &session_id),
+            "/incus/my-repo/uploads/550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_streams_index_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_streams_index_json_empty() {
+        let index = build_streams_index_json(&[]);
+        assert_eq!(index["format"], "index:1.0");
+        assert_eq!(index["index"]["images"]["datatype"], "image-downloads");
+        assert_eq!(index["index"]["images"]["format"], "products:1.0");
+        assert_eq!(index["index"]["images"]["path"], "streams/v1/images.json");
+        let products = index["index"]["images"]["products"].as_array().unwrap();
+        assert!(products.is_empty());
+    }
+
+    #[test]
+    fn test_build_streams_index_json_with_products() {
+        let products = vec!["alpine-edge".to_string(), "ubuntu-noble".to_string()];
+        let index = build_streams_index_json(&products);
+        let product_list = index["index"]["images"]["products"].as_array().unwrap();
+        assert_eq!(product_list.len(), 2);
+        assert_eq!(product_list[0], "alpine-edge");
+        assert_eq!(product_list[1], "ubuntu-noble");
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_construction_hosted() {
+        let info = RepoInfo {
+            id: Uuid::new_v4(),
+            storage_path: "/data/incus".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert_eq!(info.storage_path, "/data/incus");
+        assert!(info.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_construction_remote() {
+        let info = RepoInfo {
+            id: Uuid::new_v4(),
+            storage_path: "/data/incus-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://images.linuxcontainers.org".to_string()),
+        };
+        assert_eq!(info.repo_type, "remote");
+        assert_eq!(
+            info.upstream_url,
+            Some("https://images.linuxcontainers.org".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SHA256 hashing (used in streaming upload)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sha256_deterministic() {
+        let data = b"incus container image data";
+        let mut h1 = Sha256::new();
+        h1.update(data);
+        let c1 = format!("{:x}", h1.finalize());
+
+        let mut h2 = Sha256::new();
+        h2.update(data);
+        let c2 = format!("{:x}", h2.finalize());
+
+        assert_eq!(c1, c2);
+        assert_eq!(c1.len(), 64);
+    }
+
+    #[test]
+    fn test_sha256_incremental_matches_whole() {
+        let data = b"hello world from incus";
+
+        let mut whole = Sha256::new();
+        whole.update(data);
+        let whole_hash = format!("{:x}", whole.finalize());
+
+        let mut incremental = Sha256::new();
+        incremental.update(&data[..5]);
+        incremental.update(&data[5..11]);
+        incremental.update(&data[11..]);
+        let inc_hash = format!("{:x}", incremental.finalize());
+
+        assert_eq!(whole_hash, inc_hash);
+    }
+
+    #[test]
+    fn test_sha256_empty_input() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"");
+        let hash = format!("{:x}", hasher.finalize());
+        assert_eq!(hash.len(), 64);
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Error helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_db_err_produces_500() {
+        let resp = db_err("connection refused");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_fs_err_produces_500() {
+        let resp = fs_err("write to disk", "permission denied");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // -----------------------------------------------------------------------
+    // Content-Disposition header value construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_disposition_format() {
+        let filename = "incus.tar.xz";
+        let header = format!("attachment; filename=\"{}\"", filename);
+        assert_eq!(header, "attachment; filename=\"incus.tar.xz\"");
+    }
+
+    #[test]
+    fn test_content_disposition_squashfs() {
+        let filename = "rootfs.squashfs";
+        let header = format!("attachment; filename=\"{}\"", filename);
+        assert_eq!(header, "attachment; filename=\"rootfs.squashfs\"");
+    }
+
+    // -----------------------------------------------------------------------
+    // Range header value construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_range_header_zero_bytes() {
+        let range = format!("0-{}", 0i64);
+        assert_eq!(range, "0-0");
+    }
+
+    #[test]
+    fn test_range_header_large_value() {
+        let range = format!("0-{}", 1_073_741_824i64);
+        assert_eq!(range, "0-1073741824");
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload response JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upload_response_json_structure() {
+        let artifact_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let response_json = serde_json::json!({
+            "id": artifact_id,
+            "product": "ubuntu-noble",
+            "version": "20240215",
+            "file": "incus.tar.xz",
+            "size": 524288000i64,
+            "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        });
+
+        assert_eq!(response_json["product"], "ubuntu-noble");
+        assert_eq!(response_json["version"], "20240215");
+        assert_eq!(response_json["file"], "incus.tar.xz");
+        assert_eq!(response_json["size"], 524288000);
+        assert_eq!(response_json["id"], "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_chunked_upload_start_response_json() {
+        let session_id = Uuid::new_v4();
+        let initial_bytes = 4096i64;
+        let response_json = serde_json::json!({
+            "session_id": session_id,
+            "bytes_received": initial_bytes,
+        });
+
+        assert_eq!(response_json["bytes_received"], 4096);
+        assert!(response_json["session_id"].is_string());
+    }
+
+    #[test]
+    fn test_upload_progress_response_json() {
+        let session_id = Uuid::new_v4();
+        let response_json = serde_json::json!({
+            "session_id": session_id,
+            "artifact_path": "ubuntu-noble/20240215/incus.tar.xz",
+            "bytes_received": 1048576i64,
+        });
+
+        assert_eq!(
+            response_json["artifact_path"],
+            "ubuntu-noble/20240215/incus.tar.xz"
+        );
+        assert_eq!(response_json["bytes_received"], 1048576);
+    }
+
+    // -----------------------------------------------------------------------
+    // SimpleStreams catalog product entry construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_simplestreams_product_entry_with_all_metadata() {
+        let arch = "amd64";
+        let os = Some("Ubuntu");
+        let release = Some("noble");
+
+        let mut p = serde_json::json!({
+            "arch": arch,
+            "versions": {},
+        });
+        if let Some(os_val) = os {
+            p["os"] = serde_json::Value::String(os_val.to_string());
+        }
+        if let Some(release_val) = release {
+            p["release"] = serde_json::Value::String(release_val.to_string());
+        }
+
+        assert_eq!(p["arch"], "amd64");
+        assert_eq!(p["os"], "Ubuntu");
+        assert_eq!(p["release"], "noble");
+        assert!(p["versions"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_simplestreams_product_entry_without_os_release() {
+        let arch = "arm64";
+        let os: Option<&str> = None;
+        let release: Option<&str> = None;
+
+        let mut p = serde_json::json!({
+            "arch": arch,
+            "versions": {},
+        });
+        if let Some(os_val) = os {
+            p["os"] = serde_json::Value::String(os_val.to_string());
+        }
+        if let Some(release_val) = release {
+            p["release"] = serde_json::Value::String(release_val.to_string());
+        }
+
+        assert_eq!(p["arch"], "arm64");
+        assert!(p.get("os").is_none());
+        assert!(p.get("release").is_none());
+    }
+
+    #[test]
+    fn test_simplestreams_item_json() {
+        let ftype = "squashfs";
+        let checksum = "abc123";
+        let download_url = "/incus/repo/images/ubuntu/v1/rootfs.squashfs";
+        let size_bytes = 256_000_000i64;
+
+        let item = serde_json::json!({
+            "ftype": ftype,
+            "sha256": checksum,
+            "path": download_url,
+            "size": size_bytes,
+        });
+
+        assert_eq!(item["ftype"], "squashfs");
+        assert_eq!(item["sha256"], "abc123");
+        assert_eq!(item["path"], "/incus/repo/images/ubuntu/v1/rootfs.squashfs");
+        assert_eq!(item["size"], 256_000_000);
+    }
+
+    #[test]
+    fn test_simplestreams_catalog_format() {
+        let products: HashMap<String, serde_json::Value> = HashMap::new();
+        let catalog = serde_json::json!({
+            "format": "products:1.0",
+            "products": products
+        });
+
+        assert_eq!(catalog["format"], "products:1.0");
+        assert!(catalog["products"].as_object().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Version entry construction in catalog
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_version_entry_items_insertion() {
+        let mut version_entry = serde_json::json!({"items": {}});
+        let item = serde_json::json!({
+            "ftype": "squashfs",
+            "sha256": "abc",
+            "path": "/incus/repo/images/p/v/rootfs.squashfs",
+            "size": 100,
+        });
+
+        let ftype = "squashfs";
+        let item_key = simplestreams_item_key(ftype);
+
+        if let Some(items) = version_entry
+            .get_mut("items")
+            .and_then(|i| i.as_object_mut())
+        {
+            items.insert(item_key.to_string(), item.clone());
+        }
+
+        assert_eq!(version_entry["items"]["rootfs"]["ftype"], "squashfs");
+    }
+
+    #[test]
+    fn test_version_entry_tarball_insertion() {
+        let mut version_entry = serde_json::json!({"items": {}});
+        let item = serde_json::json!({
+            "ftype": "incus.tar.xz",
+            "sha256": "def",
+            "path": "/incus/repo/images/p/v/incus.tar.xz",
+            "size": 200,
+        });
+
+        let ftype = "incus.tar.xz";
+        let item_key = simplestreams_item_key(ftype);
+
+        if let Some(items) = version_entry
+            .get_mut("items")
+            .and_then(|i| i.as_object_mut())
+        {
+            items.insert(item_key.to_string(), item.clone());
+        }
+
+        assert_eq!(
+            version_entry["items"]["incus.tar.xz"]["ftype"],
+            "incus.tar.xz"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Full metadata extraction pipeline (pure parts)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_full_metadata_extraction_pipeline() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "architecture": "arm64",
+                "os": "Alpine",
+                "release": "3.19"
+            }
+        });
+
+        let arch = extract_arch_from_metadata(Some(&metadata));
+        let os = extract_os_from_metadata(Some(&metadata));
+        let release = extract_release_from_metadata(Some(&metadata));
+
+        assert_eq!(arch, "arm64");
+        assert_eq!(os, Some("Alpine"));
+        assert_eq!(release, Some("3.19"));
+    }
+
+    #[test]
+    fn test_metadata_extraction_with_null_fields() {
+        let metadata = serde_json::json!({
+            "image_metadata": {
+                "architecture": "amd64",
+                "os": null,
+                "release": null
+            }
+        });
+
+        let arch = extract_arch_from_metadata(Some(&metadata));
+        let os = extract_os_from_metadata(Some(&metadata));
+        let release = extract_release_from_metadata(Some(&metadata));
+
+        assert_eq!(arch, "amd64");
+        assert_eq!(os, None);
+        assert_eq!(release, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // End-to-end path/URL consistency
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_path_used_in_download_url() {
+        let product = "ubuntu-noble";
+        let version = "20240215";
+        let filename = "incus.tar.xz";
+        let artifact_path = build_artifact_path(product, version, filename);
+        let download_url = build_download_url("my-repo", product, version, filename);
+
+        assert_eq!(artifact_path, "ubuntu-noble/20240215/incus.tar.xz");
+        assert!(download_url.ends_with(&artifact_path));
+    }
+
+    #[test]
+    fn test_storage_key_contains_artifact_path() {
+        let repo_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let artifact_path = build_artifact_path("alpine", "v3.19", "rootfs.squashfs");
+        let storage_key = build_storage_key(&repo_id, &artifact_path);
+
+        assert!(storage_key.starts_with("incus/"));
+        assert!(storage_key.ends_with(&artifact_path));
+        assert!(storage_key.contains(&repo_id.to_string()));
+    }
+
+    #[test]
+    fn test_content_type_consistent_between_upload_and_download() {
+        let path = "ubuntu/20240215/incus.tar.xz";
+        let filename = filename_from_path(path);
+        assert_eq!(
+            content_type_for_artifact(path),
+            content_type_for_download(filename)
+        );
+    }
+
+    #[test]
+    fn test_content_type_tar_gz_consistent() {
+        let path = "ubuntu/20240215/incus.tar.gz";
+        let filename = filename_from_path(path);
+        assert_eq!(
+            content_type_for_artifact(path),
+            content_type_for_download(filename)
         );
     }
 }

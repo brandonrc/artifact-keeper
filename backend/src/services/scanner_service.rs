@@ -1311,6 +1311,100 @@ mod tests {
         format!("https://osv.dev/vulnerability/{}", vuln_id)
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ArchiveType {
+        TarGz,
+        Zip,
+        None,
+    }
+
+    fn detect_archive_type(name: &str) -> ArchiveType {
+        let lower = name.to_lowercase();
+        if lower.ends_with(".tar.gz")
+            || lower.ends_with(".tgz")
+            || lower.ends_with(".crate")
+            || lower.ends_with(".gem")
+        {
+            ArchiveType::TarGz
+        } else if lower.ends_with(".zip")
+            || lower.ends_with(".whl")
+            || lower.ends_with(".jar")
+            || lower.ends_with(".nupkg")
+        {
+            ArchiveType::Zip
+        } else {
+            ArchiveType::None
+        }
+    }
+
+    fn is_path_within_workspace(path: &Path, workspace: &str) -> bool {
+        path.starts_with(workspace)
+    }
+
+    fn count_findings_by_severity(findings: &[RawFinding]) -> (i32, i32, i32, i32, i32) {
+        let count =
+            |sev: Severity| -> i32 { findings.iter().filter(|f| f.severity == sev).count() as i32 };
+        (
+            count(Severity::Critical),
+            count(Severity::High),
+            count(Severity::Medium),
+            count(Severity::Low),
+            count(Severity::Info),
+        )
+    }
+
+    fn extract_cve_from_advisory(advisory: &AdvisoryMatch) -> Option<String> {
+        advisory
+            .aliases
+            .iter()
+            .find(|a| a.starts_with("CVE-"))
+            .cloned()
+            .or_else(|| {
+                if advisory.id.starts_with("CVE-") {
+                    Some(advisory.id.clone())
+                } else {
+                    None
+                }
+            })
+    }
+
+    fn build_finding_title(advisory: &AdvisoryMatch) -> String {
+        advisory
+            .summary
+            .clone()
+            .unwrap_or_else(|| format!("Vulnerability {}", advisory.id))
+    }
+
+    fn dedup_advisories(
+        osv_results: Vec<AdvisoryMatch>,
+        gh_results: Vec<AdvisoryMatch>,
+    ) -> Vec<AdvisoryMatch> {
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+
+        for advisory_match in osv_results.into_iter().chain(gh_results) {
+            let dominated = seen_ids.contains(&advisory_match.id)
+                || advisory_match.aliases.iter().any(|a| seen_ids.contains(a));
+            if dominated {
+                continue;
+            }
+            seen_ids.insert(advisory_match.id.clone());
+            seen_ids.extend(advisory_match.aliases.iter().cloned());
+            deduped.push(advisory_match);
+        }
+
+        deduped
+    }
+
+    fn build_osv_cache_key(dep: &Dependency) -> String {
+        format!(
+            "{}:{}:{}",
+            dep.ecosystem,
+            dep.name,
+            dep.version.as_deref().unwrap_or("*")
+        )
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -2958,5 +3052,836 @@ mod tests {
         });
         let result = AdvisoryClient::parse_github_advisory(&adv, &dep).unwrap();
         assert_eq!(result.fixed_version.as_deref(), Some("2.0.0"));
+    }
+
+    // -----------------------------------------------------------------------
+    // detect_archive_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_detect_archive_type_tar_gz() {
+        assert_eq!(detect_archive_type("package.tar.gz"), ArchiveType::TarGz);
+        assert_eq!(detect_archive_type("lib.tgz"), ArchiveType::TarGz);
+        assert_eq!(
+            detect_archive_type("my-crate-1.0.crate"),
+            ArchiveType::TarGz
+        );
+        assert_eq!(detect_archive_type("my-gem-2.0.gem"), ArchiveType::TarGz);
+    }
+
+    #[test]
+    fn test_detect_archive_type_tar_gz_case_insensitive() {
+        assert_eq!(detect_archive_type("Package.TAR.GZ"), ArchiveType::TarGz);
+        assert_eq!(detect_archive_type("Lib.TGZ"), ArchiveType::TarGz);
+        assert_eq!(detect_archive_type("My.CRATE"), ArchiveType::TarGz);
+        assert_eq!(detect_archive_type("My.GEM"), ArchiveType::TarGz);
+    }
+
+    #[test]
+    fn test_detect_archive_type_zip() {
+        assert_eq!(detect_archive_type("package.zip"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("numpy-1.0.whl"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("commons.jar"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("newtonsoft.nupkg"), ArchiveType::Zip);
+    }
+
+    #[test]
+    fn test_detect_archive_type_zip_case_insensitive() {
+        assert_eq!(detect_archive_type("Package.ZIP"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("Lib.WHL"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("App.JAR"), ArchiveType::Zip);
+        assert_eq!(detect_archive_type("Pkg.NUPKG"), ArchiveType::Zip);
+    }
+
+    #[test]
+    fn test_detect_archive_type_none() {
+        assert_eq!(detect_archive_type("readme.md"), ArchiveType::None);
+        assert_eq!(detect_archive_type("main.rs"), ArchiveType::None);
+        assert_eq!(detect_archive_type("package.json"), ArchiveType::None);
+        assert_eq!(detect_archive_type("image.png"), ArchiveType::None);
+        assert_eq!(detect_archive_type("data.tar"), ArchiveType::None);
+        assert_eq!(detect_archive_type("file.gz"), ArchiveType::None);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_path_within_workspace
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_path_within_workspace_valid() {
+        let path = Path::new("/tmp/scans/artifact-123");
+        assert!(is_path_within_workspace(path, "/tmp/scans"));
+    }
+
+    #[test]
+    fn test_is_path_within_workspace_exact() {
+        let path = Path::new("/tmp/scans");
+        assert!(is_path_within_workspace(path, "/tmp/scans"));
+    }
+
+    #[test]
+    fn test_is_path_within_workspace_outside() {
+        let path = Path::new("/var/data/something");
+        assert!(!is_path_within_workspace(path, "/tmp/scans"));
+    }
+
+    #[test]
+    fn test_is_path_within_workspace_partial_prefix() {
+        let path = Path::new("/tmp/scans-other/artifact");
+        assert!(!is_path_within_workspace(path, "/tmp/scans"));
+    }
+
+    // -----------------------------------------------------------------------
+    // count_findings_by_severity
+    // -----------------------------------------------------------------------
+
+    fn make_finding(severity: Severity) -> RawFinding {
+        RawFinding {
+            severity,
+            title: "test".to_string(),
+            description: None,
+            cve_id: None,
+            affected_component: None,
+            affected_version: None,
+            fixed_version: None,
+            source: None,
+            source_url: None,
+        }
+    }
+
+    #[test]
+    fn test_count_findings_by_severity_empty() {
+        let (critical, high, medium, low, info) = count_findings_by_severity(&[]);
+        assert_eq!(critical, 0);
+        assert_eq!(high, 0);
+        assert_eq!(medium, 0);
+        assert_eq!(low, 0);
+        assert_eq!(info, 0);
+    }
+
+    #[test]
+    fn test_count_findings_by_severity_all_types() {
+        let findings = vec![
+            make_finding(Severity::Critical),
+            make_finding(Severity::Critical),
+            make_finding(Severity::High),
+            make_finding(Severity::Medium),
+            make_finding(Severity::Medium),
+            make_finding(Severity::Medium),
+            make_finding(Severity::Low),
+            make_finding(Severity::Info),
+            make_finding(Severity::Info),
+        ];
+        let (critical, high, medium, low, info) = count_findings_by_severity(&findings);
+        assert_eq!(critical, 2);
+        assert_eq!(high, 1);
+        assert_eq!(medium, 3);
+        assert_eq!(low, 1);
+        assert_eq!(info, 2);
+    }
+
+    #[test]
+    fn test_count_findings_by_severity_single_type() {
+        let findings = vec![
+            make_finding(Severity::High),
+            make_finding(Severity::High),
+            make_finding(Severity::High),
+        ];
+        let (critical, high, medium, low, info) = count_findings_by_severity(&findings);
+        assert_eq!(critical, 0);
+        assert_eq!(high, 3);
+        assert_eq!(medium, 0);
+        assert_eq!(low, 0);
+        assert_eq!(info, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_cve_from_advisory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_cve_from_aliases() {
+        let m = AdvisoryMatch {
+            id: "GHSA-1234".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec!["CVE-2024-0001".to_string(), "GHSA-1234".to_string()],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        };
+        assert_eq!(
+            extract_cve_from_advisory(&m),
+            Some("CVE-2024-0001".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_cve_from_id() {
+        let m = AdvisoryMatch {
+            id: "CVE-2024-5678".to_string(),
+            summary: None,
+            details: None,
+            severity: "medium".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        };
+        assert_eq!(
+            extract_cve_from_advisory(&m),
+            Some("CVE-2024-5678".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_cve_no_cve() {
+        let m = AdvisoryMatch {
+            id: "GHSA-abcd".to_string(),
+            summary: None,
+            details: None,
+            severity: "low".to_string(),
+            aliases: vec!["GHSA-abcd".to_string()],
+            affected_version: None,
+            fixed_version: None,
+            source: "github".to_string(),
+            source_url: None,
+        };
+        assert_eq!(extract_cve_from_advisory(&m), None);
+    }
+
+    #[test]
+    fn test_extract_cve_prefers_alias_over_id() {
+        let m = AdvisoryMatch {
+            id: "CVE-2024-0001".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec!["CVE-2024-9999".to_string()],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        };
+        assert_eq!(
+            extract_cve_from_advisory(&m),
+            Some("CVE-2024-9999".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_finding_title
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_finding_title_with_summary() {
+        let m = AdvisoryMatch {
+            id: "GHSA-1234".to_string(),
+            summary: Some("Prototype Pollution".to_string()),
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        };
+        assert_eq!(build_finding_title(&m), "Prototype Pollution");
+    }
+
+    #[test]
+    fn test_build_finding_title_without_summary() {
+        let m = AdvisoryMatch {
+            id: "GHSA-5678".to_string(),
+            summary: None,
+            details: None,
+            severity: "medium".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        };
+        assert_eq!(build_finding_title(&m), "Vulnerability GHSA-5678");
+    }
+
+    // -----------------------------------------------------------------------
+    // dedup_advisories
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dedup_advisories_no_duplicates() {
+        let osv = vec![AdvisoryMatch {
+            id: "GHSA-1111".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        }];
+        let gh = vec![AdvisoryMatch {
+            id: "GHSA-2222".to_string(),
+            summary: None,
+            details: None,
+            severity: "medium".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "github".to_string(),
+            source_url: None,
+        }];
+        let result = dedup_advisories(osv, gh);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_dedup_advisories_exact_id_duplicate() {
+        let osv = vec![AdvisoryMatch {
+            id: "GHSA-1111".to_string(),
+            summary: Some("From OSV".to_string()),
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        }];
+        let gh = vec![AdvisoryMatch {
+            id: "GHSA-1111".to_string(),
+            summary: Some("From GitHub".to_string()),
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "github".to_string(),
+            source_url: None,
+        }];
+        let result = dedup_advisories(osv, gh);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source, "osv.dev");
+    }
+
+    #[test]
+    fn test_dedup_advisories_alias_overlap() {
+        let osv = vec![AdvisoryMatch {
+            id: "GHSA-aaaa".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec!["CVE-2024-0001".to_string()],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        }];
+        let gh = vec![AdvisoryMatch {
+            id: "CVE-2024-0001".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "github".to_string(),
+            source_url: None,
+        }];
+        let result = dedup_advisories(osv, gh);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "GHSA-aaaa");
+    }
+
+    #[test]
+    fn test_dedup_advisories_empty() {
+        let result = dedup_advisories(vec![], vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_dedup_advisories_osv_only() {
+        let osv = vec![AdvisoryMatch {
+            id: "OSV-001".to_string(),
+            summary: None,
+            details: None,
+            severity: "low".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        }];
+        let result = dedup_advisories(osv, vec![]);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_dedup_advisories_gh_only() {
+        let gh = vec![AdvisoryMatch {
+            id: "GHSA-bbbb".to_string(),
+            summary: None,
+            details: None,
+            severity: "medium".to_string(),
+            aliases: vec![],
+            affected_version: None,
+            fixed_version: None,
+            source: "github".to_string(),
+            source_url: None,
+        }];
+        let result = dedup_advisories(vec![], gh);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_dedup_advisories_complex_alias_chain() {
+        let osv = vec![AdvisoryMatch {
+            id: "GHSA-aaaa".to_string(),
+            summary: None,
+            details: None,
+            severity: "high".to_string(),
+            aliases: vec!["CVE-2024-0001".to_string(), "GHSA-bbbb".to_string()],
+            affected_version: None,
+            fixed_version: None,
+            source: "osv.dev".to_string(),
+            source_url: None,
+        }];
+        let gh = vec![
+            AdvisoryMatch {
+                id: "GHSA-bbbb".to_string(),
+                summary: None,
+                details: None,
+                severity: "high".to_string(),
+                aliases: vec!["CVE-2024-0001".to_string()],
+                affected_version: None,
+                fixed_version: None,
+                source: "github".to_string(),
+                source_url: None,
+            },
+            AdvisoryMatch {
+                id: "CVE-2024-0001".to_string(),
+                summary: None,
+                details: None,
+                severity: "high".to_string(),
+                aliases: vec![],
+                affected_version: None,
+                fixed_version: None,
+                source: "github".to_string(),
+                source_url: None,
+            },
+        ];
+        let result = dedup_advisories(osv, gh);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "GHSA-aaaa");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_osv_cache_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_osv_cache_key_with_version() {
+        let dep = Dependency {
+            name: "lodash".to_string(),
+            version: Some("4.17.20".to_string()),
+            ecosystem: "npm".to_string(),
+        };
+        assert_eq!(build_osv_cache_key(&dep), "npm:lodash:4.17.20");
+    }
+
+    #[test]
+    fn test_build_osv_cache_key_without_version() {
+        let dep = Dependency {
+            name: "my-lib".to_string(),
+            version: None,
+            ecosystem: "crates.io".to_string(),
+        };
+        assert_eq!(build_osv_cache_key(&dep), "crates.io:my-lib:*");
+    }
+
+    #[test]
+    fn test_build_osv_cache_key_pypi() {
+        let dep = Dependency {
+            name: "flask".to_string(),
+            version: Some("2.3.0".to_string()),
+            ecosystem: "PyPI".to_string(),
+        };
+        assert_eq!(build_osv_cache_key(&dep), "PyPI:flask:2.3.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // OsvBatchQuery serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_osv_batch_query_serialization() {
+        let query = OsvBatchQuery {
+            queries: vec![
+                OsvQuery {
+                    package: OsvPackage {
+                        name: "lodash".to_string(),
+                        ecosystem: "npm".to_string(),
+                    },
+                    version: Some("4.17.20".to_string()),
+                },
+                OsvQuery {
+                    package: OsvPackage {
+                        name: "flask".to_string(),
+                        ecosystem: "PyPI".to_string(),
+                    },
+                    version: None,
+                },
+            ],
+        };
+        let json = serde_json::to_value(&query).unwrap();
+        let queries = json.get("queries").unwrap().as_array().unwrap();
+        assert_eq!(queries.len(), 2);
+
+        let first = &queries[0];
+        assert_eq!(first["package"]["name"], "lodash");
+        assert_eq!(first["package"]["ecosystem"], "npm");
+        assert_eq!(first["version"], "4.17.20");
+
+        let second = &queries[1];
+        assert_eq!(second["package"]["name"], "flask");
+        assert_eq!(second["package"]["ecosystem"], "PyPI");
+        assert!(second["version"].is_null());
+    }
+
+    #[test]
+    fn test_osv_batch_query_empty() {
+        let query = OsvBatchQuery { queries: vec![] };
+        let json = serde_json::to_value(&query).unwrap();
+        assert!(json.get("queries").unwrap().as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_osv_response - vuln with no id
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_osv_response_vuln_with_no_id_defaults_to_unknown() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{"summary": "some issue"}]
+            }]
+        });
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, "UNKNOWN");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_osv_response - vuln with aliases but no fixed version
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_osv_response_no_fixed_version() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{
+                    "id": "OSV-2024-100",
+                    "aliases": ["CVE-2024-1234"],
+                    "affected": [{
+                        "ranges": [{
+                            "type": "SEMVER",
+                            "events": [{"introduced": "0"}]
+                        }]
+                    }]
+                }]
+            }]
+        });
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].fixed_version.is_none());
+        assert_eq!(matches[0].aliases, vec!["CVE-2024-1234".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_osv_response - dep index out of bounds
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_osv_response_more_results_than_deps() {
+        let deps = vec![Dependency {
+            name: "pkg-a".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+        let body = serde_json::json!({
+            "results": [
+                {"vulns": [{"id": "VULN-A"}]},
+                {"vulns": [{"id": "VULN-B"}]}
+            ]
+        });
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].affected_version.as_deref(), Some("1.0"));
+        assert!(matches[1].affected_version.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_osv_response - affected array empty
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_osv_response_empty_affected() {
+        let deps = vec![Dependency {
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            ecosystem: "npm".to_string(),
+        }];
+        let body = serde_json::json!({
+            "results": [{
+                "vulns": [{
+                    "id": "VULN-1",
+                    "affected": []
+                }]
+            }]
+        });
+        let matches = AdvisoryClient::parse_osv_response(&body, &deps);
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].fixed_version.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_github_advisory - severity defaults
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_github_advisory_severity_case_insensitive() {
+        let dep = Dependency {
+            name: "pkg".to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        };
+        let adv = serde_json::json!({
+            "ghsa_id": "GHSA-test",
+            "severity": "CRITICAL"
+        });
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep).unwrap();
+        assert_eq!(result.severity, "critical");
+    }
+
+    #[test]
+    fn test_parse_github_advisory_no_severity_defaults_to_medium() {
+        let dep = Dependency {
+            name: "pkg".to_string(),
+            version: None,
+            ecosystem: "npm".to_string(),
+        };
+        let adv = serde_json::json!({
+            "ghsa_id": "GHSA-default"
+        });
+        let result = AdvisoryClient::parse_github_advisory(&adv, &dep).unwrap();
+        assert_eq!(result.severity, "medium");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_dependencies - case sensitivity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_dependencies_case_insensitive_name() {
+        let artifact = make_artifact("PACKAGE.JSON", "/npm/PACKAGE.JSON", None);
+        let content = Bytes::from(r#"{"dependencies":{"react":"^18.0.0"}}"#);
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "npm");
+    }
+
+    #[test]
+    fn test_extract_dependencies_cargo_toml_case_insensitive() {
+        let artifact = make_artifact("CARGO.TOML", "/rust/CARGO.TOML", None);
+        let content = Bytes::from("[dependencies]\ntokio = \"1.35\"\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "crates.io");
+    }
+
+    #[test]
+    fn test_extract_dependencies_requirements_txt_case_insensitive() {
+        let artifact = make_artifact("REQUIREMENTS.TXT", "/pypi/REQUIREMENTS.TXT", None);
+        let content = Bytes::from("flask==2.3.0\n");
+        let deps = DependencyScanner::extract_dependencies(&artifact, None, &content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].ecosystem, "PyPI");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_npm - complex scenarios
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_npm_large_package_json() {
+        let content = r#"{
+            "name": "my-app",
+            "version": "1.0.0",
+            "dependencies": {
+                "express": "^4.18.2",
+                "lodash": "~4.17.21",
+                "axios": "1.6.0"
+            },
+            "devDependencies": {
+                "jest": "29.0.0",
+                "typescript": "^5.3.0"
+            },
+            "peerDependencies": {
+                "react": "^18.0.0"
+            },
+            "scripts": {
+                "test": "jest"
+            }
+        }"#;
+        let deps = DependencyScanner::parse_npm(content);
+        assert_eq!(deps.len(), 6);
+        let names: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"express"));
+        assert!(names.contains(&"jest"));
+        assert!(names.contains(&"react"));
+    }
+
+    // -----------------------------------------------------------------------
+    // infer_dependencies - version propagation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_infer_dependencies_version_propagated() {
+        let artifact = make_artifact("pkg.rpm", "/rpm/pkg.rpm", Some("3.14"));
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert_eq!(deps[0].version.as_deref(), Some("3.14"));
+    }
+
+    #[test]
+    fn test_infer_dependencies_no_version() {
+        let artifact = make_artifact("pkg.rpm", "/rpm/pkg.rpm", None);
+        let deps = DependencyScanner::infer_dependencies(&artifact, "");
+        assert!(deps[0].version.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // AdvisoryMatch deserialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_advisory_match_deserialize_from_json() {
+        let json = serde_json::json!({
+            "id": "GHSA-test",
+            "summary": "Test advisory",
+            "details": null,
+            "severity": "high",
+            "aliases": ["CVE-2024-0001"],
+            "affected_version": "1.0.0",
+            "fixed_version": "1.0.1",
+            "source": "github",
+            "source_url": "https://github.com/advisories/GHSA-test"
+        });
+        let m: AdvisoryMatch = serde_json::from_value(json).unwrap();
+        assert_eq!(m.id, "GHSA-test");
+        assert_eq!(m.summary.as_deref(), Some("Test advisory"));
+        assert!(m.details.is_none());
+        assert_eq!(m.aliases.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_maven - dependency with version
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_maven_dependency_with_scope() {
+        let content = r#"
+            <dependency>
+                <groupId>junit</groupId>
+                <artifactId>junit</artifactId>
+                <version>4.13.2</version>
+            </dependency>
+        "#;
+        let deps = DependencyScanner::parse_maven(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "junit:junit");
+        assert_eq!(deps[0].version.as_deref(), Some("4.13.2"));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_rubygems - lines without parens
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_rubygems_ignores_lines_without_parens() {
+        let content =
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rails (7.0.8)\n    PLATFORMS\n    ruby\n";
+        let deps = DependencyScanner::parse_rubygems(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "rails");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_nuget - non-package lines
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_nuget_ignores_non_package_lines() {
+        let content = r#"<?xml version="1.0"?>
+<packages>
+  <package id="A" version="1.0" />
+  <!-- this is a comment -->
+  <metadata>something</metadata>
+</packages>"#;
+        let deps = DependencyScanner::parse_nuget(content);
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].name, "A");
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_pip - no version specifier
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_pip_no_version_specifier() {
+        let content = "flask\ndjango\n";
+        let deps = DependencyScanner::parse_pip(content);
+        assert_eq!(deps.len(), 2);
+        assert!(deps[0].version.is_none());
+        assert!(deps[1].version.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_cargo - mixed dependency types in one section
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_cargo_mixed_dep_types() {
+        let content = r#"
+            [dependencies]
+            serde = "1.0"
+            tokio = { version = "1.35", features = ["full"] }
+            local-lib = { path = "../local-lib" }
+            git-dep = { git = "https://github.com/foo/bar", version = "0.5" }
+        "#;
+        let deps = DependencyScanner::parse_cargo(content);
+        assert_eq!(deps.len(), 4);
+        let serde = deps.iter().find(|d| d.name == "serde").unwrap();
+        assert_eq!(serde.version.as_deref(), Some("1.0"));
+        let tokio = deps.iter().find(|d| d.name == "tokio").unwrap();
+        assert_eq!(tokio.version.as_deref(), Some("1.35"));
+        let local = deps.iter().find(|d| d.name == "local-lib").unwrap();
+        assert!(local.version.is_none());
+        let git = deps.iter().find(|d| d.name == "git-dep").unwrap();
+        assert_eq!(git.version.as_deref(), Some("0.5"));
     }
 }

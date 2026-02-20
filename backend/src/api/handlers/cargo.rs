@@ -1010,6 +1010,38 @@ mod tests {
     use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    fn make_publish_payload(metadata: &serde_json::Value, crate_data: &[u8]) -> Bytes {
+        let json_bytes = serde_json::to_vec(metadata).unwrap();
+        let json_len = json_bytes.len() as u32;
+        let crate_len = crate_data.len() as u32;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&json_len.to_le_bytes());
+        payload.extend_from_slice(&json_bytes);
+        payload.extend_from_slice(&crate_len.to_le_bytes());
+        payload.extend_from_slice(crate_data);
+        Bytes::from(payload)
+    }
+
+    fn sample_metadata() -> serde_json::Value {
+        serde_json::json!({
+            "name": "my-crate",
+            "vers": "0.1.0",
+            "deps": [{"name": "serde", "req": "^1.0", "features": [], "optional": false, "default_features": true, "target": null, "kind": "normal"}],
+            "features": {"default": ["serde"]},
+            "description": "A test crate",
+            "license": "MIT",
+            "keywords": ["test", "example"],
+            "categories": ["development-tools"],
+            "links": null,
+            "rust_version": "1.70.0"
+        })
+    }
+
+    // -----------------------------------------------------------------------
     // cargo_sparse_index_path
     // -----------------------------------------------------------------------
 
@@ -1051,6 +1083,19 @@ mod tests {
         assert_eq!(cargo_sparse_index_path("rand"), "index/ra/nd/rand");
     }
 
+    #[test]
+    fn test_cargo_sparse_index_path_hyphenated() {
+        assert_eq!(cargo_sparse_index_path("my-crate"), "index/my/-c/my-crate");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_underscore() {
+        assert_eq!(
+            cargo_sparse_index_path("tokio_util"),
+            "index/to/ki/tokio_util"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // extract_basic_credentials
     // -----------------------------------------------------------------------
@@ -1073,7 +1118,8 @@ mod tests {
             axum::http::header::AUTHORIZATION,
             HeaderValue::from_static("basic dXNlcjpwYXNz"),
         );
-        assert!(extract_basic_credentials(&headers).is_some());
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
     }
 
     #[test]
@@ -1095,6 +1141,7 @@ mod tests {
     #[test]
     fn test_extract_basic_credentials_no_colon() {
         let mut headers = HeaderMap::new();
+        // "nocolon" base64 = "bm9jb2xvbg=="
         headers.insert(
             axum::http::header::AUTHORIZATION,
             HeaderValue::from_static("Basic bm9jb2xvbg=="),
@@ -1105,12 +1152,35 @@ mod tests {
     #[test]
     fn test_extract_basic_credentials_password_with_colon() {
         let mut headers = HeaderMap::new();
+        // "user:pa:ss" base64 = "dXNlcjpwYTpzcw=="
         headers.insert(
             axum::http::header::AUTHORIZATION,
             HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
         );
         let result = extract_basic_credentials(&headers);
         assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_empty_password() {
+        let mut headers = HeaderMap::new();
+        // "user:" base64 = "dXNlcjo="
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjo="),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "".to_string())));
+    }
+
+    #[test]
+    fn test_extract_basic_credentials_bearer_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer some-token"),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -1169,92 +1239,409 @@ mod tests {
         assert_eq!(result, Some(("cargo".to_string(), "".to_string())));
     }
 
+    #[test]
+    fn test_extract_token_with_complex_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer cio_abcdef1234567890ABCDEF"),
+        );
+        let result = extract_token(&headers);
+        assert_eq!(
+            result,
+            Some((
+                "cargo".to_string(),
+                "cio_abcdef1234567890ABCDEF".to_string()
+            ))
+        );
+    }
+
     // -----------------------------------------------------------------------
-    // Publish binary protocol parsing (standalone logic)
+    // parse_publish_payload
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_publish_payload_parsing_too_short() {
+    fn test_parse_publish_payload_too_short() {
         let body = Bytes::from_static(&[0, 0, 0]);
-        assert!(body.len() < 4);
+        assert!(parse_publish_payload(&body).is_err());
     }
 
     #[test]
-    fn test_publish_payload_json_len_parsing() {
-        let json_data = b"{\"a\":1}";
-        let json_len = json_data.len() as u32;
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&json_len.to_le_bytes());
-        payload.extend_from_slice(json_data);
-
-        let crate_data = b"crate_content";
-        let crate_len = crate_data.len() as u32;
-        payload.extend_from_slice(&crate_len.to_le_bytes());
-        payload.extend_from_slice(crate_data);
-
-        let body = Bytes::from(payload);
-
-        let json_len_parsed = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
-        assert_eq!(json_len_parsed, 7);
-
-        let json_bytes = &body[4..4 + json_len_parsed];
-        let metadata: serde_json::Value = serde_json::from_slice(json_bytes).unwrap();
-        assert_eq!(metadata["a"], 1);
-
-        let crate_len_offset = 4 + json_len_parsed;
-        let crate_len_parsed = u32::from_le_bytes([
-            body[crate_len_offset],
-            body[crate_len_offset + 1],
-            body[crate_len_offset + 2],
-            body[crate_len_offset + 3],
-        ]) as usize;
-        assert_eq!(crate_len_parsed, 13);
-
-        let crate_data_offset = crate_len_offset + 4;
-        let parsed_crate = &body[crate_data_offset..crate_data_offset + crate_len_parsed];
-        assert_eq!(parsed_crate, b"crate_content");
+    fn test_parse_publish_payload_exactly_4_bytes_no_json() {
+        let body = Bytes::from_static(&[10, 0, 0, 0]);
+        assert!(parse_publish_payload(&body).is_err());
     }
 
     #[test]
-    fn test_publish_payload_with_real_metadata() {
-        let metadata = serde_json::json!({
-            "name": "my-crate",
-            "vers": "0.1.0",
-            "deps": [],
-            "features": {},
-            "description": "A test crate",
-            "license": "MIT"
-        });
+    fn test_parse_publish_payload_json_but_no_crate_length() {
+        let metadata = serde_json::json!({"name": "x", "vers": "1.0.0"});
         let json_bytes = serde_json::to_vec(&metadata).unwrap();
         let json_len = json_bytes.len() as u32;
-
-        let crate_data = b"fake crate tarball bytes";
-        let crate_len = crate_data.len() as u32;
 
         let mut payload = Vec::new();
         payload.extend_from_slice(&json_len.to_le_bytes());
         payload.extend_from_slice(&json_bytes);
+        // Missing 4-byte crate length
+        let body = Bytes::from(payload);
+        assert!(parse_publish_payload(&body).is_err());
+    }
+
+    #[test]
+    fn test_parse_publish_payload_invalid_json() {
+        let bad_json = b"not json{{{";
+        let json_len = bad_json.len() as u32;
+        let crate_data = b"data";
+        let crate_len = crate_data.len() as u32;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&json_len.to_le_bytes());
+        payload.extend_from_slice(bad_json);
         payload.extend_from_slice(&crate_len.to_le_bytes());
         payload.extend_from_slice(crate_data);
-
         let body = Bytes::from(payload);
+        assert!(parse_publish_payload(&body).is_err());
+    }
 
-        assert!(body.len() >= 4);
-        let jl = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
-        assert!(body.len() >= 4 + jl + 4);
+    #[test]
+    fn test_parse_publish_payload_missing_name() {
+        let metadata = serde_json::json!({"vers": "1.0.0"});
+        let body = make_publish_payload(&metadata, b"crate-bytes");
+        assert!(parse_publish_payload(&body).is_err());
+    }
 
-        let parsed: serde_json::Value = serde_json::from_slice(&body[4..4 + jl]).unwrap();
-        assert_eq!(parsed["name"], "my-crate");
-        assert_eq!(parsed["vers"], "0.1.0");
+    #[test]
+    fn test_parse_publish_payload_missing_vers() {
+        let metadata = serde_json::json!({"name": "my-crate"});
+        let body = make_publish_payload(&metadata, b"crate-bytes");
+        assert!(parse_publish_payload(&body).is_err());
+    }
 
-        let cl_offset = 4 + jl;
-        let cl = u32::from_le_bytes([
-            body[cl_offset],
-            body[cl_offset + 1],
-            body[cl_offset + 2],
-            body[cl_offset + 3],
-        ]) as usize;
-        assert_eq!(cl, crate_data.len());
+    #[test]
+    fn test_parse_publish_payload_crate_data_truncated() {
+        let metadata = serde_json::json!({"name": "my-crate", "vers": "1.0.0"});
+        let json_bytes = serde_json::to_vec(&metadata).unwrap();
+        let json_len = json_bytes.len() as u32;
+        let declared_crate_len: u32 = 100;
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&json_len.to_le_bytes());
+        payload.extend_from_slice(&json_bytes);
+        payload.extend_from_slice(&declared_crate_len.to_le_bytes());
+        payload.extend_from_slice(b"short"); // only 5 bytes, declared 100
+        let body = Bytes::from(payload);
+        assert!(parse_publish_payload(&body).is_err());
+    }
+
+    #[test]
+    fn test_parse_publish_payload_valid_minimal() {
+        let metadata = serde_json::json!({"name": "my-crate", "vers": "1.0.0"});
+        let crate_data = b"fake-tarball-data";
+        let body = make_publish_payload(&metadata, crate_data);
+
+        let parsed = parse_publish_payload(&body).unwrap();
+        assert_eq!(parsed.crate_name, "my-crate");
+        assert_eq!(parsed.crate_version, "1.0.0");
+        assert_eq!(parsed.crate_bytes.as_ref(), crate_data);
+        assert_eq!(parsed.metadata["name"], "my-crate");
+        assert_eq!(parsed.metadata["vers"], "1.0.0");
+    }
+
+    #[test]
+    fn test_parse_publish_payload_valid_full_metadata() {
+        let metadata = sample_metadata();
+        let crate_data = b"compressed-tarball-bytes-here";
+        let body = make_publish_payload(&metadata, crate_data);
+
+        let parsed = parse_publish_payload(&body).unwrap();
+        assert_eq!(parsed.crate_name, "my-crate");
+        assert_eq!(parsed.crate_version, "0.1.0");
+        assert_eq!(parsed.crate_bytes.len(), crate_data.len());
+        assert_eq!(parsed.metadata["description"], "A test crate");
+        assert_eq!(parsed.metadata["license"], "MIT");
+    }
+
+    #[test]
+    fn test_parse_publish_payload_empty_crate_data() {
+        let metadata = serde_json::json!({"name": "empty", "vers": "0.0.1"});
+        let body = make_publish_payload(&metadata, b"");
+
+        let parsed = parse_publish_payload(&body).unwrap();
+        assert_eq!(parsed.crate_name, "empty");
+        assert_eq!(parsed.crate_version, "0.0.1");
+        assert!(parsed.crate_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_publish_payload_preserves_all_metadata_fields() {
+        let metadata = serde_json::json!({
+            "name": "full-crate",
+            "vers": "2.0.0",
+            "deps": [{"name": "tokio", "req": "^1"}],
+            "features": {"async": ["tokio"]},
+            "description": "Full featured crate",
+            "license": "Apache-2.0",
+            "keywords": ["async", "runtime"],
+            "categories": ["asynchronous"],
+            "links": "native-lib",
+            "rust_version": "1.75.0"
+        });
+        let body = make_publish_payload(&metadata, b"data");
+
+        let parsed = parse_publish_payload(&body).unwrap();
+        assert_eq!(parsed.metadata["deps"][0]["name"], "tokio");
+        assert_eq!(parsed.metadata["features"]["async"][0], "tokio");
+        assert_eq!(parsed.metadata["keywords"][0], "async");
+        assert_eq!(parsed.metadata["links"], "native-lib");
+        assert_eq!(parsed.metadata["rust_version"], "1.75.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_cargo_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_cargo_metadata_minimal() {
+        let input = serde_json::json!({"name": "my-crate", "vers": "1.0.0"});
+        let result = build_cargo_metadata(&input, "my-crate", "1.0.0", "abc123");
+
+        assert_eq!(result["name"], "my-crate");
+        assert_eq!(result["vers"], "1.0.0");
+        assert_eq!(result["cksum"], "abc123");
+        assert_eq!(result["deps"], serde_json::json!([]));
+        assert_eq!(result["features"], serde_json::json!({}));
+        assert_eq!(result["description"], "");
+        assert_eq!(result["license"], "");
+        assert_eq!(result["keywords"], serde_json::json!([]));
+        assert_eq!(result["categories"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_build_cargo_metadata_full() {
+        let input = sample_metadata();
+        let result = build_cargo_metadata(&input, "my-crate", "0.1.0", "deadbeef");
+
+        assert_eq!(result["name"], "my-crate");
+        assert_eq!(result["vers"], "0.1.0");
+        assert_eq!(result["cksum"], "deadbeef");
+        assert_eq!(result["description"], "A test crate");
+        assert_eq!(result["license"], "MIT");
+        assert_eq!(result["rust_version"], "1.70.0");
+        assert_eq!(result["keywords"], serde_json::json!(["test", "example"]));
+        assert_eq!(
+            result["categories"],
+            serde_json::json!(["development-tools"])
+        );
+        assert!(result["links"].is_null());
+
+        let deps = result["deps"].as_array().unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0]["name"], "serde");
+    }
+
+    #[test]
+    fn test_build_cargo_metadata_uses_name_lower_not_original() {
+        let input = serde_json::json!({"name": "My-Crate", "vers": "1.0.0"});
+        let result = build_cargo_metadata(&input, "my-crate", "1.0.0", "checksum");
+        assert_eq!(result["name"], "my-crate");
+    }
+
+    #[test]
+    fn test_build_cargo_metadata_with_links() {
+        let input = serde_json::json!({
+            "name": "openssl-sys",
+            "vers": "0.9.0",
+            "links": "openssl"
+        });
+        let result = build_cargo_metadata(&input, "openssl-sys", "0.9.0", "sum");
+        assert_eq!(result["links"], "openssl");
+    }
+
+    #[test]
+    fn test_build_cargo_metadata_deps_preserved() {
+        let deps = serde_json::json!([
+            {"name": "serde", "req": "^1.0", "features": ["derive"], "optional": false, "default_features": true, "target": null, "kind": "normal"},
+            {"name": "tokio", "req": "^1", "features": ["full"], "optional": false, "default_features": true, "target": null, "kind": "normal"}
+        ]);
+        let input = serde_json::json!({"name": "x", "vers": "1.0.0", "deps": deps});
+        let result = build_cargo_metadata(&input, "x", "1.0.0", "sum");
+        assert_eq!(result["deps"].as_array().unwrap().len(), 2);
+        assert_eq!(result["deps"][1]["name"], "tokio");
+    }
+
+    #[test]
+    fn test_build_cargo_metadata_features_preserved() {
+        let input = serde_json::json!({
+            "name": "x",
+            "vers": "1.0.0",
+            "features": {
+                "default": ["std"],
+                "std": [],
+                "serde": ["dep:serde"]
+            }
+        });
+        let result = build_cargo_metadata(&input, "x", "1.0.0", "sum");
+        let features = result["features"].as_object().unwrap();
+        assert_eq!(features.len(), 3);
+        assert_eq!(features["default"], serde_json::json!(["std"]));
+        assert_eq!(features["serde"], serde_json::json!(["dep:serde"]));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_index_fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_index_fields_none() {
+        let (deps, features, links, rust_version) = extract_index_fields(None);
+        assert_eq!(deps, serde_json::json!([]));
+        assert_eq!(features, serde_json::json!({}));
+        assert!(links.is_null());
+        assert!(rust_version.is_null());
+    }
+
+    #[test]
+    fn test_extract_index_fields_empty_object() {
+        let meta = serde_json::json!({});
+        let (deps, features, links, rust_version) = extract_index_fields(Some(&meta));
+        assert_eq!(deps, serde_json::json!([]));
+        assert_eq!(features, serde_json::json!({}));
+        assert!(links.is_null());
+        assert!(rust_version.is_null());
+    }
+
+    #[test]
+    fn test_extract_index_fields_with_all_fields() {
+        let meta = serde_json::json!({
+            "deps": [{"name": "serde", "req": "^1"}],
+            "features": {"default": ["std"]},
+            "links": "native-lib",
+            "rust_version": "1.70.0"
+        });
+        let (deps, features, links, rust_version) = extract_index_fields(Some(&meta));
+        assert_eq!(deps, serde_json::json!([{"name": "serde", "req": "^1"}]));
+        assert_eq!(features, serde_json::json!({"default": ["std"]}));
+        assert_eq!(links, "native-lib");
+        assert_eq!(rust_version, "1.70.0");
+    }
+
+    #[test]
+    fn test_extract_index_fields_partial() {
+        let meta = serde_json::json!({
+            "deps": [{"name": "log"}],
+            "rust_version": "1.56.0"
+        });
+        let (deps, features, links, rust_version) = extract_index_fields(Some(&meta));
+        assert_eq!(deps.as_array().unwrap().len(), 1);
+        assert_eq!(features, serde_json::json!({}));
+        assert!(links.is_null());
+        assert_eq!(rust_version, "1.56.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_index_entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_index_entry_no_metadata() {
+        let entry_str = build_index_entry("my-crate", "1.0.0", "abcdef1234", None);
+        let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
+
+        assert_eq!(entry["name"], "my-crate");
+        assert_eq!(entry["vers"], "1.0.0");
+        assert_eq!(entry["cksum"], "abcdef1234");
+        assert_eq!(entry["deps"], serde_json::json!([]));
+        assert_eq!(entry["features"], serde_json::json!({}));
+        assert_eq!(entry["yanked"], false);
+        assert!(entry.get("links").is_none());
+        assert!(entry.get("rust-version").is_none());
+    }
+
+    #[test]
+    fn test_build_index_entry_with_metadata() {
+        let meta = serde_json::json!({
+            "deps": [{"name": "serde", "req": "^1.0", "features": [], "optional": false, "default_features": true, "target": null, "kind": "normal"}],
+            "features": {"derive": ["serde/derive"]},
+            "links": "openssl",
+            "rust_version": "1.75.0"
+        });
+        let entry_str = build_index_entry("openssl-sys", "0.9.102", "deadbeef", Some(&meta));
+        let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
+
+        assert_eq!(entry["name"], "openssl-sys");
+        assert_eq!(entry["vers"], "0.9.102");
+        assert_eq!(entry["cksum"], "deadbeef");
+        assert_eq!(entry["yanked"], false);
+        assert_eq!(entry["deps"][0]["name"], "serde");
+        assert_eq!(entry["features"]["derive"][0], "serde/derive");
+        assert_eq!(entry["links"], "openssl");
+        assert_eq!(entry["rust-version"], "1.75.0");
+    }
+
+    #[test]
+    fn test_build_index_entry_without_links_or_rust_version() {
+        let meta = serde_json::json!({
+            "deps": [],
+            "features": {}
+        });
+        let entry_str = build_index_entry("simple", "0.1.0", "aaa", Some(&meta));
+        let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
+
+        assert!(entry.get("links").is_none());
+        assert!(entry.get("rust-version").is_none());
+    }
+
+    #[test]
+    fn test_build_index_entry_is_valid_json() {
+        let entry_str = build_index_entry("test", "0.0.1", "checksum", None);
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&entry_str);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_build_index_entry_yanked_is_always_false() {
+        let meta = serde_json::json!({"deps": [], "features": {}});
+        let entry_str = build_index_entry("crate", "1.0.0", "cksum", Some(&meta));
+        let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
+        assert_eq!(entry["yanked"], false);
+    }
+
+    // -----------------------------------------------------------------------
+    // index_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_index_response_default_content_type() {
+        let resp = index_response("test body", None);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        assert_eq!(resp.headers().get("cache-control").unwrap(), "max-age=60");
+    }
+
+    #[test]
+    fn test_index_response_custom_content_type() {
+        let resp = index_response("body", Some("text/plain".to_string()));
+        assert_eq!(resp.headers().get(CONTENT_TYPE).unwrap(), "text/plain");
+    }
+
+    #[test]
+    fn test_index_response_status_is_ok() {
+        let resp = index_response("", None);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_index_response_cache_control() {
+        let resp = index_response("data", None);
+        let cache = resp
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(cache, "max-age=60");
     }
 
     // -----------------------------------------------------------------------
@@ -1262,12 +1649,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_sha256_computation() {
+    fn test_sha256_computation_deterministic() {
         let data = b"test crate data";
         let mut hasher = Sha256::new();
         hasher.update(data);
         let checksum = format!("{:x}", hasher.finalize());
         assert_eq!(checksum.len(), 64);
+
         let mut hasher2 = Sha256::new();
         hasher2.update(data);
         let checksum2 = format!("{:x}", hasher2.finalize());
@@ -1285,5 +1673,429 @@ mod tests {
         let c2 = format!("{:x}", h2.finalize());
 
         assert_ne!(c1, c2);
+    }
+
+    #[test]
+    fn test_sha256_empty_input() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"");
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(checksum.len(), 64);
+        assert_eq!(
+            checksum,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_sha256_known_value() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"hello");
+        let checksum = format!("{:x}", hasher.finalize());
+        assert_eq!(
+            checksum,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Storage path and key construction (patterns from store_crate_artifact)
+    // -----------------------------------------------------------------------
+
+    fn build_crate_filename(name: &str, version: &str) -> String {
+        format!("{}-{}.crate", name, version)
+    }
+
+    fn build_crate_storage_key(name: &str, version: &str, filename: &str) -> String {
+        format!("cargo/{}/{}/{}", name, version, filename)
+    }
+
+    fn build_crate_artifact_path(name: &str, version: &str, filename: &str) -> String {
+        format!("{}/{}/{}", name, version, filename)
+    }
+
+    #[test]
+    fn test_crate_filename() {
+        assert_eq!(build_crate_filename("serde", "1.0.0"), "serde-1.0.0.crate");
+        assert_eq!(
+            build_crate_filename("my-crate", "0.1.0"),
+            "my-crate-0.1.0.crate"
+        );
+        assert_eq!(
+            build_crate_filename("tokio", "1.35.1"),
+            "tokio-1.35.1.crate"
+        );
+    }
+
+    #[test]
+    fn test_crate_storage_key() {
+        let filename = build_crate_filename("serde", "1.0.0");
+        let key = build_crate_storage_key("serde", "1.0.0", &filename);
+        assert_eq!(key, "cargo/serde/1.0.0/serde-1.0.0.crate");
+    }
+
+    #[test]
+    fn test_crate_artifact_path() {
+        let filename = build_crate_filename("tokio", "1.35.1");
+        let path = build_crate_artifact_path("tokio", "1.35.1", &filename);
+        assert_eq!(path, "tokio/1.35.1/tokio-1.35.1.crate");
+    }
+
+    #[test]
+    fn test_crate_storage_key_hyphenated_name() {
+        let filename = build_crate_filename("my-cool-crate", "2.0.0-rc.1");
+        let key = build_crate_storage_key("my-cool-crate", "2.0.0-rc.1", &filename);
+        assert_eq!(
+            key,
+            "cargo/my-cool-crate/2.0.0-rc.1/my-cool-crate-2.0.0-rc.1.crate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoInfo struct
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_info_hosted() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cargo".to_string(),
+            repo_type: "hosted".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "hosted");
+        assert!(info.upstream_url.is_none());
+    }
+
+    #[test]
+    fn test_repo_info_remote() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cargo-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://crates.io".to_string()),
+        };
+        assert_eq!(info.repo_type, "remote");
+        assert_eq!(info.upstream_url.as_deref(), Some("https://crates.io"));
+    }
+
+    #[test]
+    fn test_repo_info_virtual() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cargo-virtual".to_string(),
+            repo_type: "virtual".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(info.repo_type, "virtual");
+    }
+
+    // -----------------------------------------------------------------------
+    // Config JSON URL construction
+    // -----------------------------------------------------------------------
+
+    fn build_config_json(base_url: &str, repo_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            "dl": format!("{}/cargo/{}/api/v1/crates", base_url, repo_key),
+            "api": format!("{}/cargo/{}", base_url, repo_key),
+        })
+    }
+
+    #[test]
+    fn test_config_json_url_construction() {
+        let config = build_config_json("http://localhost:8080", "cargo-hosted");
+        assert_eq!(
+            config["dl"],
+            "http://localhost:8080/cargo/cargo-hosted/api/v1/crates"
+        );
+        assert_eq!(config["api"], "http://localhost:8080/cargo/cargo-hosted");
+    }
+
+    #[test]
+    fn test_config_json_url_https() {
+        let config = build_config_json("https://registry.example.com", "main");
+        assert_eq!(
+            config["dl"],
+            "https://registry.example.com/cargo/main/api/v1/crates"
+        );
+        assert_eq!(config["api"], "https://registry.example.com/cargo/main");
+    }
+
+    #[test]
+    fn test_config_json_base_url_construction() {
+        let scheme = "https";
+        let host = "my.registry.com";
+        let base_url = format!("{}://{}", scheme, host);
+        assert_eq!(base_url, "https://my.registry.com");
+    }
+
+    #[test]
+    fn test_config_json_base_url_with_port() {
+        let scheme = "http";
+        let host = "localhost:8080";
+        let base_url = format!("{}://{}", scheme, host);
+        assert_eq!(base_url, "http://localhost:8080");
+    }
+
+    // -----------------------------------------------------------------------
+    // Publish response format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publish_response_format() {
+        let response = serde_json::json!({
+            "warnings": {
+                "invalid_categories": [],
+                "invalid_badges": [],
+                "other": []
+            }
+        });
+        assert!(response["warnings"]["invalid_categories"].is_array());
+        assert!(response["warnings"]["invalid_badges"].is_array());
+        assert!(response["warnings"]["other"].is_array());
+        assert_eq!(
+            response["warnings"]["invalid_categories"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Download content-disposition header format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_download_content_disposition() {
+        let name_lower = "serde_json";
+        let version = "1.0.120";
+        let filename = format!("{}-{}.crate", name_lower, version);
+        let header = format!("attachment; filename=\"{}\"", filename);
+        assert_eq!(header, "attachment; filename=\"serde_json-1.0.120.crate\"");
+    }
+
+    #[test]
+    fn test_download_content_disposition_hyphenated() {
+        let filename = format!("{}-{}.crate", "my-cool-crate", "0.1.0-alpha.1");
+        let header = format!("attachment; filename=\"{}\"", filename);
+        assert_eq!(
+            header,
+            "attachment; filename=\"my-cool-crate-0.1.0-alpha.1.crate\""
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Search response construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_search_response_structure() {
+        let crate_list: Vec<serde_json::Value> = vec![
+            serde_json::json!({"name": "serde", "max_version": "1.0.0", "description": "Serialization"}),
+            serde_json::json!({"name": "serde_json", "max_version": "1.0.120", "description": "JSON"}),
+        ];
+        let response = serde_json::json!({
+            "crates": crate_list,
+            "meta": {
+                "total": crate_list.len(),
+            }
+        });
+        assert_eq!(response["crates"].as_array().unwrap().len(), 2);
+        assert_eq!(response["meta"]["total"], 2);
+        assert_eq!(response["crates"][0]["name"], "serde");
+    }
+
+    #[test]
+    fn test_search_response_empty() {
+        let crate_list: Vec<serde_json::Value> = vec![];
+        let response = serde_json::json!({
+            "crates": crate_list,
+            "meta": {
+                "total": crate_list.len(),
+            }
+        });
+        assert_eq!(response["crates"].as_array().unwrap().len(), 0);
+        assert_eq!(response["meta"]["total"], 0);
+    }
+
+    #[test]
+    fn test_search_description_extraction_from_metadata() {
+        let metadata_text = r#"{"description": "A fast JSON library", "license": "MIT"}"#;
+        let description = serde_json::from_str::<serde_json::Value>(metadata_text)
+            .ok()
+            .and_then(|m| {
+                m.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        assert_eq!(description, "A fast JSON library");
+    }
+
+    #[test]
+    fn test_search_description_extraction_missing() {
+        let metadata_text = r#"{"license": "MIT"}"#;
+        let description = serde_json::from_str::<serde_json::Value>(metadata_text)
+            .ok()
+            .and_then(|m| {
+                m.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        assert_eq!(description, "");
+    }
+
+    #[test]
+    fn test_search_description_extraction_invalid_json() {
+        let metadata_text = "not json at all";
+        let description = serde_json::from_str::<serde_json::Value>(metadata_text)
+            .ok()
+            .and_then(|m| {
+                m.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        assert_eq!(description, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // per_page clamping (same logic as search_crates)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_per_page_default() {
+        let params: HashMap<String, String> = HashMap::new();
+        let per_page: i64 = params
+            .get("per_page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .min(100);
+        assert_eq!(per_page, 10);
+    }
+
+    #[test]
+    fn test_per_page_custom_value() {
+        let mut params = HashMap::new();
+        params.insert("per_page".to_string(), "50".to_string());
+        let per_page: i64 = params
+            .get("per_page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .min(100);
+        assert_eq!(per_page, 50);
+    }
+
+    #[test]
+    fn test_per_page_clamped_to_100() {
+        let mut params = HashMap::new();
+        params.insert("per_page".to_string(), "500".to_string());
+        let per_page: i64 = params
+            .get("per_page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .min(100);
+        assert_eq!(per_page, 100);
+    }
+
+    #[test]
+    fn test_per_page_invalid_string() {
+        let mut params = HashMap::new();
+        params.insert("per_page".to_string(), "not_a_number".to_string());
+        let per_page: i64 = params
+            .get("per_page")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+            .min(100);
+        assert_eq!(per_page, 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sparse index multiline output (one JSON per line)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_index_multiline_output() {
+        let lines: Vec<String> = vec![
+            build_index_entry("mycrate", "0.1.0", "aaa", None),
+            build_index_entry("mycrate", "0.2.0", "bbb", None),
+            build_index_entry("mycrate", "1.0.0", "ccc", None),
+        ];
+        let body = lines.join("\n");
+
+        let parsed_lines: Vec<&str> = body.split('\n').collect();
+        assert_eq!(parsed_lines.len(), 3);
+
+        for line in &parsed_lines {
+            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(entry["name"], "mycrate");
+            assert_eq!(entry["yanked"], false);
+        }
+
+        let first: serde_json::Value = serde_json::from_str(parsed_lines[0]).unwrap();
+        assert_eq!(first["vers"], "0.1.0");
+        assert_eq!(first["cksum"], "aaa");
+
+        let last: serde_json::Value = serde_json::from_str(parsed_lines[2]).unwrap();
+        assert_eq!(last["vers"], "1.0.0");
+        assert_eq!(last["cksum"], "ccc");
+    }
+
+    #[test]
+    fn test_index_single_version() {
+        let lines: Vec<String> = vec![build_index_entry("single", "1.0.0", "checksum", None)];
+        let body = lines.join("\n");
+        assert!(!body.contains('\n'));
+
+        let entry: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(entry["name"], "single");
+    }
+
+    // -----------------------------------------------------------------------
+    // Name lowercasing (used throughout handlers)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_crate_name_lowercasing() {
+        assert_eq!("My-Crate".to_lowercase(), "my-crate");
+        assert_eq!("SERDE".to_lowercase(), "serde");
+        assert_eq!("already-lower".to_lowercase(), "already-lower");
+        assert_eq!("Tokio_Util".to_lowercase(), "tokio_util");
+    }
+
+    // -----------------------------------------------------------------------
+    // Conflict error JSON format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conflict_error_json_format() {
+        let name = "my-crate";
+        let version = "1.0.0";
+        let error_json = serde_json::json!({"errors": [{"detail": format!(
+            "crate version `{}@{}` already exists",
+            name, version
+        )}]});
+        assert_eq!(
+            error_json["errors"][0]["detail"],
+            "crate version `my-crate@1.0.0` already exists"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Auth error JSON format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_auth_required_error_json() {
+        let error = serde_json::json!({"errors": [{"detail": "Authentication required"}]});
+        assert_eq!(error["errors"][0]["detail"], "Authentication required");
+    }
+
+    #[test]
+    fn test_invalid_credentials_error_json() {
+        let error = serde_json::json!({"errors": [{"detail": "Invalid credentials"}]});
+        assert_eq!(error["errors"][0]["detail"], "Invalid credentials");
     }
 }

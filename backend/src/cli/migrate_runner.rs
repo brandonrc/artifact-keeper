@@ -674,13 +674,440 @@ fn matches_pattern(value: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::artifactory_client::ArtifactoryAuth;
+    use crate::services::artifactory_import::ImportedRepository;
+
+    // ---- matches_pattern ----
 
     #[test]
-    fn test_matches_pattern() {
-        assert!(matches_pattern("libs-release", "libs-*"));
-        assert!(matches_pattern("libs-release", "*"));
+    fn test_matches_pattern_exact() {
         assert!(matches_pattern("libs-release", "libs-release"));
         assert!(!matches_pattern("libs-release", "libs-snapshot"));
+    }
+
+    #[test]
+    fn test_matches_pattern_star_wildcard() {
+        assert!(matches_pattern("anything", "*"));
+        assert!(matches_pattern("", "*"));
+    }
+
+    #[test]
+    fn test_matches_pattern_prefix_wildcard() {
+        assert!(matches_pattern("libs-release", "libs-*"));
+        assert!(matches_pattern("libs-snapshot", "libs-*"));
+        assert!(!matches_pattern("maven-central", "libs-*"));
+    }
+
+    #[test]
+    fn test_matches_pattern_suffix_wildcard() {
         assert!(matches_pattern("maven-central-cache", "*-cache"));
+        assert!(matches_pattern("npm-remote-cache", "*-cache"));
+        assert!(!matches_pattern("maven-central", "*-cache"));
+    }
+
+    #[test]
+    fn test_matches_pattern_infix_wildcard() {
+        assert!(matches_pattern("libs-release-local", "libs-*-local"));
+        assert!(!matches_pattern("libs-release-remote", "libs-*-local"));
+    }
+
+    #[test]
+    fn test_matches_pattern_empty_prefix_suffix() {
+        assert!(matches_pattern("release", "*release"));
+        assert!(matches_pattern("release", "release*"));
+        assert!(matches_pattern("release", "*"));
+    }
+
+    #[test]
+    fn test_matches_pattern_no_wildcard_no_match() {
+        assert!(!matches_pattern("foo", "bar"));
+        assert!(!matches_pattern("", "bar"));
+    }
+
+    #[test]
+    fn test_matches_pattern_multiple_wildcards_falls_through() {
+        // With more than one * (3+ parts after split), the function falls through
+        // to exact match since only two-part splits are handled.
+        assert!(!matches_pattern("a-b-c", "a-*-*"));
+        assert!(!matches_pattern("a-b-c", "*-*-c"));
+    }
+
+    // ---- repo_passes_filters ----
+
+    #[test]
+    fn test_repo_passes_filters_no_filters() {
+        assert!(repo_passes_filters("any-repo", None, None));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_include_only() {
+        let include = vec!["libs-*".to_string()];
+        assert!(repo_passes_filters("libs-release", Some(&include), None));
+        assert!(!repo_passes_filters("maven-central", Some(&include), None));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_exclude_only() {
+        let exclude = vec!["*-cache".to_string()];
+        assert!(repo_passes_filters("libs-release", None, Some(&exclude)));
+        assert!(!repo_passes_filters(
+            "maven-central-cache",
+            None,
+            Some(&exclude)
+        ));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_include_and_exclude() {
+        let include = vec!["libs-*".to_string()];
+        let exclude = vec!["libs-snapshot".to_string()];
+
+        assert!(repo_passes_filters(
+            "libs-release",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(!repo_passes_filters(
+            "libs-snapshot",
+            Some(&include),
+            Some(&exclude)
+        ));
+        // Not in include list at all
+        assert!(!repo_passes_filters(
+            "maven-central",
+            Some(&include),
+            Some(&exclude)
+        ));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_exclude_overrides_include() {
+        let include = vec!["*".to_string()];
+        let exclude = vec!["secret-repo".to_string()];
+
+        assert!(repo_passes_filters(
+            "public-repo",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(!repo_passes_filters(
+            "secret-repo",
+            Some(&include),
+            Some(&exclude)
+        ));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_multiple_patterns() {
+        let include = vec!["libs-*".to_string(), "maven-*".to_string()];
+        let exclude = vec!["*-cache".to_string(), "*-snapshot".to_string()];
+
+        assert!(repo_passes_filters(
+            "libs-release",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(repo_passes_filters(
+            "maven-local",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(!repo_passes_filters(
+            "libs-snapshot",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(!repo_passes_filters(
+            "maven-central-cache",
+            Some(&include),
+            Some(&exclude)
+        ));
+        assert!(!repo_passes_filters(
+            "npm-remote",
+            Some(&include),
+            Some(&exclude)
+        ));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_empty_include_rejects_all() {
+        let include: Vec<String> = vec![];
+        assert!(!repo_passes_filters("anything", Some(&include), None));
+    }
+
+    #[test]
+    fn test_repo_passes_filters_empty_exclude_allows_all() {
+        let exclude: Vec<String> = vec![];
+        assert!(repo_passes_filters("anything", None, Some(&exclude)));
+    }
+
+    // ---- build_auth ----
+
+    #[test]
+    fn test_build_auth_with_token() {
+        let config = ArtifactoryConfig {
+            token: Some("my-token".to_string()),
+            username: None,
+            password: None,
+            url: None,
+        };
+        let auth = build_auth("text", &config).unwrap();
+        match auth {
+            ArtifactoryAuth::ApiToken(token) => assert_eq!(token, "my-token"),
+            _ => panic!("Expected ApiToken variant"),
+        }
+    }
+
+    #[test]
+    fn test_build_auth_with_basic_auth() {
+        let config = ArtifactoryConfig {
+            token: None,
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            url: None,
+        };
+        let auth = build_auth("text", &config).unwrap();
+        match auth {
+            ArtifactoryAuth::BasicAuth { username, password } => {
+                assert_eq!(username, "admin");
+                assert_eq!(password, "secret");
+            }
+            _ => panic!("Expected BasicAuth variant"),
+        }
+    }
+
+    #[test]
+    fn test_build_auth_token_takes_precedence_over_basic() {
+        let config = ArtifactoryConfig {
+            token: Some("my-token".to_string()),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            url: None,
+        };
+        let auth = build_auth("text", &config).unwrap();
+        match auth {
+            ArtifactoryAuth::ApiToken(token) => assert_eq!(token, "my-token"),
+            _ => panic!("Expected ApiToken when both token and basic auth are provided"),
+        }
+    }
+
+    #[test]
+    fn test_build_auth_no_credentials() {
+        let config = ArtifactoryConfig {
+            token: None,
+            username: None,
+            password: None,
+            url: None,
+        };
+        let result = build_auth("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_auth_username_without_password() {
+        let config = ArtifactoryConfig {
+            token: None,
+            username: Some("admin".to_string()),
+            password: None,
+            url: None,
+        };
+        let result = build_auth("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_auth_password_without_username() {
+        let config = ArtifactoryConfig {
+            token: None,
+            username: None,
+            password: Some("secret".to_string()),
+            url: None,
+        };
+        let result = build_auth("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_auth_json_format_no_credentials() {
+        let config = ArtifactoryConfig::default();
+        let result = build_auth("json", &config);
+        assert!(result.is_err());
+    }
+
+    // ---- build_client ----
+
+    #[test]
+    fn test_build_client_no_artifactory_config() {
+        let config = MigrateConfig::default();
+        let result = build_client("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_client_no_url() {
+        let config = MigrateConfig {
+            artifactory: Some(ArtifactoryConfig {
+                url: None,
+                token: Some("my-token".to_string()),
+                username: None,
+                password: None,
+            }),
+            ..Default::default()
+        };
+        let result = build_client("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_client_no_auth() {
+        let config = MigrateConfig {
+            artifactory: Some(ArtifactoryConfig {
+                url: Some("https://artifactory.example.com".to_string()),
+                token: None,
+                username: None,
+                password: None,
+            }),
+            ..Default::default()
+        };
+        let result = build_client("text", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_client_with_valid_token_config() {
+        let config = MigrateConfig {
+            artifactory: Some(ArtifactoryConfig {
+                url: Some("https://artifactory.example.com".to_string()),
+                token: Some("my-token".to_string()),
+                username: None,
+                password: None,
+            }),
+            ..Default::default()
+        };
+        let result = build_client("text", &config);
+        assert!(result.is_ok());
+        let (_client, url) = result.unwrap();
+        assert_eq!(url, "https://artifactory.example.com");
+    }
+
+    #[test]
+    fn test_build_client_with_valid_basic_auth_config() {
+        let config = MigrateConfig {
+            artifactory: Some(ArtifactoryConfig {
+                url: Some("https://artifactory.example.com".to_string()),
+                token: None,
+                username: Some("admin".to_string()),
+                password: Some("pass".to_string()),
+            }),
+            ..Default::default()
+        };
+        let result = build_client("text", &config);
+        assert!(result.is_ok());
+    }
+
+    // ---- filter_repositories ----
+
+    fn make_repo(key: &str, repo_type: &str, package_type: &str) -> ImportedRepository {
+        ImportedRepository {
+            key: key.to_string(),
+            repo_type: repo_type.to_string(),
+            package_type: package_type.to_string(),
+            description: None,
+            includes_pattern: None,
+            excludes_pattern: None,
+            handle_releases: true,
+            handle_snapshots: false,
+            layout: None,
+        }
+    }
+
+    #[test]
+    fn test_filter_repositories_no_filters() {
+        let repos = vec![
+            make_repo("libs-release", "local", "maven"),
+            make_repo("npm-remote", "remote", "npm"),
+        ];
+        let result = filter_repositories("json", &repos, None, None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_repositories_include_filter() {
+        let repos = vec![
+            make_repo("libs-release", "local", "maven"),
+            make_repo("libs-snapshot", "local", "maven"),
+            make_repo("npm-remote", "remote", "npm"),
+        ];
+        let include = vec!["libs-*".to_string()];
+        let result = filter_repositories("json", &repos, Some(&include), None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].key, "libs-release");
+        assert_eq!(result[1].key, "libs-snapshot");
+    }
+
+    #[test]
+    fn test_filter_repositories_exclude_filter() {
+        let repos = vec![
+            make_repo("libs-release", "local", "maven"),
+            make_repo("libs-snapshot", "local", "maven"),
+            make_repo("npm-remote", "remote", "npm"),
+        ];
+        let exclude = vec!["*-snapshot".to_string()];
+        let result = filter_repositories("json", &repos, None, Some(&exclude));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].key, "libs-release");
+        assert_eq!(result[1].key, "npm-remote");
+    }
+
+    #[test]
+    fn test_filter_repositories_include_and_exclude() {
+        let repos = vec![
+            make_repo("libs-release", "local", "maven"),
+            make_repo("libs-snapshot", "local", "maven"),
+            make_repo("npm-remote", "remote", "npm"),
+        ];
+        let include = vec!["libs-*".to_string()];
+        let exclude = vec!["*-snapshot".to_string()];
+        let result = filter_repositories("json", &repos, Some(&include), Some(&exclude));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].key, "libs-release");
+    }
+
+    #[test]
+    fn test_filter_repositories_empty_list() {
+        let repos: Vec<ImportedRepository> = vec![];
+        let result = filter_repositories("json", &repos, None, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_repositories_all_excluded() {
+        let repos = vec![
+            make_repo("libs-release", "local", "maven"),
+            make_repo("npm-remote", "remote", "npm"),
+        ];
+        let exclude = vec!["*".to_string()];
+        let result = filter_repositories("json", &repos, None, Some(&exclude));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_repositories_preserves_order() {
+        let repos = vec![
+            make_repo("z-repo", "local", "maven"),
+            make_repo("a-repo", "local", "maven"),
+            make_repo("m-repo", "local", "maven"),
+        ];
+        let result = filter_repositories("json", &repos, None, None);
+        assert_eq!(result[0].key, "z-repo");
+        assert_eq!(result[1].key, "a-repo");
+        assert_eq!(result[2].key, "m-repo");
+    }
+
+    #[test]
+    fn test_filter_repositories_text_format_does_not_panic() {
+        let repos = vec![make_repo("libs-release", "local", "maven")];
+        let result = filter_repositories("text", &repos, None, None);
+        assert_eq!(result.len(), 1);
     }
 }
