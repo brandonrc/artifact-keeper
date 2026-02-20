@@ -28,8 +28,6 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::sbt::SbtHandler;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -229,8 +227,14 @@ async fn download_by_path(
                         let state = state.clone();
                         let path = path_clone.clone();
                         async move {
-                            proxy_helpers::local_fetch_by_path(&db, &state, member_id, &storage_path, &path)
-                                .await
+                            proxy_helpers::local_fetch_by_path(
+                                &db,
+                                &state,
+                                member_id,
+                                &storage_path,
+                                &path,
+                            )
+                            .await
                         }
                     },
                 )
@@ -251,7 +255,7 @@ async fn download_by_path(
         }
     };
 
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -360,7 +364,7 @@ async fn upload_artifact(
 
     // Store the file
     let storage_key = format!("sbt/{}", artifact_path);
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

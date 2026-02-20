@@ -31,8 +31,6 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 const LFS_CONTENT_TYPE: &str = "application/vnd.git-lfs+json";
 
@@ -547,7 +545,7 @@ async fn upload_object(
 
     // Store the object
     let storage_key = format!("gitlfs/{}/{}", &oid[..2], oid);
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         lfs_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -680,8 +678,14 @@ async fn download_object(
                         let state = state.clone();
                         let path = path_clone.clone();
                         async move {
-                            proxy_helpers::local_fetch_by_path(&db, &state, member_id, &storage_path, &path)
-                                .await
+                            proxy_helpers::local_fetch_by_path(
+                                &db,
+                                &state,
+                                member_id,
+                                &storage_path,
+                                &path,
+                            )
+                            .await
                         }
                     },
                 )
@@ -705,7 +709,7 @@ async fn download_object(
         }
     };
 
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         lfs_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

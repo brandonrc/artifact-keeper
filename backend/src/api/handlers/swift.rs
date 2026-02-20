@@ -29,8 +29,6 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::swift::SwiftHandler;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -461,7 +459,7 @@ async fn download_archive(
         }
     };
 
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         swift_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -628,7 +626,7 @@ async fn publish_release(
 
     // Store the file
     let storage_key = format!("swift/{}/{}/{}/{}.zip", scope, name, version, name);
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         swift_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

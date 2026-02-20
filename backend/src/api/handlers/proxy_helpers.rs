@@ -177,15 +177,13 @@ pub async fn local_fetch_by_path(
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
     let storage = state.storage_for_repo(storage_path);
-    let content = storage.get(&artifact.storage_key)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Storage error: {}", e),
-            )
-                .into_response()
-        })?;
+    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
 
     Ok((content, Some(artifact.content_type)))
 }
@@ -221,15 +219,13 @@ pub async fn local_fetch_by_name_version(
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
     let storage = state.storage_for_repo(storage_path);
-    let content = storage.get(&artifact.storage_key)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Storage error: {}", e),
-            )
-                .into_response()
-        })?;
+    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
 
     Ok((content, Some(artifact.content_type)))
 }
@@ -263,15 +259,13 @@ pub async fn local_fetch_by_path_suffix(
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
     let storage = state.storage_for_repo(storage_path);
-    let content = storage.get(&artifact.storage_key)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Storage error: {}", e),
-            )
-                .into_response()
-        })?;
+    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
 
     Ok((content, Some(artifact.content_type)))
 }

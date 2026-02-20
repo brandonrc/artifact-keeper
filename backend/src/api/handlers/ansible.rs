@@ -28,8 +28,6 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::ansible::AnsibleHandler;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -575,7 +573,7 @@ async fn download_collection(
         }
     };
 
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -740,7 +738,7 @@ async fn upload_collection(
 
     // Store the file
     let storage_key = format!("ansible/{}/{}/{}", full_name, collection_version, filename);
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     storage
         .put(&storage_key, tarball.clone())
         .await

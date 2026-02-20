@@ -40,8 +40,6 @@ use uuid::Uuid;
 use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::incus::IncusHandler;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -640,7 +638,7 @@ async fn download_image(
     let size_bytes: i64 = artifact.get("size_bytes");
     let checksum: String = artifact.get("checksum_sha256");
 
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -31,8 +31,6 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
 use crate::formats::composer::ComposerHandler;
 use crate::services::auth_service::AuthService;
-use crate::storage::filesystem::FilesystemStorage;
-use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -599,7 +597,7 @@ async fn download_archive(
     };
 
     // Read from storage
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -853,7 +851,7 @@ async fn upload(
 
     // Store the archive
     let storage_key = format!("composer/{}/{}/{}.zip", full_name, version, sha256);
-    let storage = FilesystemStorage::new(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_path);
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
