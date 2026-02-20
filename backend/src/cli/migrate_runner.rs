@@ -3,7 +3,9 @@
 //! This module implements the actual execution logic for migration CLI commands.
 
 use crate::cli::migrate::{error, output, table_row, MigrateCli, MigrateCommand, MigrateConfig};
-use crate::services::artifactory_import::{ArtifactoryImporter, ImportProgress};
+use crate::services::artifactory_import::{
+    ArtifactoryImporter, ImportProgress, ImportedRepository,
+};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -105,151 +107,115 @@ pub async fn run(cli: MigrateCli) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Run import from Artifactory export directory
-#[allow(clippy::too_many_arguments)]
-async fn run_import(
+/// Create an importer from a path (directory or ZIP archive).
+fn create_importer(
     format: &str,
-    verbose: bool,
     path: &Path,
-    include: Option<&[String]>,
-    exclude: Option<&[String]>,
-    include_users: bool,
-    include_groups: bool,
-    include_permissions: bool,
-    dry_run: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Create importer based on path type
-    let importer = if path.is_dir() {
+) -> Result<ArtifactoryImporter, Box<dyn std::error::Error>> {
+    if path.is_dir() {
         output(
             format,
             &format!("Loading export from directory: {}", path.display()),
             None,
         );
-        ArtifactoryImporter::from_directory(path)?
-    } else if path.extension().map(|e| e == "zip").unwrap_or(false) {
+        return Ok(ArtifactoryImporter::from_directory(path)?);
+    }
+
+    if path.extension().map(|e| e == "zip").unwrap_or(false) {
         output(
             format,
             &format!("Extracting archive: {}", path.display()),
             None,
         );
-        ArtifactoryImporter::from_archive(path)?
-    } else {
-        error(format, "Path must be a directory or ZIP archive");
-        return Err("Invalid path".into());
-    };
-
-    // Add progress callback if verbose
-    let progress_counter = Arc::new(AtomicU64::new(0));
-    let importer = if verbose {
-        let counter = progress_counter.clone();
-        let format_clone = format.to_string();
-        importer.with_progress_callback(Box::new(move |progress: ImportProgress| {
-            counter.store(progress.current, Ordering::SeqCst);
-            if format_clone != "json" {
-                eprint!(
-                    "\r{}: {}/{} - {}",
-                    progress.phase, progress.current, progress.total, progress.message
-                );
-            }
-        }))
-    } else {
-        importer
-    };
-
-    // Get metadata
-    let metadata = importer.get_metadata()?;
-    output(
-        format,
-        &format!(
-            "Export contains {} repositories, {} artifacts ({} bytes)",
-            metadata.repositories.len(),
-            metadata.total_artifacts,
-            metadata.total_size_bytes
-        ),
-        Some(serde_json::json!({
-            "repositories": metadata.repositories.len(),
-            "artifacts": metadata.total_artifacts,
-            "size_bytes": metadata.total_size_bytes,
-            "has_security": metadata.has_security
-        })),
-    );
-
-    // List repositories
-    let repositories = importer.list_repositories()?;
-
-    if format == "text" {
-        println!("\nRepositories:");
-        table_row(&["Key", "Type", "Package Type"]);
-        table_row(&["---", "----", "------------"]);
+        return Ok(ArtifactoryImporter::from_archive(path)?);
     }
 
-    let mut repos_to_import = Vec::new();
-    for repo in &repositories {
-        // Apply include/exclude filters
-        let included = match include {
-            Some(patterns) => patterns.iter().any(|p| matches_pattern(&repo.key, p)),
-            None => true,
-        };
-        let excluded = match exclude {
-            Some(patterns) => patterns.iter().any(|p| matches_pattern(&repo.key, p)),
-            None => false,
-        };
+    error(format, "Path must be a directory or ZIP archive");
+    Err("Invalid path".into())
+}
 
-        if included && !excluded {
-            repos_to_import.push(repo);
-            if format == "text" {
-                table_row(&[&repo.key, &repo.repo_type, &repo.package_type]);
-            }
-        }
+/// Attach a verbose progress callback to the importer when verbose mode is on.
+fn attach_progress_callback(
+    importer: ArtifactoryImporter,
+    format: &str,
+    verbose: bool,
+) -> ArtifactoryImporter {
+    if !verbose {
+        return importer;
     }
 
-    output(
-        format,
-        &format!(
-            "\n{} repositories selected for import",
-            repos_to_import.len()
-        ),
-        Some(serde_json::json!({
-            "selected_repositories": repos_to_import.iter().map(|r| &r.key).collect::<Vec<_>>()
-        })),
-    );
-
-    if dry_run {
-        output(format, "\nDry run - no changes will be made", None);
-
-        // Show what would be imported
-        for repo in repos_to_import {
-            let artifacts: Vec<_> = importer
-                .list_artifacts(&repo.key)?
-                .filter_map(|a| a.ok())
-                .take(10)
-                .collect();
-
-            output(
-                format,
-                &format!(
-                    "\nRepository '{}' would import {} artifacts (showing first 10):",
-                    repo.key,
-                    artifacts.len()
-                ),
-                None,
+    let counter = Arc::new(AtomicU64::new(0));
+    let format_clone = format.to_string();
+    importer.with_progress_callback(Box::new(move |progress: ImportProgress| {
+        counter.store(progress.current, Ordering::SeqCst);
+        if format_clone != "json" {
+            eprint!(
+                "\r{}: {}/{} - {}",
+                progress.phase, progress.current, progress.total, progress.message
             );
+        }
+    }))
+}
 
-            for artifact in artifacts {
-                if format == "text" {
-                    println!("  - {}/{}", artifact.path, artifact.name);
-                }
+/// Check whether a repository key passes include/exclude filters.
+fn repo_passes_filters(key: &str, include: Option<&[String]>, exclude: Option<&[String]>) -> bool {
+    let included = match include {
+        Some(patterns) => patterns.iter().any(|p| matches_pattern(key, p)),
+        None => true,
+    };
+    let excluded = match exclude {
+        Some(patterns) => patterns.iter().any(|p| matches_pattern(key, p)),
+        None => false,
+    };
+    included && !excluded
+}
+
+/// Display a dry-run preview of what would be imported from each repository.
+fn show_dry_run_preview(
+    format: &str,
+    importer: &ArtifactoryImporter,
+    repos: &[&ImportedRepository],
+) -> Result<(), Box<dyn std::error::Error>> {
+    output(format, "\nDry run - no changes will be made", None);
+
+    for repo in repos {
+        let artifacts: Vec<_> = importer
+            .list_artifacts(&repo.key)?
+            .filter_map(|a| a.ok())
+            .take(10)
+            .collect();
+
+        output(
+            format,
+            &format!(
+                "\nRepository '{}' would import {} artifacts (showing first 10):",
+                repo.key,
+                artifacts.len()
+            ),
+            None,
+        );
+
+        for artifact in &artifacts {
+            if format == "text" {
+                println!("  - {}/{}", artifact.path, artifact.name);
             }
         }
-
-        return Ok(());
     }
 
-    // Process import
+    Ok(())
+}
+
+/// Import artifacts from the selected repositories, returning (imported, failed) counts.
+fn import_artifacts(
+    format: &str,
+    verbose: bool,
+    importer: &ArtifactoryImporter,
+    repos: &[&ImportedRepository],
+) -> Result<(u64, u64), Box<dyn std::error::Error>> {
     let mut total_imported = 0u64;
     let mut total_failed = 0u64;
 
-    for repo in repos_to_import {
+    for repo in repos {
         output(
             format,
             &format!("\nImporting repository: {}", repo.key),
@@ -259,7 +225,6 @@ async fn run_import(
         // TODO: Create repository in Artifact Keeper if it doesn't exist
         // This would require database access and the repository service
 
-        // Import artifacts
         let artifacts = importer.list_artifacts(&repo.key)?;
 
         for artifact_result in artifacts {
@@ -272,7 +237,6 @@ async fn run_import(
                             None,
                         );
                     }
-
                     // TODO: Upload artifact to Artifact Keeper
                     // This would require the artifact service
                     total_imported += 1;
@@ -285,8 +249,19 @@ async fn run_import(
         }
     }
 
-    // Import users if requested
-    if include_users && metadata.has_security {
+    Ok((total_imported, total_failed))
+}
+
+/// Import security data (users, groups, permissions) when requested.
+fn import_security_data(
+    format: &str,
+    verbose: bool,
+    importer: &ArtifactoryImporter,
+    include_users: bool,
+    include_groups: bool,
+    include_permissions: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if include_users {
         output(format, "\nImporting users...", None);
         let users = importer.list_users()?;
         output(format, &format!("  Found {} users", users.len()), None);
@@ -307,8 +282,7 @@ async fn run_import(
         }
     }
 
-    // Import groups if requested
-    if include_groups && metadata.has_security {
+    if include_groups {
         output(format, "\nImporting groups...", None);
         let groups = importer.list_groups()?;
         output(format, &format!("  Found {} groups", groups.len()), None);
@@ -321,8 +295,7 @@ async fn run_import(
         }
     }
 
-    // Import permissions if requested
-    if include_permissions && metadata.has_security {
+    if include_permissions {
         output(format, "\nImporting permissions...", None);
         let permissions = importer.list_permissions()?;
         output(
@@ -345,6 +318,93 @@ async fn run_import(
             }
             // TODO: Create permission in Artifact Keeper
         }
+    }
+
+    Ok(())
+}
+
+/// Run import from Artifactory export directory
+#[allow(clippy::too_many_arguments)]
+async fn run_import(
+    format: &str,
+    verbose: bool,
+    path: &Path,
+    include: Option<&[String]>,
+    exclude: Option<&[String]>,
+    include_users: bool,
+    include_groups: bool,
+    include_permissions: bool,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let importer = create_importer(format, path)?;
+    let importer = attach_progress_callback(importer, format, verbose);
+
+    // Get metadata
+    let metadata = importer.get_metadata()?;
+    output(
+        format,
+        &format!(
+            "Export contains {} repositories, {} artifacts ({} bytes)",
+            metadata.repositories.len(),
+            metadata.total_artifacts,
+            metadata.total_size_bytes
+        ),
+        Some(serde_json::json!({
+            "repositories": metadata.repositories.len(),
+            "artifacts": metadata.total_artifacts,
+            "size_bytes": metadata.total_size_bytes,
+            "has_security": metadata.has_security
+        })),
+    );
+
+    // List and filter repositories
+    let repositories = importer.list_repositories()?;
+
+    if format == "text" {
+        println!("\nRepositories:");
+        table_row(&["Key", "Type", "Package Type"]);
+        table_row(&["---", "----", "------------"]);
+    }
+
+    let mut repos_to_import = Vec::new();
+    for repo in &repositories {
+        if !repo_passes_filters(&repo.key, include, exclude) {
+            continue;
+        }
+        repos_to_import.push(repo);
+        if format == "text" {
+            table_row(&[&repo.key, &repo.repo_type, &repo.package_type]);
+        }
+    }
+
+    output(
+        format,
+        &format!(
+            "\n{} repositories selected for import",
+            repos_to_import.len()
+        ),
+        Some(serde_json::json!({
+            "selected_repositories": repos_to_import.iter().map(|r| &r.key).collect::<Vec<_>>()
+        })),
+    );
+
+    if dry_run {
+        return show_dry_run_preview(format, &importer, &repos_to_import);
+    }
+
+    let (total_imported, total_failed) =
+        import_artifacts(format, verbose, &importer, &repos_to_import)?;
+
+    // Import security data if the export contains it
+    if metadata.has_security {
+        import_security_data(
+            format,
+            verbose,
+            &importer,
+            include_users,
+            include_groups,
+            include_permissions,
+        )?;
     }
 
     // Summary
@@ -491,29 +551,21 @@ async fn run_assess(
     let mut total_artifacts = 0i64;
 
     for repo in &repositories {
-        // Apply include/exclude filters
-        let included = match include {
-            Some(patterns) => patterns.iter().any(|p| matches_pattern(&repo.key, p)),
-            None => true,
-        };
-        let excluded = match exclude {
-            Some(patterns) => patterns.iter().any(|p| matches_pattern(&repo.key, p)),
-            None => false,
-        };
-
-        if included && !excluded {
-            // Get artifact count for this repo
-            let aql_result = client.list_artifacts(&repo.key, 0, 1).await;
-            let artifact_count = aql_result.map(|r| r.range.total).unwrap_or(0);
-            total_artifacts += artifact_count;
-
-            selected_repos.push(serde_json::json!({
-                "key": repo.key,
-                "type": repo.repo_type,
-                "package_type": repo.package_type,
-                "artifact_count": artifact_count
-            }));
+        if !repo_passes_filters(&repo.key, include, exclude) {
+            continue;
         }
+
+        // Get artifact count for this repo
+        let aql_result = client.list_artifacts(&repo.key, 0, 1).await;
+        let artifact_count = aql_result.map(|r| r.range.total).unwrap_or(0);
+        total_artifacts += artifact_count;
+
+        selected_repos.push(serde_json::json!({
+            "key": repo.key,
+            "type": repo.repo_type,
+            "package_type": repo.package_type,
+            "artifact_count": artifact_count
+        }));
     }
 
     let assessment = serde_json::json!({

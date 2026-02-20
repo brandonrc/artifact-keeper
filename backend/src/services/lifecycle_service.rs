@@ -318,6 +318,26 @@ impl LifecycleService {
 
     // --- Policy execution implementations ---
 
+    /// Build a PolicyExecutionResult from common fields.
+    /// When `dry_run` is true, `artifacts_removed` and `bytes_freed` are zeroed out.
+    fn build_execution_result(
+        policy: &LifecyclePolicy,
+        dry_run: bool,
+        artifacts_matched: i64,
+        artifacts_removed: i64,
+        bytes_freed: i64,
+    ) -> PolicyExecutionResult {
+        PolicyExecutionResult {
+            policy_id: policy.id,
+            policy_name: policy.name.clone(),
+            dry_run,
+            artifacts_matched,
+            artifacts_removed: if dry_run { 0 } else { artifacts_removed },
+            bytes_freed: if dry_run { 0 } else { bytes_freed },
+            errors: vec![],
+        }
+    }
+
     async fn execute_max_age(
         &self,
         policy: &LifecyclePolicy,
@@ -393,15 +413,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched.count,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { matched.bytes },
-            errors: vec![],
-        })
+            matched.count,
+            removed,
+            matched.bytes,
+        ))
     }
 
     async fn execute_max_versions(
@@ -469,15 +487,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched.count,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { matched.bytes },
-            errors: vec![],
-        })
+            matched.count,
+            removed,
+            matched.bytes,
+        ))
     }
 
     async fn execute_no_downloads(
@@ -538,15 +554,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched.count,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { matched.bytes },
-            errors: vec![],
-        })
+            matched.count,
+            removed,
+            matched.bytes,
+        ))
     }
 
     async fn execute_tag_pattern_keep(
@@ -598,15 +612,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched.count,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { matched.bytes },
-            errors: vec![],
-        })
+            matched.count,
+            removed,
+            matched.bytes,
+        ))
     }
 
     async fn execute_tag_pattern_delete(
@@ -657,15 +669,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched.count,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { matched.bytes },
-            errors: vec![],
-        })
+            matched.count,
+            removed,
+            matched.bytes,
+        ))
     }
 
     async fn execute_size_quota(
@@ -701,15 +711,7 @@ impl LifecycleService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         if usage.total <= quota_bytes {
-            return Ok(PolicyExecutionResult {
-                policy_id: policy.id,
-                policy_name: policy.name.clone(),
-                dry_run,
-                artifacts_matched: 0,
-                artifacts_removed: 0,
-                bytes_freed: 0,
-                errors: vec![],
-            });
+            return Ok(Self::build_execution_result(policy, dry_run, 0, 0, 0));
         }
 
         let excess = usage.total - quota_bytes;
@@ -757,15 +759,13 @@ impl LifecycleService {
             removed = result.rows_affected() as i64;
         }
 
-        Ok(PolicyExecutionResult {
-            policy_id: policy.id,
-            policy_name: policy.name.clone(),
+        Ok(Self::build_execution_result(
+            policy,
             dry_run,
-            artifacts_matched: matched,
-            artifacts_removed: if dry_run { 0 } else { removed },
-            bytes_freed: if dry_run { 0 } else { accumulated },
-            errors: vec![],
-        })
+            matched,
+            removed,
+            accumulated,
+        ))
     }
 
     /// Validate policy config based on type.

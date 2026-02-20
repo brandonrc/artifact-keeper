@@ -50,315 +50,45 @@ impl HelmLintChecker {
         let mut score: i32 = 0;
         let mut details = json!({});
 
-        // -- Decompress gzip --------------------------------------------------
-        let mut decoder = GzDecoder::new(content.as_ref());
-        let mut tar_bytes = Vec::new();
-        if let Err(e) = decoder.read_to_end(&mut tar_bytes) {
-            issues.push(RawQualityIssue {
-                severity: "critical".to_string(),
-                category: "helm-structure".to_string(),
-                title: "Not a valid gzip archive".to_string(),
-                description: Some(format!("Failed to decompress gzip: {e}")),
-                location: None,
-            });
-            return QualityCheckOutput {
-                score: 0,
-                passed: false,
-                issues,
-                details: json!({ "error": "Not a valid gzip archive" }),
-            };
-        }
-
-        // -- Read tar entries -------------------------------------------------
-        let mut archive = Archive::new(tar_bytes.as_slice());
-        let entries = match archive.entries() {
-            Ok(e) => e,
-            Err(e) => {
-                issues.push(RawQualityIssue {
-                    severity: "critical".to_string(),
-                    category: "helm-structure".to_string(),
-                    title: "Not a valid tar archive".to_string(),
-                    description: Some(format!("Failed to read tar entries: {e}")),
-                    location: None,
-                });
-                return QualityCheckOutput {
-                    score: 0,
-                    passed: false,
-                    issues,
-                    details: json!({ "error": "Not a valid tar archive" }),
-                };
-            }
+        let tar_bytes = match decompress_gzip(content) {
+            Ok(bytes) => bytes,
+            Err(output) => return output,
         };
 
-        let mut chart_yaml_content: Option<String> = None;
-        let mut has_values_yaml = false;
-        let mut template_files: Vec<String> = Vec::new();
-
-        for entry_result in entries {
-            let mut entry = match entry_result {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let path_str = match entry.path() {
-                Ok(p) => p.to_string_lossy().to_string(),
-                Err(_) => continue,
-            };
-
-            // Match Chart.yaml at the first directory level: <chart>/Chart.yaml
-            if (path_str.ends_with("/Chart.yaml") || path_str == "Chart.yaml")
-                && chart_yaml_content.is_none()
-            {
-                let mut buf = String::new();
-                if entry.read_to_string(&mut buf).is_ok() {
-                    chart_yaml_content = Some(buf);
-                }
-            }
-
-            // Match values.yaml
-            if path_str.ends_with("/values.yaml") || path_str == "values.yaml" {
-                has_values_yaml = true;
-            }
-
-            // Match template files: */templates/*.yaml or */templates/*.tpl
-            if (path_str.contains("/templates/") || path_str.starts_with("templates/"))
-                && (path_str.ends_with(".yaml") || path_str.ends_with(".tpl"))
-            {
-                template_files.push(path_str);
-            }
-        }
-
-        // -- Evaluate Chart.yaml ----------------------------------------------
-        let chart_yaml: Option<serde_yaml::Value> = match &chart_yaml_content {
-            Some(raw) => match serde_yaml::from_str(raw) {
-                Ok(val) => {
-                    score += 15; // Chart.yaml exists and is valid YAML
-                    details["chart_yaml_found"] = json!(true);
-                    details["chart_yaml_valid"] = json!(true);
-                    Some(val)
-                }
-                Err(e) => {
-                    issues.push(RawQualityIssue {
-                        severity: "critical".to_string(),
-                        category: "helm-parse".to_string(),
-                        title: "Chart.yaml contains invalid YAML".to_string(),
-                        description: Some(format!("YAML parse error: {e}")),
-                        location: Some("Chart.yaml".to_string()),
-                    });
-                    details["chart_yaml_found"] = json!(true);
-                    details["chart_yaml_valid"] = json!(false);
-                    None
-                }
-            },
-            None => {
-                issues.push(RawQualityIssue {
-                    severity: "critical".to_string(),
-                    category: "helm-structure".to_string(),
-                    title: "Chart.yaml is missing".to_string(),
-                    description: Some(
-                        "Every Helm chart must contain a Chart.yaml file".to_string(),
-                    ),
-                    location: None,
-                });
-                details["chart_yaml_found"] = json!(false);
-                None
-            }
+        let inventory = match scan_tar_entries(&tar_bytes) {
+            Ok(inv) => inv,
+            Err(output) => return output,
         };
+
+        let chart_yaml = evaluate_chart_yaml(
+            &inventory.chart_yaml_content,
+            &mut issues,
+            &mut score,
+            &mut details,
+        );
 
         if let Some(ref doc) = chart_yaml {
             let map = doc.as_mapping();
-
-            let api_version = yaml_str_field(map, "apiVersion");
-
-            if let Some(av) = api_version {
-                score += 5; // has apiVersion
-                details["api_version"] = json!(av);
-
-                // Deprecation check
-                if av == "v1" {
-                    issues.push(RawQualityIssue {
-                        severity: "medium".to_string(),
-                        category: "helm-deprecation".to_string(),
-                        title: "Deprecated apiVersion v1".to_string(),
-                        description: Some("apiVersion v1 is deprecated; migrate to v2".to_string()),
-                        location: Some("Chart.yaml:apiVersion".to_string()),
-                    });
-                    details["api_version_deprecated"] = json!(true);
-                } else {
-                    score += 10; // Not deprecated
-                    details["api_version_deprecated"] = json!(false);
-                }
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "high".to_string(),
-                    category: "helm-required-field".to_string(),
-                    title: "Chart.yaml missing apiVersion".to_string(),
-                    description: Some("The apiVersion field is required in Chart.yaml".to_string()),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["api_version"] = json!(null);
-            }
-
-            let name = yaml_str_field(map, "name");
-
-            if let Some(n) = name {
-                if n.is_empty() {
-                    issues.push(RawQualityIssue {
-                        severity: "high".to_string(),
-                        category: "helm-required-field".to_string(),
-                        title: "Chart.yaml has empty name".to_string(),
-                        description: Some("The name field must not be empty".to_string()),
-                        location: Some("Chart.yaml:name".to_string()),
-                    });
-                    details["name"] = json!(null);
-                } else {
-                    score += 5; // has name
-                    details["name"] = json!(n);
-                }
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "high".to_string(),
-                    category: "helm-required-field".to_string(),
-                    title: "Chart.yaml missing name".to_string(),
-                    description: Some("The name field is required in Chart.yaml".to_string()),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["name"] = json!(null);
-            }
-
-            let version = yaml_str_field(map, "version");
-
-            if let Some(ver) = version {
-                if is_valid_semver(ver) {
-                    score += 10; // has valid semver version
-                    details["version"] = json!(ver);
-                    details["version_valid_semver"] = json!(true);
-                } else {
-                    issues.push(RawQualityIssue {
-                        severity: "high".to_string(),
-                        category: "helm-required-field".to_string(),
-                        title: "Chart.yaml version is not valid semver".to_string(),
-                        description: Some(format!(
-                            "Version '{ver}' does not match semver format (MAJOR.MINOR.PATCH)"
-                        )),
-                        location: Some("Chart.yaml:version".to_string()),
-                    });
-                    details["version"] = json!(ver);
-                    details["version_valid_semver"] = json!(false);
-                }
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "high".to_string(),
-                    category: "helm-required-field".to_string(),
-                    title: "Chart.yaml missing version".to_string(),
-                    description: Some("The version field is required in Chart.yaml".to_string()),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["version"] = json!(null);
-            }
-
-            let description = yaml_str_field(map, "description");
-
-            if description.is_some() {
-                score += 5; // has description
-                details["has_description"] = json!(true);
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "low".to_string(),
-                    category: "helm-recommended-field".to_string(),
-                    title: "Chart.yaml missing description".to_string(),
-                    description: Some("Adding a description improves discoverability".to_string()),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["has_description"] = json!(false);
-            }
-
-            let app_version = yaml_str_field(map, "appVersion");
-
-            if app_version.is_some() {
-                score += 5; // has appVersion
-                details["has_app_version"] = json!(true);
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "low".to_string(),
-                    category: "helm-recommended-field".to_string(),
-                    title: "Chart.yaml missing appVersion".to_string(),
-                    description: Some(
-                        "appVersion indicates the version of the app the chart deploys".to_string(),
-                    ),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["has_app_version"] = json!(false);
-            }
-
-            let maintainers = map
-                .and_then(|m| m.get(serde_yaml::Value::String("maintainers".to_string())))
-                .and_then(|v| v.as_sequence());
-
-            if let Some(seq) = maintainers {
-                if !seq.is_empty() {
-                    score += 5; // has non-empty maintainers
-                    details["has_maintainers"] = json!(true);
-                    details["maintainers_count"] = json!(seq.len());
-                } else {
-                    issues.push(RawQualityIssue {
-                        severity: "low".to_string(),
-                        category: "helm-recommended-field".to_string(),
-                        title: "Chart.yaml has empty maintainers list".to_string(),
-                        description: Some("At least one maintainer should be listed".to_string()),
-                        location: Some("Chart.yaml:maintainers".to_string()),
-                    });
-                    details["has_maintainers"] = json!(false);
-                }
-            } else {
-                issues.push(RawQualityIssue {
-                    severity: "low".to_string(),
-                    category: "helm-recommended-field".to_string(),
-                    title: "Chart.yaml missing maintainers".to_string(),
-                    description: Some(
-                        "Adding maintainers helps users know who to contact".to_string(),
-                    ),
-                    location: Some("Chart.yaml".to_string()),
-                });
-                details["has_maintainers"] = json!(false);
-            }
+            check_api_version(map, &mut issues, &mut score, &mut details);
+            check_name(map, &mut issues, &mut score, &mut details);
+            check_version(map, &mut issues, &mut score, &mut details);
+            check_description(map, &mut issues, &mut score, &mut details);
+            check_app_version(map, &mut issues, &mut score, &mut details);
+            check_maintainers(map, &mut issues, &mut score, &mut details);
         }
 
-        // -- values.yaml ------------------------------------------------------
-        if has_values_yaml {
-            score += 20; // values.yaml exists
-            details["values_yaml_found"] = json!(true);
-        } else {
-            issues.push(RawQualityIssue {
-                severity: "low".to_string(),
-                category: "helm-recommended-field".to_string(),
-                title: "values.yaml is missing".to_string(),
-                description: Some(
-                    "A values.yaml file provides default configuration values".to_string(),
-                ),
-                location: None,
-            });
-            details["values_yaml_found"] = json!(false);
-        }
-
-        // -- templates/ directory ---------------------------------------------
-        if !template_files.is_empty() {
-            score += 20; // templates/ has files
-            details["template_files_count"] = json!(template_files.len());
-            details["template_files"] = json!(template_files);
-        } else {
-            issues.push(RawQualityIssue {
-                severity: "low".to_string(),
-                category: "helm-recommended-field".to_string(),
-                title: "No template files found".to_string(),
-                description: Some(
-                    "The templates/ directory should contain at least one .yaml or .tpl file"
-                        .to_string(),
-                ),
-                location: Some("templates/".to_string()),
-            });
-            details["template_files_count"] = json!(0);
-        }
+        check_values_yaml(
+            inventory.has_values_yaml,
+            &mut issues,
+            &mut score,
+            &mut details,
+        );
+        check_template_files(
+            &inventory.template_files,
+            &mut issues,
+            &mut score,
+            &mut details,
+        );
 
         let passed = score >= 50;
         details["score"] = json!(score);
@@ -371,6 +101,389 @@ impl HelmLintChecker {
             issues,
             details,
         }
+    }
+}
+
+/// Inventory of files found inside a Helm chart archive.
+struct TarInventory {
+    chart_yaml_content: Option<String>,
+    has_values_yaml: bool,
+    template_files: Vec<String>,
+}
+
+/// Decompress gzip content, returning the raw tar bytes on success or a
+/// critical-failure `QualityCheckOutput` on error.
+fn decompress_gzip(content: &Bytes) -> Result<Vec<u8>, QualityCheckOutput> {
+    let mut decoder = GzDecoder::new(content.as_ref());
+    let mut tar_bytes = Vec::new();
+    if let Err(e) = decoder.read_to_end(&mut tar_bytes) {
+        return Err(QualityCheckOutput {
+            score: 0,
+            passed: false,
+            issues: vec![RawQualityIssue {
+                severity: "critical".to_string(),
+                category: "helm-structure".to_string(),
+                title: "Not a valid gzip archive".to_string(),
+                description: Some(format!("Failed to decompress gzip: {e}")),
+                location: None,
+            }],
+            details: json!({ "error": "Not a valid gzip archive" }),
+        });
+    }
+    Ok(tar_bytes)
+}
+
+/// Walk the tar entries and collect Chart.yaml content, values.yaml presence,
+/// and template file paths.
+fn scan_tar_entries(tar_bytes: &[u8]) -> Result<TarInventory, QualityCheckOutput> {
+    let mut archive = Archive::new(tar_bytes);
+    let entries = match archive.entries() {
+        Ok(e) => e,
+        Err(e) => {
+            return Err(QualityCheckOutput {
+                score: 0,
+                passed: false,
+                issues: vec![RawQualityIssue {
+                    severity: "critical".to_string(),
+                    category: "helm-structure".to_string(),
+                    title: "Not a valid tar archive".to_string(),
+                    description: Some(format!("Failed to read tar entries: {e}")),
+                    location: None,
+                }],
+                details: json!({ "error": "Not a valid tar archive" }),
+            });
+        }
+    };
+
+    let mut chart_yaml_content: Option<String> = None;
+    let mut has_values_yaml = false;
+    let mut template_files: Vec<String> = Vec::new();
+
+    for entry_result in entries {
+        let mut entry = match entry_result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path_str = match entry.path() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+
+        if (path_str.ends_with("/Chart.yaml") || path_str == "Chart.yaml")
+            && chart_yaml_content.is_none()
+        {
+            let mut buf = String::new();
+            if entry.read_to_string(&mut buf).is_ok() {
+                chart_yaml_content = Some(buf);
+            }
+        }
+
+        if path_str.ends_with("/values.yaml") || path_str == "values.yaml" {
+            has_values_yaml = true;
+        }
+
+        if (path_str.contains("/templates/") || path_str.starts_with("templates/"))
+            && (path_str.ends_with(".yaml") || path_str.ends_with(".tpl"))
+        {
+            template_files.push(path_str);
+        }
+    }
+
+    Ok(TarInventory {
+        chart_yaml_content,
+        has_values_yaml,
+        template_files,
+    })
+}
+
+/// Parse Chart.yaml content and award the 15-point "exists and valid YAML"
+/// score, recording any parse issues.
+fn evaluate_chart_yaml(
+    raw_content: &Option<String>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) -> Option<serde_yaml::Value> {
+    let raw = match raw_content {
+        Some(r) => r,
+        None => {
+            issues.push(RawQualityIssue {
+                severity: "critical".to_string(),
+                category: "helm-structure".to_string(),
+                title: "Chart.yaml is missing".to_string(),
+                description: Some("Every Helm chart must contain a Chart.yaml file".to_string()),
+                location: None,
+            });
+            details["chart_yaml_found"] = json!(false);
+            return None;
+        }
+    };
+
+    match serde_yaml::from_str(raw) {
+        Ok(val) => {
+            *score += 15;
+            details["chart_yaml_found"] = json!(true);
+            details["chart_yaml_valid"] = json!(true);
+            Some(val)
+        }
+        Err(e) => {
+            issues.push(RawQualityIssue {
+                severity: "critical".to_string(),
+                category: "helm-parse".to_string(),
+                title: "Chart.yaml contains invalid YAML".to_string(),
+                description: Some(format!("YAML parse error: {e}")),
+                location: Some("Chart.yaml".to_string()),
+            });
+            details["chart_yaml_found"] = json!(true);
+            details["chart_yaml_valid"] = json!(false);
+            None
+        }
+    }
+}
+
+/// Check the `apiVersion` field (5 pts) and whether it is deprecated v1 (10 pts).
+fn check_api_version(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    let Some(av) = yaml_str_field(map, "apiVersion") else {
+        issues.push(RawQualityIssue {
+            severity: "high".to_string(),
+            category: "helm-required-field".to_string(),
+            title: "Chart.yaml missing apiVersion".to_string(),
+            description: Some("The apiVersion field is required in Chart.yaml".to_string()),
+            location: Some("Chart.yaml".to_string()),
+        });
+        details["api_version"] = json!(null);
+        return;
+    };
+
+    *score += 5;
+    details["api_version"] = json!(av);
+
+    if av == "v1" {
+        issues.push(RawQualityIssue {
+            severity: "medium".to_string(),
+            category: "helm-deprecation".to_string(),
+            title: "Deprecated apiVersion v1".to_string(),
+            description: Some("apiVersion v1 is deprecated; migrate to v2".to_string()),
+            location: Some("Chart.yaml:apiVersion".to_string()),
+        });
+        details["api_version_deprecated"] = json!(true);
+    } else {
+        *score += 10;
+        details["api_version_deprecated"] = json!(false);
+    }
+}
+
+/// Check the `name` field (5 pts).
+fn check_name(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    let Some(n) = yaml_str_field(map, "name") else {
+        issues.push(RawQualityIssue {
+            severity: "high".to_string(),
+            category: "helm-required-field".to_string(),
+            title: "Chart.yaml missing name".to_string(),
+            description: Some("The name field is required in Chart.yaml".to_string()),
+            location: Some("Chart.yaml".to_string()),
+        });
+        details["name"] = json!(null);
+        return;
+    };
+
+    if n.is_empty() {
+        issues.push(RawQualityIssue {
+            severity: "high".to_string(),
+            category: "helm-required-field".to_string(),
+            title: "Chart.yaml has empty name".to_string(),
+            description: Some("The name field must not be empty".to_string()),
+            location: Some("Chart.yaml:name".to_string()),
+        });
+        details["name"] = json!(null);
+    } else {
+        *score += 5;
+        details["name"] = json!(n);
+    }
+}
+
+/// Check the `version` field and its semver validity (10 pts).
+fn check_version(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    let Some(ver) = yaml_str_field(map, "version") else {
+        issues.push(RawQualityIssue {
+            severity: "high".to_string(),
+            category: "helm-required-field".to_string(),
+            title: "Chart.yaml missing version".to_string(),
+            description: Some("The version field is required in Chart.yaml".to_string()),
+            location: Some("Chart.yaml".to_string()),
+        });
+        details["version"] = json!(null);
+        return;
+    };
+
+    if is_valid_semver(ver) {
+        *score += 10;
+        details["version"] = json!(ver);
+        details["version_valid_semver"] = json!(true);
+    } else {
+        issues.push(RawQualityIssue {
+            severity: "high".to_string(),
+            category: "helm-required-field".to_string(),
+            title: "Chart.yaml version is not valid semver".to_string(),
+            description: Some(format!(
+                "Version '{ver}' does not match semver format (MAJOR.MINOR.PATCH)"
+            )),
+            location: Some("Chart.yaml:version".to_string()),
+        });
+        details["version"] = json!(ver);
+        details["version_valid_semver"] = json!(false);
+    }
+}
+
+/// Check the `description` field (5 pts).
+fn check_description(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    if yaml_str_field(map, "description").is_some() {
+        *score += 5;
+        details["has_description"] = json!(true);
+    } else {
+        issues.push(RawQualityIssue {
+            severity: "low".to_string(),
+            category: "helm-recommended-field".to_string(),
+            title: "Chart.yaml missing description".to_string(),
+            description: Some("Adding a description improves discoverability".to_string()),
+            location: Some("Chart.yaml".to_string()),
+        });
+        details["has_description"] = json!(false);
+    }
+}
+
+/// Check the `appVersion` field (5 pts).
+fn check_app_version(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    if yaml_str_field(map, "appVersion").is_some() {
+        *score += 5;
+        details["has_app_version"] = json!(true);
+    } else {
+        issues.push(RawQualityIssue {
+            severity: "low".to_string(),
+            category: "helm-recommended-field".to_string(),
+            title: "Chart.yaml missing appVersion".to_string(),
+            description: Some(
+                "appVersion indicates the version of the app the chart deploys".to_string(),
+            ),
+            location: Some("Chart.yaml".to_string()),
+        });
+        details["has_app_version"] = json!(false);
+    }
+}
+
+/// Check the `maintainers` field (5 pts).
+fn check_maintainers(
+    map: Option<&serde_yaml::Mapping>,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    let maintainers = map
+        .and_then(|m| m.get(serde_yaml::Value::String("maintainers".to_string())))
+        .and_then(|v| v.as_sequence());
+
+    match maintainers {
+        Some(seq) if !seq.is_empty() => {
+            *score += 5;
+            details["has_maintainers"] = json!(true);
+            details["maintainers_count"] = json!(seq.len());
+        }
+        Some(_) => {
+            issues.push(RawQualityIssue {
+                severity: "low".to_string(),
+                category: "helm-recommended-field".to_string(),
+                title: "Chart.yaml has empty maintainers list".to_string(),
+                description: Some("At least one maintainer should be listed".to_string()),
+                location: Some("Chart.yaml:maintainers".to_string()),
+            });
+            details["has_maintainers"] = json!(false);
+        }
+        None => {
+            issues.push(RawQualityIssue {
+                severity: "low".to_string(),
+                category: "helm-recommended-field".to_string(),
+                title: "Chart.yaml missing maintainers".to_string(),
+                description: Some("Adding maintainers helps users know who to contact".to_string()),
+                location: Some("Chart.yaml".to_string()),
+            });
+            details["has_maintainers"] = json!(false);
+        }
+    }
+}
+
+/// Check for the presence of values.yaml (20 pts).
+fn check_values_yaml(
+    has_values_yaml: bool,
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    if has_values_yaml {
+        *score += 20;
+        details["values_yaml_found"] = json!(true);
+    } else {
+        issues.push(RawQualityIssue {
+            severity: "low".to_string(),
+            category: "helm-recommended-field".to_string(),
+            title: "values.yaml is missing".to_string(),
+            description: Some(
+                "A values.yaml file provides default configuration values".to_string(),
+            ),
+            location: None,
+        });
+        details["values_yaml_found"] = json!(false);
+    }
+}
+
+/// Check for template files in the templates/ directory (20 pts).
+fn check_template_files(
+    template_files: &[String],
+    issues: &mut Vec<RawQualityIssue>,
+    score: &mut i32,
+    details: &mut serde_json::Value,
+) {
+    if !template_files.is_empty() {
+        *score += 20;
+        details["template_files_count"] = json!(template_files.len());
+        details["template_files"] = json!(template_files);
+    } else {
+        issues.push(RawQualityIssue {
+            severity: "low".to_string(),
+            category: "helm-recommended-field".to_string(),
+            title: "No template files found".to_string(),
+            description: Some(
+                "The templates/ directory should contain at least one .yaml or .tpl file"
+                    .to_string(),
+            ),
+            location: Some("templates/".to_string()),
+        });
+        details["template_files_count"] = json!(0);
     }
 }
 

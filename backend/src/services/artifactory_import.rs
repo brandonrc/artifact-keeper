@@ -870,90 +870,14 @@ impl ArtifactoryImporter {
         let mut reader = Reader::from_str(&content);
         reader.config_mut().trim_text(true);
 
-        let mut permissions = Vec::new();
-        let mut current_perm: Option<ImportedPermission> = None;
-        let mut current_tag = String::new();
-        let mut in_repositories = false;
-        let mut in_users = false;
-        let mut in_groups = false;
-        let mut current_principal = String::new();
+        let mut state = PermXmlState::new();
         let mut buf = Vec::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    current_tag = tag.clone();
-
-                    if tag == "permissionTarget" || tag == "permission" {
-                        current_perm = Some(ImportedPermission {
-                            name: String::new(),
-                            repositories: Vec::new(),
-                            include_patterns: Vec::new(),
-                            exclude_patterns: Vec::new(),
-                            users: HashMap::new(),
-                            groups: HashMap::new(),
-                        });
-                    } else if tag == "repositories" {
-                        in_repositories = true;
-                    } else if tag == "users" {
-                        in_users = true;
-                    } else if tag == "groups" {
-                        in_groups = true;
-                    } else if (tag == "user" || tag == "group") && (in_users || in_groups) {
-                        // Get name attribute
-                        for attr in e.attributes().filter_map(|a| a.ok()) {
-                            if attr.key.as_ref() == b"name" {
-                                current_principal =
-                                    String::from_utf8_lossy(&attr.value).to_string();
-                            }
-                        }
-                    }
-                }
-                Ok(Event::End(ref e)) => {
-                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if tag == "permissionTarget" || tag == "permission" {
-                        if let Some(perm) = current_perm.take() {
-                            if !perm.name.is_empty() {
-                                permissions.push(perm);
-                            }
-                        }
-                    } else if tag == "repositories" {
-                        in_repositories = false;
-                    } else if tag == "users" {
-                        in_users = false;
-                    } else if tag == "groups" {
-                        in_groups = false;
-                    } else if tag == "user" || tag == "group" {
-                        current_principal.clear();
-                    }
-                }
-                Ok(Event::Text(e)) => {
-                    let text = String::from_utf8_lossy(&e).to_string();
-                    if let Some(ref mut perm) = current_perm {
-                        match current_tag.as_str() {
-                            "name" if !in_users && !in_groups => perm.name = text,
-                            "repo" | "repository" if in_repositories => {
-                                perm.repositories.push(text);
-                            }
-                            "includePattern" => perm.include_patterns.push(text),
-                            "excludePattern" => perm.exclude_patterns.push(text),
-                            "permission" if in_users && !current_principal.is_empty() => {
-                                perm.users
-                                    .entry(current_principal.clone())
-                                    .or_default()
-                                    .push(text);
-                            }
-                            "permission" if in_groups && !current_principal.is_empty() => {
-                                perm.groups
-                                    .entry(current_principal.clone())
-                                    .or_default()
-                                    .push(text);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                Ok(Event::Start(ref e)) => state.handle_start(e),
+                Ok(Event::End(ref e)) => state.handle_end(e),
+                Ok(Event::Text(e)) => state.handle_text(&e),
                 Ok(Event::Eof) => break,
                 Err(e) => {
                     return Err(ImportError::InvalidFormat(format!(
@@ -966,7 +890,107 @@ impl ArtifactoryImporter {
             buf.clear();
         }
 
-        Ok(permissions)
+        Ok(state.permissions)
+    }
+}
+
+/// Internal state machine for parsing Artifactory permissions.xml files.
+struct PermXmlState {
+    permissions: Vec<ImportedPermission>,
+    current_perm: Option<ImportedPermission>,
+    current_tag: String,
+    in_repositories: bool,
+    in_users: bool,
+    in_groups: bool,
+    current_principal: String,
+}
+
+impl PermXmlState {
+    fn new() -> Self {
+        Self {
+            permissions: Vec::new(),
+            current_perm: None,
+            current_tag: String::new(),
+            in_repositories: false,
+            in_users: false,
+            in_groups: false,
+            current_principal: String::new(),
+        }
+    }
+
+    fn handle_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+        self.current_tag = tag.clone();
+
+        if tag == "permissionTarget" || tag == "permission" {
+            self.current_perm = Some(ImportedPermission {
+                name: String::new(),
+                repositories: Vec::new(),
+                include_patterns: Vec::new(),
+                exclude_patterns: Vec::new(),
+                users: HashMap::new(),
+                groups: HashMap::new(),
+            });
+        } else if tag == "repositories" {
+            self.in_repositories = true;
+        } else if tag == "users" {
+            self.in_users = true;
+        } else if tag == "groups" {
+            self.in_groups = true;
+        } else if (tag == "user" || tag == "group") && (self.in_users || self.in_groups) {
+            for attr in e.attributes().filter_map(|a| a.ok()) {
+                if attr.key.as_ref() == b"name" {
+                    self.current_principal = String::from_utf8_lossy(&attr.value).to_string();
+                }
+            }
+        }
+    }
+
+    fn handle_end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
+        let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+        if tag == "permissionTarget" || tag == "permission" {
+            if let Some(perm) = self.current_perm.take() {
+                if !perm.name.is_empty() {
+                    self.permissions.push(perm);
+                }
+            }
+        } else if tag == "repositories" {
+            self.in_repositories = false;
+        } else if tag == "users" {
+            self.in_users = false;
+        } else if tag == "groups" {
+            self.in_groups = false;
+        } else if tag == "user" || tag == "group" {
+            self.current_principal.clear();
+        }
+    }
+
+    fn handle_text(&mut self, e: &quick_xml::events::BytesText<'_>) {
+        let text = String::from_utf8_lossy(e).to_string();
+        let Some(ref mut perm) = self.current_perm else {
+            return;
+        };
+        match self.current_tag.as_str() {
+            "name" if !self.in_users && !self.in_groups => perm.name = text,
+            "repo" | "repository" if self.in_repositories => {
+                perm.repositories.push(text);
+            }
+            "includePattern" => perm.include_patterns.push(text),
+            "excludePattern" => perm.exclude_patterns.push(text),
+            "permission" if self.in_users && !self.current_principal.is_empty() => {
+                perm.users
+                    .entry(self.current_principal.clone())
+                    .or_default()
+                    .push(text);
+            }
+            "permission" if self.in_groups && !self.current_principal.is_empty() => {
+                perm.groups
+                    .entry(self.current_principal.clone())
+                    .or_default()
+                    .push(text);
+            }
+            _ => {}
+        }
     }
 }
 

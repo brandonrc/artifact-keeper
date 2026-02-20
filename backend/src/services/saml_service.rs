@@ -153,6 +153,206 @@ pub struct SamlAssertion {
     pub attributes: HashMap<String, Vec<String>>,
 }
 
+/// Helper to extract a named XML attribute value from a quick_xml element's attributes.
+/// Returns `None` if the attribute is not present.
+fn get_xml_attr(e: &quick_xml::events::BytesStart<'_>, attr_name: &str) -> Option<String> {
+    e.attributes().flatten().find_map(|attr| {
+        let key = String::from_utf8_lossy(attr.key.as_ref());
+        if key == attr_name {
+            Some(String::from_utf8_lossy(&attr.value).to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// Collects all XML attributes from a quick_xml element into key-value pairs.
+fn collect_xml_attrs(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, String)> {
+    e.attributes()
+        .flatten()
+        .map(|attr| {
+            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+            let value = String::from_utf8_lossy(&attr.value).to_string();
+            (key, value)
+        })
+        .collect()
+}
+
+/// Mutable state used while walking a SAML response XML document.
+struct SamlResponseParser {
+    response: SamlResponse,
+    assertion: SamlAssertion,
+    current_element: String,
+    in_assertion: bool,
+    current_attr_name: Option<String>,
+    current_attr_values: Vec<String>,
+}
+
+impl SamlResponseParser {
+    fn new() -> Self {
+        Self {
+            response: SamlResponse {
+                id: String::new(),
+                in_response_to: None,
+                issuer: String::new(),
+                status_code: String::new(),
+                status_message: None,
+                assertion: None,
+            },
+            assertion: SamlAssertion {
+                id: String::new(),
+                issuer: String::new(),
+                name_id: String::new(),
+                name_id_format: None,
+                session_index: None,
+                not_before: None,
+                not_on_or_after: None,
+                audiences: Vec::new(),
+                attributes: HashMap::new(),
+            },
+            current_element: String::new(),
+            in_assertion: false,
+            current_attr_name: None,
+            current_attr_values: Vec::new(),
+        }
+    }
+
+    /// Handle an `Event::Start` element.
+    fn handle_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+        self.current_element = name.clone();
+
+        match name.as_str() {
+            "Response" => self.handle_response_start(e),
+            "Assertion" => self.handle_assertion_start(e),
+            "StatusCode" => self.handle_status_code(e),
+            "NameID" => self.handle_name_id_start(e),
+            "Conditions" => self.handle_conditions_start(e),
+            "AuthnStatement" => self.handle_authn_statement(e),
+            "Attribute" => self.handle_attribute_start(e),
+            _ => {}
+        }
+    }
+
+    /// Handle an `Event::Empty` (self-closing) element.
+    fn handle_empty(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+        match name.as_str() {
+            "StatusCode" => self.handle_status_code(e),
+            "AuthnStatement" => self.handle_authn_statement(e),
+            _ => {}
+        }
+    }
+
+    /// Handle an `Event::Text` node.
+    fn handle_text(&mut self, e: &quick_xml::events::BytesText<'_>) {
+        let raw = String::from_utf8_lossy(e.as_ref());
+        let text = unescape(&raw)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|_| raw.to_string());
+
+        if text.trim().is_empty() {
+            return;
+        }
+
+        match self.current_element.as_str() {
+            "Issuer" => self.handle_issuer_text(text),
+            "NameID" => self.assertion.name_id = text,
+            "Audience" => self.assertion.audiences.push(text),
+            "AttributeValue" => self.current_attr_values.push(text),
+            "StatusMessage" => self.response.status_message = Some(text),
+            _ => {}
+        }
+    }
+
+    /// Handle an `Event::End` element.
+    fn handle_end(&mut self, e: &quick_xml::events::BytesEnd<'_>) {
+        let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
+        match name.as_str() {
+            "Assertion" => {
+                self.in_assertion = false;
+                self.response.assertion = Some(self.assertion.clone());
+            }
+            "Attribute" => {
+                if let Some(attr_name) = self.current_attr_name.take() {
+                    self.assertion
+                        .attributes
+                        .insert(attr_name, self.current_attr_values.clone());
+                    self.current_attr_values.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // -- Element-specific handlers --
+
+    fn handle_response_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        for (key, value) in collect_xml_attrs(e) {
+            match key.as_str() {
+                "ID" => self.response.id = value,
+                "InResponseTo" => self.response.in_response_to = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_assertion_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        self.in_assertion = true;
+        if let Some(id) = get_xml_attr(e, "ID") {
+            self.assertion.id = id;
+        }
+    }
+
+    fn handle_status_code(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if let Some(value) = get_xml_attr(e, "Value") {
+            self.response.status_code = value;
+        }
+    }
+
+    fn handle_name_id_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if let Some(format) = get_xml_attr(e, "Format") {
+            self.assertion.name_id_format = Some(format);
+        }
+    }
+
+    fn handle_conditions_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        for (key, value) in collect_xml_attrs(e) {
+            match key.as_str() {
+                "NotBefore" => self.assertion.not_before = Some(value),
+                "NotOnOrAfter" => self.assertion.not_on_or_after = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_authn_statement(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if let Some(session_index) = get_xml_attr(e, "SessionIndex") {
+            self.assertion.session_index = Some(session_index);
+        }
+    }
+
+    fn handle_attribute_start(&mut self, e: &quick_xml::events::BytesStart<'_>) {
+        if let Some(name) = get_xml_attr(e, "Name") {
+            self.current_attr_name = Some(name);
+            self.current_attr_values.clear();
+        }
+    }
+
+    fn handle_issuer_text(&mut self, text: String) {
+        if self.in_assertion {
+            self.assertion.issuer = text;
+        } else {
+            self.response.issuer = text;
+        }
+    }
+
+    /// Consume the parser and return the finished `SamlResponse`.
+    fn finish(self) -> SamlResponse {
+        self.response
+    }
+}
+
 /// SAML authentication service
 pub struct SamlService {
     db: PgPool,
@@ -319,183 +519,15 @@ impl SamlService {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
-        let mut response = SamlResponse {
-            id: String::new(),
-            in_response_to: None,
-            issuer: String::new(),
-            status_code: String::new(),
-            status_message: None,
-            assertion: None,
-        };
-
-        let mut current_element = String::new();
-        let mut in_assertion = false;
-        let mut assertion = SamlAssertion {
-            id: String::new(),
-            issuer: String::new(),
-            name_id: String::new(),
-            name_id_format: None,
-            session_index: None,
-            not_before: None,
-            not_on_or_after: None,
-            audiences: Vec::new(),
-            attributes: HashMap::new(),
-        };
-        let mut current_attr_name: Option<String> = None;
-        let mut current_attr_values: Vec<String> = Vec::new();
+        let mut parser = SamlResponseParser::new();
         let mut buf = Vec::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                    current_element = name.clone();
-
-                    match name.as_str() {
-                        "Response" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                match key.as_str() {
-                                    "ID" => response.id = value,
-                                    "InResponseTo" => response.in_response_to = Some(value),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        "Assertion" => {
-                            in_assertion = true;
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "ID" {
-                                    assertion.id = value;
-                                }
-                            }
-                        }
-                        "StatusCode" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "Value" {
-                                    response.status_code = value;
-                                }
-                            }
-                        }
-                        "NameID" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "Format" {
-                                    assertion.name_id_format = Some(value);
-                                }
-                            }
-                        }
-                        "Conditions" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                match key.as_str() {
-                                    "NotBefore" => assertion.not_before = Some(value),
-                                    "NotOnOrAfter" => assertion.not_on_or_after = Some(value),
-                                    _ => {}
-                                }
-                            }
-                        }
-                        "AuthnStatement" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "SessionIndex" {
-                                    assertion.session_index = Some(value);
-                                }
-                            }
-                        }
-                        "Attribute" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "Name" {
-                                    current_attr_name = Some(value);
-                                    current_attr_values.clear();
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(Event::Empty(ref e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                    match name.as_str() {
-                        "StatusCode" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "Value" {
-                                    response.status_code = value;
-                                }
-                            }
-                        }
-                        "AuthnStatement" => {
-                            for attr in e.attributes().flatten() {
-                                let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                                let value = String::from_utf8_lossy(&attr.value).to_string();
-                                if key == "SessionIndex" {
-                                    assertion.session_index = Some(value);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(Event::Text(ref e)) => {
-                    let raw = String::from_utf8_lossy(e.as_ref());
-                    let text = unescape(&raw)
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|_| raw.to_string());
-                    if !text.trim().is_empty() {
-                        match current_element.as_str() {
-                            "Issuer" => {
-                                if in_assertion {
-                                    assertion.issuer = text;
-                                } else {
-                                    response.issuer = text;
-                                }
-                            }
-                            "NameID" => {
-                                assertion.name_id = text;
-                            }
-                            "Audience" => {
-                                assertion.audiences.push(text);
-                            }
-                            "AttributeValue" => {
-                                current_attr_values.push(text);
-                            }
-                            "StatusMessage" => {
-                                response.status_message = Some(text);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Ok(Event::End(ref e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
-                    match name.as_str() {
-                        "Assertion" => {
-                            in_assertion = false;
-                            response.assertion = Some(assertion.clone());
-                        }
-                        "Attribute" => {
-                            if let Some(attr_name) = current_attr_name.take() {
-                                assertion
-                                    .attributes
-                                    .insert(attr_name, current_attr_values.clone());
-                                current_attr_values.clear();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                Ok(Event::Start(ref e)) => parser.handle_start(e),
+                Ok(Event::Empty(ref e)) => parser.handle_empty(e),
+                Ok(Event::Text(ref e)) => parser.handle_text(e),
+                Ok(Event::End(ref e)) => parser.handle_end(e),
                 Ok(Event::Eof) => break,
                 Err(e) => {
                     return Err(AppError::Authentication(format!(
@@ -508,7 +540,7 @@ impl SamlService {
             buf.clear();
         }
 
-        Ok(response)
+        Ok(parser.finish())
     }
 
     /// Validate SAML response

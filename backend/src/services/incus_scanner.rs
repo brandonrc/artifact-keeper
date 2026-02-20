@@ -22,6 +22,70 @@ use crate::models::security::{RawFinding, Severity};
 use crate::services::image_scanner::TrivyReport;
 use crate::services::scanner_service::Scanner;
 
+/// Write content to a temporary file in the workspace, returning an error with the given label.
+async fn write_temp_file(path: &Path, content: &Bytes, label: &str) -> Result<()> {
+    tokio::fs::write(path, content)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write {} to workspace: {}", label, e)))
+}
+
+/// Run an external command, returning an error with the given label on failure.
+async fn run_command(program: &str, args: &[&str], label: &str) -> Result<()> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to execute {}: {}", program, e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!("{} failed: {}", label, stderr)));
+    }
+
+    Ok(())
+}
+
+/// Run a Trivy filesystem scan, optionally in server mode. The `label` is used in error messages.
+async fn run_trivy_scan(
+    rootfs: &Path,
+    server_url: Option<&str>,
+    label: &str,
+) -> Result<TrivyReport> {
+    let rootfs_str = rootfs.to_string_lossy();
+    let mut args = vec!["filesystem"];
+    if let Some(url) = server_url {
+        args.push("--server");
+        args.push(url);
+    }
+    args.extend_from_slice(&[
+        "--format",
+        "json",
+        "--severity",
+        "CRITICAL,HIGH,MEDIUM,LOW",
+        "--quiet",
+        "--timeout",
+        "10m",
+        &rootfs_str,
+    ]);
+
+    let output = tokio::process::Command::new("trivy")
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to execute Trivy CLI: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::Internal(format!(
+            "{} failed (exit {}): {}",
+            label, output.status, stderr
+        )));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| AppError::Internal(format!("Failed to parse Trivy output: {}", e)))
+}
+
 /// Vulnerability scanner for Incus/LXC container images.
 ///
 /// Extracts the filesystem contents from container images and runs
@@ -103,74 +167,47 @@ impl IncusScanner {
 
     /// Extract a unified tarball (tar.xz or tar.gz) into the rootfs directory.
     async fn extract_tarball(&self, content: &Bytes, dest: &Path) -> Result<()> {
-        // Write the tarball to a temp file first
         let tarball_path = dest.parent().unwrap_or(dest).join("image.tar.xz");
-        tokio::fs::write(&tarball_path, content)
-            .await
-            .map_err(|e| {
-                AppError::Internal(format!("Failed to write tarball to workspace: {}", e))
-            })?;
+        write_temp_file(&tarball_path, content, "tarball").await?;
 
         // Detect compression: XZ magic bytes (0xFD 0x37 0x7A 0x58 0x5A)
         let is_xz = content.len() >= 5 && content[..5] == [0xFD, 0x37, 0x7A, 0x58, 0x5A];
         let decompress_flag = if is_xz { "xJf" } else { "xzf" };
 
-        let output = tokio::process::Command::new("tar")
-            .args([
+        run_command(
+            "tar",
+            &[
                 decompress_flag,
                 &tarball_path.to_string_lossy(),
                 "-C",
                 &dest.to_string_lossy(),
-            ])
-            .output()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to execute tar: {}", e)))?;
+            ],
+            "tar extraction",
+        )
+        .await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::Internal(format!(
-                "tar extraction failed: {}",
-                stderr
-            )));
-        }
-
-        // Clean up the tarball file after extraction
         let _ = tokio::fs::remove_file(&tarball_path).await;
-
         Ok(())
     }
 
     /// Extract a squashfs image using unsquashfs.
     async fn extract_squashfs(&self, content: &Bytes, workspace: &Path, dest: &Path) -> Result<()> {
         let squashfs_path = workspace.join("rootfs.squashfs");
-        tokio::fs::write(&squashfs_path, content)
-            .await
-            .map_err(|e| {
-                AppError::Internal(format!("Failed to write squashfs to workspace: {}", e))
-            })?;
+        write_temp_file(&squashfs_path, content, "squashfs").await?;
 
-        let output = tokio::process::Command::new("unsquashfs")
-            .args([
-                "-f", // force (overwrite existing)
-                "-d", // destination
+        run_command(
+            "unsquashfs",
+            &[
+                "-f",
+                "-d",
                 &dest.to_string_lossy(),
                 &squashfs_path.to_string_lossy(),
-            ])
-            .output()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to execute unsquashfs: {}", e)))?;
+            ],
+            "unsquashfs extraction",
+        )
+        .await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::Internal(format!(
-                "unsquashfs extraction failed: {}",
-                stderr
-            )));
-        }
-
-        // Clean up the squashfs file
         let _ = tokio::fs::remove_file(&squashfs_path).await;
-
         Ok(())
     }
 
@@ -188,64 +225,12 @@ impl IncusScanner {
 
     /// Run Trivy filesystem scan on the extracted rootfs.
     async fn scan_with_cli(&self, rootfs: &Path) -> Result<TrivyReport> {
-        let output = tokio::process::Command::new("trivy")
-            .args([
-                "filesystem",
-                "--server",
-                &self.trivy_url,
-                "--format",
-                "json",
-                "--severity",
-                "CRITICAL,HIGH,MEDIUM,LOW",
-                "--quiet",
-                "--timeout",
-                "10m", // Larger timeout for container images
-                &rootfs.to_string_lossy(),
-            ])
-            .output()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to execute Trivy CLI: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::Internal(format!(
-                "Trivy Incus scan failed (exit {}): {}",
-                output.status, stderr
-            )));
-        }
-
-        serde_json::from_slice(&output.stdout)
-            .map_err(|e| AppError::Internal(format!("Failed to parse Trivy output: {}", e)))
+        run_trivy_scan(rootfs, Some(&self.trivy_url), "Trivy Incus scan").await
     }
 
     /// Fallback: scan using Trivy standalone CLI (no server).
     async fn scan_standalone(&self, rootfs: &Path) -> Result<TrivyReport> {
-        let output = tokio::process::Command::new("trivy")
-            .args([
-                "filesystem",
-                "--format",
-                "json",
-                "--severity",
-                "CRITICAL,HIGH,MEDIUM,LOW",
-                "--quiet",
-                "--timeout",
-                "10m",
-                &rootfs.to_string_lossy(),
-            ])
-            .output()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to execute Trivy CLI: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::Internal(format!(
-                "Trivy standalone Incus scan failed (exit {}): {}",
-                output.status, stderr
-            )));
-        }
-
-        serde_json::from_slice(&output.stdout)
-            .map_err(|e| AppError::Internal(format!("Failed to parse Trivy output: {}", e)))
+        run_trivy_scan(rootfs, None, "Trivy standalone Incus scan").await
     }
 
     /// Convert Trivy report into RawFinding values.

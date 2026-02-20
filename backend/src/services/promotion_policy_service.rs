@@ -223,6 +223,87 @@ fn evaluate_license_policy(
     violations
 }
 
+/// Escalate the current action based on a violation's severity.
+/// "critical" or "high" severity always escalates to Block; anything else
+/// escalates to Warn unless already at Block.
+fn escalate_action_by_severity(current: PolicyAction, severity: &str) -> PolicyAction {
+    if severity == "critical" || severity == "high" {
+        return PolicyAction::Block;
+    }
+    if current != PolicyAction::Block {
+        return PolicyAction::Warn;
+    }
+    current
+}
+
+/// Escalate the current action based on a policy's configured action.
+fn escalate_action_by_policy(current: PolicyAction, policy_action: &PolicyAction) -> PolicyAction {
+    match policy_action {
+        PolicyAction::Block => PolicyAction::Block,
+        PolicyAction::Warn if current != PolicyAction::Block => PolicyAction::Warn,
+        _ => current,
+    }
+}
+
+/// Collect violations and escalate the action for each one using a severity-based
+/// escalation strategy.
+fn collect_with_severity_escalation(
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+    new_violations: Vec<PolicyViolation>,
+) {
+    for v in new_violations {
+        *action = escalate_action_by_severity(*action, &v.severity);
+        violations.push(v);
+    }
+}
+
+/// Evaluate CVEs against a scan policy, or apply the default critical-CVE policy
+/// when no scan policy is configured.
+fn evaluate_cves_against_policy(
+    summary: &CveSummary,
+    scan_policy: Option<&ScanPolicyConfig>,
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+) {
+    if let Some(policy) = scan_policy {
+        let cve_violations =
+            evaluate_cve_thresholds(summary, &policy.max_severity, policy.block_on_fail);
+        collect_with_severity_escalation(violations, action, cve_violations);
+        return;
+    }
+
+    // Default policy: block on any critical CVEs
+    if summary.critical_count > 0 {
+        *action = PolicyAction::Block;
+        violations.push(PolicyViolation {
+            rule: "default-cve-policy".to_string(),
+            severity: "critical".to_string(),
+            message: format!(
+                "Artifact has {} critical vulnerabilities",
+                summary.critical_count
+            ),
+            details: Some(serde_json::json!({
+                "cves": summary.open_cves
+            })),
+        });
+    }
+}
+
+/// Evaluate licenses against a license policy.
+fn evaluate_licenses_against_policy(
+    summary: &LicenseSummary,
+    policy: &LicensePolicyConfig,
+    violations: &mut Vec<PolicyViolation>,
+    action: &mut PolicyAction,
+) {
+    let license_violations = evaluate_license_policy(summary, policy);
+    for v in license_violations {
+        *action = escalate_action_by_policy(*action, &policy.action);
+        violations.push(v);
+    }
+}
+
 pub struct PromotionPolicyService {
     db: PgPool,
 }
@@ -246,84 +327,27 @@ impl PromotionPolicyService {
         let license_policy = self.get_license_policy(repository_id).await?;
 
         if let Some(ref summary) = cve_summary {
-            if let Some(ref policy) = scan_policy {
-                let cve_violations =
-                    evaluate_cve_thresholds(summary, &policy.max_severity, policy.block_on_fail);
-
-                for v in cve_violations {
-                    if v.severity == "critical" || v.severity == "high" {
-                        action = PolicyAction::Block;
-                    } else if action != PolicyAction::Block {
-                        action = PolicyAction::Warn;
-                    }
-                    violations.push(v);
-                }
-            } else if summary.critical_count > 0 {
-                // Default policy: block on any critical CVEs
-                action = PolicyAction::Block;
-                violations.push(PolicyViolation {
-                    rule: "default-cve-policy".to_string(),
-                    severity: "critical".to_string(),
-                    message: format!(
-                        "Artifact has {} critical vulnerabilities",
-                        summary.critical_count
-                    ),
-                    details: Some(serde_json::json!({
-                        "cves": summary.open_cves
-                    })),
-                });
-            }
+            evaluate_cves_against_policy(
+                summary,
+                scan_policy.as_ref(),
+                &mut violations,
+                &mut action,
+            );
         }
 
-        if let Some(ref summary) = license_summary {
-            if let Some(ref policy) = license_policy {
-                let license_violations = evaluate_license_policy(summary, policy);
-
-                for v in license_violations {
-                    match policy.action {
-                        PolicyAction::Block => action = PolicyAction::Block,
-                        PolicyAction::Warn if action != PolicyAction::Block => {
-                            action = PolicyAction::Warn
-                        }
-                        _ => {}
-                    }
-                    violations.push(v);
-                }
-            }
+        if let (Some(ref summary), Some(ref policy)) = (&license_summary, &license_policy) {
+            evaluate_licenses_against_policy(summary, policy, &mut violations, &mut action);
         }
 
-        // Evaluate age-based gates
         if let Some(ref policy) = scan_policy {
-            if policy.min_staging_hours.is_some() || policy.max_artifact_age_days.is_some() {
-                if let Some(artifact_created_at) = self.get_artifact_created_at(artifact_id).await?
-                {
-                    let age_violations = evaluate_age_gates(
-                        artifact_created_at,
-                        policy.min_staging_hours,
-                        policy.max_artifact_age_days,
-                    );
-                    for v in age_violations {
-                        if v.severity == "high" {
-                            action = PolicyAction::Block;
-                        } else if action != PolicyAction::Block {
-                            action = PolicyAction::Warn;
-                        }
-                        violations.push(v);
-                    }
-                }
-            }
-
-            // Evaluate signature requirement
-            if policy.require_signature {
-                let has_signature = self
-                    .check_artifact_signature(artifact_id, repository_id)
-                    .await?;
-                let sig_violations = evaluate_signature_requirement(has_signature);
-                for v in sig_violations {
-                    action = PolicyAction::Block;
-                    violations.push(v);
-                }
-            }
+            self.evaluate_age_and_signature(
+                artifact_id,
+                repository_id,
+                policy,
+                &mut violations,
+                &mut action,
+            )
+            .await?;
         }
 
         let passed = violations.is_empty();
@@ -335,6 +359,43 @@ impl PromotionPolicyService {
             cve_summary,
             license_summary,
         })
+    }
+
+    /// Evaluate age gates and signature requirements from a scan policy.
+    async fn evaluate_age_and_signature(
+        &self,
+        artifact_id: Uuid,
+        repository_id: Uuid,
+        policy: &ScanPolicyConfig,
+        violations: &mut Vec<PolicyViolation>,
+        action: &mut PolicyAction,
+    ) -> Result<()> {
+        let has_age_constraints =
+            policy.min_staging_hours.is_some() || policy.max_artifact_age_days.is_some();
+
+        if has_age_constraints {
+            if let Some(created_at) = self.get_artifact_created_at(artifact_id).await? {
+                let age_violations = evaluate_age_gates(
+                    created_at,
+                    policy.min_staging_hours,
+                    policy.max_artifact_age_days,
+                );
+                collect_with_severity_escalation(violations, action, age_violations);
+            }
+        }
+
+        if policy.require_signature {
+            let has_signature = self
+                .check_artifact_signature(artifact_id, repository_id)
+                .await?;
+            let sig_violations = evaluate_signature_requirement(has_signature);
+            for v in sig_violations {
+                *action = PolicyAction::Block;
+                violations.push(v);
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_cve_summary(&self, artifact_id: Uuid) -> Result<Option<CveSummary>> {

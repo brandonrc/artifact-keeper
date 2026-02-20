@@ -152,6 +152,66 @@ async fn resolve_composer_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, 
 }
 
 // ---------------------------------------------------------------------------
+// Composer metadata helpers
+// ---------------------------------------------------------------------------
+
+/// Keys from composer.json that should be merged into version entries.
+const COMPOSER_METADATA_KEYS: &[&str] = &[
+    "description",
+    "type",
+    "license",
+    "require",
+    "require-dev",
+    "autoload",
+    "authors",
+    "keywords",
+    "homepage",
+];
+
+/// Merge composer.json metadata fields into a version entry JSON object.
+fn merge_composer_metadata(
+    version_entry: &mut serde_json::Value,
+    metadata: Option<&serde_json::Value>,
+) {
+    let composer = metadata.and_then(|m| m.get("composer"));
+
+    let Some(composer) = composer else {
+        return;
+    };
+
+    for key in COMPOSER_METADATA_KEYS {
+        if let Some(val) = composer.get(*key) {
+            version_entry[*key] = val.clone();
+        }
+    }
+}
+
+/// Build a version entry JSON for a composer package.
+fn build_version_entry(
+    repo_key: &str,
+    name: &str,
+    version: &str,
+    checksum_sha256: &str,
+    metadata: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "name": name,
+        "version": version,
+        "dist": {
+            "type": "zip",
+            "url": format!("/composer/{}/dist/{}/{}/{}.zip",
+                repo_key, name, version, checksum_sha256
+            ),
+            "reference": checksum_sha256,
+            "shasum": checksum_sha256,
+        },
+    });
+
+    merge_composer_metadata(&mut entry, metadata);
+    entry
+}
+
+// ---------------------------------------------------------------------------
 // GET /composer/{repo_key}/packages.json - Root packages index
 // ---------------------------------------------------------------------------
 
@@ -184,70 +244,23 @@ async fn packages_json(
             .into_response()
     })?;
 
-    // Build the Composer v2 packages.json response with metadata-url
-    // This tells Composer to use the v2 lazy-loading endpoint
-    let mut packages_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-
     // Group artifacts by package name
     let mut by_name: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
 
     for row in &packages {
-        let name = &row.name;
         let version = row.version.as_deref().unwrap_or("dev-main");
-
-        let mut version_entry = serde_json::json!({
-            "name": name,
-            "version": version,
-            "dist": {
-                "type": "zip",
-                "url": format!("/composer/{}/dist/{}/{}/{}.zip",
-                    repo_key,
-                    name, // vendor/package
-                    version,
-                    &row.checksum_sha256
-                ),
-                "reference": &row.checksum_sha256,
-                "shasum": &row.checksum_sha256,
-            },
-        });
-
-        // Merge in composer.json metadata if available
-        if let Some(metadata) = &row.metadata {
-            if let Some(composer) = metadata.get("composer") {
-                if let Some(desc) = composer.get("description").and_then(|v| v.as_str()) {
-                    version_entry["description"] = serde_json::Value::String(desc.to_string());
-                }
-                if let Some(pkg_type) = composer.get("type").and_then(|v| v.as_str()) {
-                    version_entry["type"] = serde_json::Value::String(pkg_type.to_string());
-                }
-                if let Some(license) = composer.get("license") {
-                    version_entry["license"] = license.clone();
-                }
-                if let Some(require) = composer.get("require") {
-                    version_entry["require"] = require.clone();
-                }
-                if let Some(require_dev) = composer.get("require-dev") {
-                    version_entry["require-dev"] = require_dev.clone();
-                }
-                if let Some(autoload) = composer.get("autoload") {
-                    version_entry["autoload"] = autoload.clone();
-                }
-                if let Some(authors) = composer.get("authors") {
-                    version_entry["authors"] = authors.clone();
-                }
-                if let Some(keywords) = composer.get("keywords") {
-                    version_entry["keywords"] = keywords.clone();
-                }
-                if let Some(homepage) = composer.get("homepage") {
-                    version_entry["homepage"] = homepage.clone();
-                }
-            }
-        }
-
-        by_name.entry(name.clone()).or_default().push(version_entry);
+        let entry = build_version_entry(
+            &repo_key,
+            &row.name,
+            version,
+            &row.checksum_sha256,
+            row.metadata.as_ref(),
+        );
+        by_name.entry(row.name.clone()).or_default().push(entry);
     }
 
+    let mut packages_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for (name, versions) in &by_name {
         packages_map.insert(name.clone(), serde_json::Value::Array(versions.clone()));
     }
@@ -311,45 +324,14 @@ async fn metadata_v2(
 
     for artifact in &artifacts {
         let version = artifact.version.as_deref().unwrap_or("dev-main");
-
-        let mut version_entry = serde_json::json!({
-            "name": &full_name,
-            "version": version,
-            "dist": {
-                "type": "zip",
-                "url": format!("/composer/{}/dist/{}/{}/{}.zip",
-                    repo_key,
-                    full_name,
-                    version,
-                    &artifact.checksum_sha256
-                ),
-                "reference": &artifact.checksum_sha256,
-                "shasum": &artifact.checksum_sha256,
-            },
-        });
-
-        // Merge composer.json metadata
-        if let Some(metadata) = &artifact.metadata {
-            if let Some(composer) = metadata.get("composer") {
-                for key in &[
-                    "description",
-                    "type",
-                    "license",
-                    "require",
-                    "require-dev",
-                    "autoload",
-                    "authors",
-                    "keywords",
-                    "homepage",
-                ] {
-                    if let Some(val) = composer.get(*key) {
-                        version_entry[*key] = val.clone();
-                    }
-                }
-            }
-        }
-
-        versions.push(version_entry);
+        let entry = build_version_entry(
+            &repo_key,
+            &full_name,
+            version,
+            &artifact.checksum_sha256,
+            artifact.metadata.as_ref(),
+        );
+        versions.push(entry);
     }
 
     let mut packages_map = serde_json::Map::new();
@@ -415,44 +397,14 @@ async fn metadata_v1(
 
     for artifact in &artifacts {
         let version = artifact.version.as_deref().unwrap_or("dev-main");
-
-        let mut version_entry = serde_json::json!({
-            "name": &full_name,
-            "version": version,
-            "dist": {
-                "type": "zip",
-                "url": format!("/composer/{}/dist/{}/{}/{}.zip",
-                    repo_key,
-                    full_name,
-                    version,
-                    &artifact.checksum_sha256
-                ),
-                "reference": &artifact.checksum_sha256,
-                "shasum": &artifact.checksum_sha256,
-            },
-        });
-
-        if let Some(metadata) = &artifact.metadata {
-            if let Some(composer) = metadata.get("composer") {
-                for key in &[
-                    "description",
-                    "type",
-                    "license",
-                    "require",
-                    "require-dev",
-                    "autoload",
-                    "authors",
-                    "keywords",
-                    "homepage",
-                ] {
-                    if let Some(val) = composer.get(*key) {
-                        version_entry[*key] = val.clone();
-                    }
-                }
-            }
-        }
-
-        version_map.insert(version.to_string(), version_entry);
+        let entry = build_version_entry(
+            &repo_key,
+            &full_name,
+            version,
+            &artifact.checksum_sha256,
+            artifact.metadata.as_ref(),
+        );
+        version_map.insert(version.to_string(), entry);
     }
 
     let mut packages_map = serde_json::Map::new();
