@@ -72,6 +72,11 @@ async fn main() -> Result<()> {
     // Provision admin user on first boot; returns true when setup lock is needed
     let setup_required = provision_admin_user(&db_pool, &config.storage_path).await?;
 
+    // Bootstrap OIDC config from environment variables when no DB configs exist yet.
+    // This bridges the gap between env-var-based deployment and the database-backed
+    // SSO config that the handlers actually use (fixes #238).
+    bootstrap_oidc_from_env(&db_pool).await?;
+
     // Initialize peer identity for mesh networking
     let peer_id = init_peer_identity(&db_pool, &config).await?;
     tracing::info!("Peer identity: {} ({})", config.peer_instance_name, peer_id);
@@ -522,6 +527,83 @@ async fn init_peer_identity(db: &sqlx::PgPool, config: &Config) -> Result<uuid::
     .map_err(|e| artifact_keeper_backend::error::AppError::Database(e.to_string()))?;
 
     Ok(id)
+}
+
+/// Bootstrap an OIDC provider from environment variables when the database
+/// has no OIDC configs yet.  This lets operators configure OIDC entirely via
+/// env vars (OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, etc.) without
+/// needing admin API access first.
+async fn bootstrap_oidc_from_env(db: &sqlx::PgPool) -> Result<()> {
+    use artifact_keeper_backend::services::auth_config_service::{
+        AuthConfigService, CreateOidcConfigRequest,
+    };
+
+    let issuer = match std::env::var("OIDC_ISSUER") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return Ok(()),
+    };
+    let client_id = match std::env::var("OIDC_CLIENT_ID") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return Ok(()),
+    };
+    let client_secret = match std::env::var("OIDC_CLIENT_SECRET") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return Ok(()),
+    };
+
+    // Only bootstrap when no OIDC configs exist in the database
+    let existing = AuthConfigService::list_oidc(db).await?;
+    if !existing.is_empty() {
+        tracing::debug!(
+            "OIDC env vars present but {} config(s) already exist in DB, skipping bootstrap",
+            existing.len()
+        );
+        return Ok(());
+    }
+
+    let scopes = std::env::var("OIDC_SCOPES")
+        .ok()
+        .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
+
+    let groups_claim = std::env::var("OIDC_GROUPS_CLAIM").unwrap_or_else(|_| "groups".to_string());
+    let redirect_uri = std::env::var("OIDC_REDIRECT_URI").ok();
+    let username_claim = std::env::var("OIDC_USERNAME_CLAIM").ok();
+    let email_claim = std::env::var("OIDC_EMAIL_CLAIM").ok();
+
+    let mut attr_map = serde_json::Map::new();
+    attr_map.insert(
+        "groups_claim".into(),
+        serde_json::Value::String(groups_claim),
+    );
+    if let Some(uri) = redirect_uri {
+        attr_map.insert("redirect_uri".into(), serde_json::Value::String(uri));
+    }
+    if let Some(claim) = username_claim {
+        attr_map.insert("username_claim".into(), serde_json::Value::String(claim));
+    }
+    if let Some(claim) = email_claim {
+        attr_map.insert("email_claim".into(), serde_json::Value::String(claim));
+    }
+
+    let req = CreateOidcConfigRequest {
+        name: "default".to_string(),
+        issuer_url: issuer,
+        client_id,
+        client_secret,
+        scopes,
+        attribute_mapping: Some(serde_json::Value::Object(attr_map)),
+        is_enabled: Some(true),
+        auto_create_users: Some(true),
+    };
+
+    let config = AuthConfigService::create_oidc(db, req).await?;
+    tracing::info!(
+        "Bootstrapped OIDC provider '{}' (id={}) from environment variables",
+        config.name,
+        config.id
+    );
+
+    Ok(())
 }
 
 /// Provision the initial admin user on first boot and determine setup mode.

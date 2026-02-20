@@ -110,8 +110,13 @@ pub async fn oidc_login(
             AppError::Internal("OIDC discovery missing authorization_endpoint".into())
         })?;
 
-    // 4. Build redirect_uri (default to our callback endpoint)
-    let redirect_uri = format!("/api/v1/auth/sso/oidc/{id}/callback");
+    // 4. Build redirect_uri from attribute_mapping, falling back to relative path
+    let redirect_uri = row
+        .attribute_mapping
+        .get("redirect_uri")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("/api/v1/auth/sso/oidc/{id}/callback"));
 
     // 5. Build authorization URL
     let scope = if row.scopes.is_empty() {
@@ -190,7 +195,12 @@ pub async fn oidc_callback(
         .ok_or_else(|| AppError::Internal("OIDC discovery missing token_endpoint".into()))?;
 
     // 4. Build redirect_uri (must match the one used in the login request)
-    let redirect_uri = format!("/api/v1/auth/sso/oidc/{id}/callback");
+    let redirect_uri = row
+        .attribute_mapping
+        .get("redirect_uri")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("/api/v1/auth/sso/oidc/{id}/callback"));
 
     // 5. Exchange authorization code for tokens
     let token_response: serde_json::Value = http_client
@@ -216,15 +226,30 @@ pub async fn oidc_callback(
     // 6. Decode JWT payload (base64 decode the middle segment)
     let claims = decode_jwt_payload(id_token)?;
 
-    // 7. Extract user claims
+    // 7. Extract user claims (using attribute_mapping overrides when configured)
+    let attr = &row.attribute_mapping;
+
+    let username_claim = attr
+        .get("username_claim")
+        .and_then(|v| v.as_str())
+        .unwrap_or("preferred_username");
+    let email_claim = attr
+        .get("email_claim")
+        .and_then(|v| v.as_str())
+        .unwrap_or("email");
+    let groups_claim = attr
+        .get("groups_claim")
+        .and_then(|v| v.as_str())
+        .unwrap_or("groups");
+
     let sub = claims["sub"]
         .as_str()
         .ok_or_else(|| AppError::Internal("ID token missing sub claim".into()))?
         .to_string();
 
-    let email = claims["email"].as_str().unwrap_or_default().to_string();
+    let email = claims[email_claim].as_str().unwrap_or_default().to_string();
 
-    let preferred_username = claims["preferred_username"]
+    let preferred_username = claims[username_claim]
         .as_str()
         .or_else(|| claims["email"].as_str())
         .unwrap_or(&sub)
@@ -232,7 +257,7 @@ pub async fn oidc_callback(
 
     let display_name = claims["name"].as_str().map(|s| s.to_string());
 
-    let groups = claims["groups"]
+    let groups = claims[groups_claim]
         .as_array()
         .map(|arr| {
             arr.iter()
