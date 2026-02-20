@@ -47,6 +47,7 @@ pub mod search_service;
 pub mod service_account_service;
 pub mod signing_service;
 pub mod source_registry;
+pub mod storage_gc_service;
 pub mod storage_service;
 pub mod sync_policy_service;
 pub mod token_service;

@@ -30,7 +30,11 @@ struct GaugeStats {
 
 /// Spawn all background scheduler tasks.
 /// Returns join handles for graceful shutdown (not currently used, fire-and-forget).
-pub fn spawn_all(db: PgPool, config: Config) {
+pub fn spawn_all(
+    db: PgPool,
+    config: Config,
+    primary_storage: Arc<dyn crate::storage::StorageBackend>,
+) {
     // Daily metrics snapshot (runs every hour, captures once per day via UPSERT)
     {
         let db = db.clone();
@@ -130,6 +134,53 @@ pub fn spawn_all(db: PgPool, config: Config) {
                     }
                     Err(e) => {
                         tracing::warn!("Lifecycle policy execution failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
+    // Storage garbage collection (every hour)
+    {
+        let db = db.clone();
+        let config_clone = config.clone();
+        let gc_storage = primary_storage.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            let service = crate::services::storage_gc_service::StorageGcService::new(
+                db,
+                gc_storage,
+                config_clone.storage_backend.clone(),
+            );
+            let mut ticker = interval(Duration::from_secs(3600)); // 1 hour
+
+            loop {
+                ticker.tick().await;
+                tracing::info!("Running scheduled storage garbage collection");
+
+                match service.run_gc(false).await {
+                    Ok(result) => {
+                        if result.storage_keys_deleted > 0 {
+                            tracing::info!(
+                                "Storage GC: deleted {} keys, removed {} artifacts, freed {} bytes",
+                                result.storage_keys_deleted,
+                                result.artifacts_removed,
+                                result.bytes_freed
+                            );
+                            metrics_service::record_cleanup(
+                                "storage_gc",
+                                result.artifacts_removed as u64,
+                            );
+                        }
+                        if !result.errors.is_empty() {
+                            tracing::warn!(
+                                "Storage GC completed with {} errors",
+                                result.errors.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Storage garbage collection failed: {}", e);
                     }
                 }
             }

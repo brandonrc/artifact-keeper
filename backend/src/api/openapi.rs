@@ -106,6 +106,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     doc.merge(super::handlers::admin::AdminApiDoc::openapi());
     doc.merge(super::handlers::analytics::AnalyticsApiDoc::openapi());
     doc.merge(super::handlers::lifecycle::LifecycleApiDoc::openapi());
+    doc.merge(super::handlers::storage_gc::StorageGcApiDoc::openapi());
     doc.merge(super::handlers::monitoring::MonitoringApiDoc::openapi());
     doc.merge(super::handlers::telemetry::TelemetryApiDoc::openapi());
     doc.merge(super::handlers::peers::PeersApiDoc::openapi());

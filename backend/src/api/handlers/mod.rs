@@ -62,6 +62,7 @@ pub mod service_accounts;
 pub mod signing;
 pub mod sso;
 pub mod sso_admin;
+pub mod storage_gc;
 pub mod swift;
 pub mod sync_policies;
 pub mod telemetry;
