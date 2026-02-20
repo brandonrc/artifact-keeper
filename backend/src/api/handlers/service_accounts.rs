@@ -169,11 +169,71 @@ pub struct TokenListResponse {
 // Helper
 // ---------------------------------------------------------------------------
 
-fn require_admin(auth: &AuthExtension) -> Result<()> {
+pub(crate) fn require_admin(auth: &AuthExtension) -> Result<()> {
     if !auth.is_admin {
         return Err(AppError::Authorization("Admin access required".to_string()));
     }
     Ok(())
+}
+
+pub(crate) fn validate_create_token_exclusivity(
+    repo_selector: &Option<serde_json::Value>,
+    repository_ids: &Option<Vec<Uuid>>,
+) -> Result<()> {
+    if repo_selector.is_some() && repository_ids.is_some() {
+        return Err(AppError::Validation(
+            "Cannot specify both repo_selector and repository_ids".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn build_repo_map(
+    rows: Vec<(Uuid, Uuid)>,
+) -> std::collections::HashMap<Uuid, Vec<Uuid>> {
+    let mut map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
+    for (token_id, repo_id) in rows {
+        map.entry(token_id).or_default().push(repo_id);
+    }
+    map
+}
+
+pub(crate) fn build_selector_map(
+    rows: Vec<(Uuid, Option<serde_json::Value>)>,
+) -> std::collections::HashMap<Uuid, Option<serde_json::Value>> {
+    let mut map: std::collections::HashMap<Uuid, Option<serde_json::Value>> =
+        std::collections::HashMap::new();
+    for (id, selector) in rows {
+        map.insert(id, selector);
+    }
+    map
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_token_info_response(
+    id: Uuid,
+    name: String,
+    token_prefix: String,
+    scopes: Vec<String>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    is_expired: bool,
+    repo_ids: Vec<Uuid>,
+    selector: Option<serde_json::Value>,
+) -> TokenInfoResponse {
+    TokenInfoResponse {
+        id,
+        name,
+        token_prefix,
+        scopes,
+        expires_at,
+        last_used_at,
+        created_at,
+        is_expired,
+        repo_selector: selector,
+        repository_ids: repo_ids,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,10 +435,12 @@ pub async fn list_tokens(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    let mut repo_map: std::collections::HashMap<Uuid, Vec<Uuid>> = std::collections::HashMap::new();
-    for row in repo_rows {
-        repo_map.entry(row.token_id).or_default().push(row.repo_id);
-    }
+    let mut repo_map = build_repo_map(
+        repo_rows
+            .into_iter()
+            .map(|r| (r.token_id, r.repo_id))
+            .collect(),
+    );
 
     // Fetch repo_selector values from the tokens table
     let selector_rows = sqlx::query!(
@@ -389,11 +451,12 @@ pub async fn list_tokens(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
 
-    let mut selector_map: std::collections::HashMap<Uuid, Option<serde_json::Value>> =
-        std::collections::HashMap::new();
-    for row in selector_rows {
-        selector_map.insert(row.id, row.repo_selector);
-    }
+    let selector_map = build_selector_map(
+        selector_rows
+            .into_iter()
+            .map(|r| (r.id, r.repo_selector))
+            .collect(),
+    );
 
     Ok(Json(TokenListResponse {
         items: tokens
@@ -401,18 +464,18 @@ pub async fn list_tokens(
             .map(|t| {
                 let repo_ids = repo_map.remove(&t.id).unwrap_or_default();
                 let selector = selector_map.get(&t.id).and_then(|s| s.clone());
-                TokenInfoResponse {
-                    id: t.id,
-                    name: t.name,
-                    token_prefix: t.token_prefix,
-                    scopes: t.scopes,
-                    expires_at: t.expires_at,
-                    last_used_at: t.last_used_at,
-                    created_at: t.created_at,
-                    is_expired: t.is_expired,
-                    repo_selector: selector,
-                    repository_ids: repo_ids,
-                }
+                build_token_info_response(
+                    t.id,
+                    t.name,
+                    t.token_prefix,
+                    t.scopes,
+                    t.expires_at,
+                    t.last_used_at,
+                    t.created_at,
+                    t.is_expired,
+                    repo_ids,
+                    selector,
+                )
             })
             .collect(),
     }))
@@ -441,11 +504,7 @@ pub async fn create_token(
     require_admin(&auth)?;
 
     // Validate mutual exclusivity
-    if payload.repo_selector.is_some() && payload.repository_ids.is_some() {
-        return Err(AppError::Validation(
-            "Cannot specify both repo_selector and repository_ids".to_string(),
-        ));
-    }
+    validate_create_token_exclusivity(&payload.repo_selector, &payload.repository_ids)?;
 
     // Verify the service account exists
     let svc = ServiceAccountService::new(state.db.clone());
@@ -614,3 +673,742 @@ pub async fn revoke_token(
     )
 )]
 pub struct ServiceAccountsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn admin_auth() -> AuthExtension {
+        AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "admin".to_string(),
+            email: "admin@example.com".to_string(),
+            is_admin: true,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        }
+    }
+
+    fn non_admin_auth() -> AuthExtension {
+        AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "user@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        }
+    }
+
+    fn sample_summary() -> ServiceAccountSummary {
+        let now = Utc::now();
+        ServiceAccountSummary {
+            id: Uuid::nil(),
+            username: "svc-ci-runner".to_string(),
+            display_name: Some("CI Runner".to_string()),
+            is_active: true,
+            token_count: 3,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // require_admin
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_admin_allows_admin() {
+        let auth = admin_auth();
+        assert!(require_admin(&auth).is_ok());
+    }
+
+    #[test]
+    fn test_require_admin_rejects_non_admin() {
+        let auth = non_admin_auth();
+        let err = require_admin(&auth).unwrap_err();
+        match err {
+            AppError::Authorization(msg) => assert_eq!(msg, "Admin access required"),
+            other => panic!("Expected Authorization error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // From<ServiceAccountSummary> for ServiceAccountSummaryResponse
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_summary_conversion_preserves_all_fields() {
+        let summary = sample_summary();
+        let id = summary.id;
+        let created = summary.created_at;
+        let updated = summary.updated_at;
+        let resp: ServiceAccountSummaryResponse = summary.into();
+
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.username, "svc-ci-runner");
+        assert_eq!(resp.display_name, Some("CI Runner".to_string()));
+        assert!(resp.is_active);
+        assert_eq!(resp.token_count, 3);
+        assert_eq!(resp.created_at, created);
+        assert_eq!(resp.updated_at, updated);
+    }
+
+    #[test]
+    fn test_summary_conversion_none_display_name() {
+        let now = Utc::now();
+        let summary = ServiceAccountSummary {
+            id: Uuid::new_v4(),
+            username: "svc-deploy".to_string(),
+            display_name: None,
+            is_active: false,
+            token_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let resp: ServiceAccountSummaryResponse = summary.into();
+        assert!(resp.display_name.is_none());
+        assert!(!resp.is_active);
+        assert_eq!(resp.token_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_create_token_exclusivity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_exclusivity_both_none_ok() {
+        assert!(validate_create_token_exclusivity(&None, &None).is_ok());
+    }
+
+    #[test]
+    fn test_exclusivity_only_selector_ok() {
+        let selector = Some(serde_json::json!({"match_formats": ["docker"]}));
+        assert!(validate_create_token_exclusivity(&selector, &None).is_ok());
+    }
+
+    #[test]
+    fn test_exclusivity_only_repo_ids_ok() {
+        let repo_ids = Some(vec![Uuid::new_v4()]);
+        assert!(validate_create_token_exclusivity(&None, &repo_ids).is_ok());
+    }
+
+    #[test]
+    fn test_exclusivity_both_set_fails() {
+        let selector = Some(serde_json::json!({"match_formats": ["npm"]}));
+        let repo_ids = Some(vec![Uuid::new_v4()]);
+        let err = validate_create_token_exclusivity(&selector, &repo_ids).unwrap_err();
+        match err {
+            AppError::Validation(msg) => {
+                assert!(msg.contains("repo_selector"));
+                assert!(msg.contains("repository_ids"));
+            }
+            other => panic!("Expected Validation error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // build_repo_map
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_repo_map_empty() {
+        let map = build_repo_map(vec![]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_build_repo_map_single_token_single_repo() {
+        let token_id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+        let map = build_repo_map(vec![(token_id, repo_id)]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&token_id], vec![repo_id]);
+    }
+
+    #[test]
+    fn test_build_repo_map_single_token_multiple_repos() {
+        let token_id = Uuid::new_v4();
+        let repo1 = Uuid::new_v4();
+        let repo2 = Uuid::new_v4();
+        let map = build_repo_map(vec![(token_id, repo1), (token_id, repo2)]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&token_id].len(), 2);
+        assert!(map[&token_id].contains(&repo1));
+        assert!(map[&token_id].contains(&repo2));
+    }
+
+    #[test]
+    fn test_build_repo_map_multiple_tokens() {
+        let t1 = Uuid::new_v4();
+        let t2 = Uuid::new_v4();
+        let r1 = Uuid::new_v4();
+        let r2 = Uuid::new_v4();
+        let r3 = Uuid::new_v4();
+        let map = build_repo_map(vec![(t1, r1), (t1, r2), (t2, r3)]);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&t1].len(), 2);
+        assert_eq!(map[&t2].len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_selector_map
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_selector_map_empty() {
+        let map = build_selector_map(vec![]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_build_selector_map_with_selectors() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let sel = serde_json::json!({"match_formats": ["maven"]});
+        let map = build_selector_map(vec![(id1, Some(sel.clone())), (id2, None)]);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&id1], Some(sel));
+        assert_eq!(map[&id2], None);
+    }
+
+    #[test]
+    fn test_build_selector_map_last_wins_on_duplicate() {
+        let id = Uuid::new_v4();
+        let sel1 = serde_json::json!({"match_formats": ["docker"]});
+        let sel2 = serde_json::json!({"match_formats": ["npm"]});
+        let map = build_selector_map(vec![(id, Some(sel1)), (id, Some(sel2.clone()))]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&id], Some(sel2));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_token_info_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_token_info_response_full() {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let repo_id = Uuid::new_v4();
+        let selector = serde_json::json!({"match_labels": {"env": "prod"}});
+        let resp = build_token_info_response(
+            id,
+            "deploy-token".to_string(),
+            "ak_abc".to_string(),
+            vec!["read".to_string(), "write".to_string()],
+            Some(now),
+            Some(now),
+            now,
+            false,
+            vec![repo_id],
+            Some(selector.clone()),
+        );
+
+        assert_eq!(resp.id, id);
+        assert_eq!(resp.name, "deploy-token");
+        assert_eq!(resp.token_prefix, "ak_abc");
+        assert_eq!(resp.scopes, vec!["read", "write"]);
+        assert_eq!(resp.expires_at, Some(now));
+        assert_eq!(resp.last_used_at, Some(now));
+        assert_eq!(resp.created_at, now);
+        assert!(!resp.is_expired);
+        assert_eq!(resp.repository_ids, vec![repo_id]);
+        assert_eq!(resp.repo_selector, Some(selector));
+    }
+
+    #[test]
+    fn test_build_token_info_response_minimal() {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let resp = build_token_info_response(
+            id,
+            "ci-token".to_string(),
+            "ak_xyz".to_string(),
+            vec![],
+            None,
+            None,
+            now,
+            true,
+            vec![],
+            None,
+        );
+
+        assert_eq!(resp.id, id);
+        assert!(resp.expires_at.is_none());
+        assert!(resp.last_used_at.is_none());
+        assert!(resp.is_expired);
+        assert!(resp.repository_ids.is_empty());
+        assert!(resp.repo_selector.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateServiceAccountRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_service_account_request_deserialize() {
+        let json = r#"{"name":"ci-runner","description":"CI/CD service account"}"#;
+        let req: CreateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "ci-runner");
+        assert_eq!(req.description, Some("CI/CD service account".to_string()));
+    }
+
+    #[test]
+    fn test_create_service_account_request_no_description() {
+        let json = r#"{"name":"deploy-bot"}"#;
+        let req: CreateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "deploy-bot");
+        assert!(req.description.is_none());
+    }
+
+    #[test]
+    fn test_create_service_account_request_missing_name() {
+        let json = r#"{"description":"no name"}"#;
+        let result = serde_json::from_str::<CreateServiceAccountRequest>(json);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // ServiceAccountResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_service_account_response_serialize() {
+        let now = Utc::now();
+        let resp = ServiceAccountResponse {
+            id: Uuid::nil(),
+            username: "svc-test".to_string(),
+            display_name: Some("Test Account".to_string()),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["username"], "svc-test");
+        assert_eq!(json["display_name"], "Test Account");
+        assert_eq!(json["is_active"], true);
+        assert!(json["id"].is_string());
+        assert!(json["created_at"].is_string());
+        assert!(json["updated_at"].is_string());
+    }
+
+    #[test]
+    fn test_service_account_response_null_display_name() {
+        let now = Utc::now();
+        let resp = ServiceAccountResponse {
+            id: Uuid::nil(),
+            username: "svc-bot".to_string(),
+            display_name: None,
+            is_active: false,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["display_name"].is_null());
+        assert_eq!(json["is_active"], false);
+    }
+
+    // -----------------------------------------------------------------------
+    // ServiceAccountListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_response_serialize_empty() {
+        let resp = ServiceAccountListResponse { items: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_list_response_serialize_with_items() {
+        let now = Utc::now();
+        let resp = ServiceAccountListResponse {
+            items: vec![ServiceAccountSummaryResponse {
+                id: Uuid::nil(),
+                username: "svc-build".to_string(),
+                display_name: None,
+                is_active: true,
+                token_count: 2,
+                created_at: now,
+                updated_at: now,
+            }],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let items = json["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["token_count"], 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // UpdateServiceAccountRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_request_all_fields() {
+        let json = r#"{"display_name":"New Name","is_active":false}"#;
+        let req: UpdateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.display_name, Some("New Name".to_string()));
+        assert_eq!(req.is_active, Some(false));
+    }
+
+    #[test]
+    fn test_update_request_partial_display_name_only() {
+        let json = r#"{"display_name":"Just Name"}"#;
+        let req: UpdateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.display_name, Some("Just Name".to_string()));
+        assert!(req.is_active.is_none());
+    }
+
+    #[test]
+    fn test_update_request_partial_is_active_only() {
+        let json = r#"{"is_active":true}"#;
+        let req: UpdateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert!(req.display_name.is_none());
+        assert_eq!(req.is_active, Some(true));
+    }
+
+    #[test]
+    fn test_update_request_empty_body() {
+        let json = r#"{}"#;
+        let req: UpdateServiceAccountRequest = serde_json::from_str(json).unwrap();
+        assert!(req.display_name.is_none());
+        assert!(req.is_active.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateTokenRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_token_request_minimal() {
+        let json = r#"{"name":"deploy","scopes":["read"]}"#;
+        let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "deploy");
+        assert_eq!(req.scopes, vec!["read"]);
+        assert!(req.expires_in_days.is_none());
+        assert!(req.description.is_none());
+        assert!(req.repository_ids.is_none());
+        assert!(req.repo_selector.is_none());
+    }
+
+    #[test]
+    fn test_create_token_request_full() {
+        let id = Uuid::nil();
+        let json = format!(
+            r#"{{"name":"ci","scopes":["read","write"],"expires_in_days":30,"description":"CI token","repository_ids":["{}"],"repo_selector":null}}"#,
+            id
+        );
+        let req: CreateTokenRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req.name, "ci");
+        assert_eq!(req.scopes, vec!["read", "write"]);
+        assert_eq!(req.expires_in_days, Some(30));
+        assert_eq!(req.description, Some("CI token".to_string()));
+        assert_eq!(req.repository_ids, Some(vec![id]));
+        assert!(req.repo_selector.is_none());
+    }
+
+    #[test]
+    fn test_create_token_request_with_selector() {
+        let json = r#"{"name":"auto","scopes":["*"],"repo_selector":{"match_formats":["docker","maven"]}}"#;
+        let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "auto");
+        assert!(req.repo_selector.is_some());
+        let sel = req.repo_selector.unwrap();
+        let formats = sel["match_formats"].as_array().unwrap();
+        assert_eq!(formats.len(), 2);
+    }
+
+    #[test]
+    fn test_create_token_request_missing_name() {
+        let json = r#"{"scopes":["read"]}"#;
+        assert!(serde_json::from_str::<CreateTokenRequest>(json).is_err());
+    }
+
+    #[test]
+    fn test_create_token_request_missing_scopes() {
+        let json = r#"{"name":"deploy"}"#;
+        assert!(serde_json::from_str::<CreateTokenRequest>(json).is_err());
+    }
+
+    #[test]
+    fn test_create_token_request_empty_scopes() {
+        let json = r#"{"name":"empty","scopes":[]}"#;
+        let req: CreateTokenRequest = serde_json::from_str(json).unwrap();
+        assert!(req.scopes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // CreateTokenResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_token_response_serialize() {
+        let resp = CreateTokenResponse {
+            id: Uuid::nil(),
+            token: "ak_secret_abc123".to_string(),
+            name: "my-token".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["token"], "ak_secret_abc123");
+        assert_eq!(json["name"], "my-token");
+        assert!(json["id"].is_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenInfoResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_info_response_serialize_full() {
+        let now = Utc::now();
+        let repo_id = Uuid::new_v4();
+        let resp = TokenInfoResponse {
+            id: Uuid::nil(),
+            name: "deploy-token".to_string(),
+            token_prefix: "ak_abc".to_string(),
+            scopes: vec!["read".to_string(), "write".to_string()],
+            expires_at: Some(now),
+            last_used_at: Some(now),
+            created_at: now,
+            is_expired: false,
+            repo_selector: Some(serde_json::json!({"match_formats": ["npm"]})),
+            repository_ids: vec![repo_id],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["name"], "deploy-token");
+        assert_eq!(json["token_prefix"], "ak_abc");
+        assert_eq!(json["scopes"].as_array().unwrap().len(), 2);
+        assert_eq!(json["is_expired"], false);
+        assert!(json["repo_selector"].is_object());
+        assert_eq!(json["repository_ids"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_token_info_response_serialize_minimal() {
+        let now = Utc::now();
+        let resp = TokenInfoResponse {
+            id: Uuid::nil(),
+            name: "read-only".to_string(),
+            token_prefix: "ak_xyz".to_string(),
+            scopes: vec![],
+            expires_at: None,
+            last_used_at: None,
+            created_at: now,
+            is_expired: true,
+            repo_selector: None,
+            repository_ids: vec![],
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["expires_at"].is_null());
+        assert!(json["last_used_at"].is_null());
+        assert!(json["repo_selector"].is_null());
+        assert!(json["repository_ids"].as_array().unwrap().is_empty());
+        assert_eq!(json["is_expired"], true);
+    }
+
+    // -----------------------------------------------------------------------
+    // TokenListResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_list_response_serialize_empty() {
+        let resp = TokenListResponse { items: vec![] };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json["items"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // PreviewRepoSelectorRequest serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_preview_repo_selector_request_deserialize() {
+        let json =
+            r#"{"repo_selector":{"match_formats":["docker"],"match_labels":{"env":"prod"}}}"#;
+        let req: PreviewRepoSelectorRequest = serde_json::from_str(json).unwrap();
+        assert!(req.repo_selector.is_object());
+        assert_eq!(
+            req.repo_selector["match_formats"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_preview_repo_selector_request_missing_selector() {
+        let json = r#"{}"#;
+        assert!(serde_json::from_str::<PreviewRepoSelectorRequest>(json).is_err());
+    }
+
+    #[test]
+    fn test_preview_repo_selector_request_empty_selector() {
+        let json = r#"{"repo_selector":{}}"#;
+        let req: PreviewRepoSelectorRequest = serde_json::from_str(json).unwrap();
+        assert!(req.repo_selector.is_object());
+        assert!(req.repo_selector.as_object().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // PreviewRepoSelectorResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_preview_response_serialize() {
+        let resp = PreviewRepoSelectorResponse {
+            matched_repositories: vec![
+                MatchedRepoResponse {
+                    id: Uuid::nil(),
+                    key: "docker-prod".to_string(),
+                    format: "docker".to_string(),
+                },
+                MatchedRepoResponse {
+                    id: Uuid::new_v4(),
+                    key: "maven-snapshots".to_string(),
+                    format: "maven".to_string(),
+                },
+            ],
+            total: 2,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["total"], 2);
+        let repos = json["matched_repositories"].as_array().unwrap();
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0]["key"], "docker-prod");
+        assert_eq!(repos[0]["format"], "docker");
+        assert_eq!(repos[1]["key"], "maven-snapshots");
+    }
+
+    #[test]
+    fn test_preview_response_serialize_empty() {
+        let resp = PreviewRepoSelectorResponse {
+            matched_repositories: vec![],
+            total: 0,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["total"], 0);
+        assert!(json["matched_repositories"].as_array().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // MatchedRepoResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_matched_repo_response_serialize() {
+        let resp = MatchedRepoResponse {
+            id: Uuid::nil(),
+            key: "npm-hosted".to_string(),
+            format: "npm".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["key"], "npm-hosted");
+        assert_eq!(json["format"], "npm");
+        assert!(json["id"].is_string());
+    }
+
+    // -----------------------------------------------------------------------
+    // RepoSelector deserialization (used by preview_repo_selector handler)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repo_selector_from_json_full() {
+        use crate::services::repo_selector_service::RepoSelector;
+        let json = serde_json::json!({
+            "match_labels": {"env": "production", "team": "backend"},
+            "match_formats": ["docker", "maven"],
+            "match_pattern": "libs-*",
+            "match_repos": ["00000000-0000-0000-0000-000000000000"]
+        });
+        let selector: RepoSelector = serde_json::from_value(json).unwrap();
+        assert_eq!(selector.match_labels.len(), 2);
+        assert_eq!(selector.match_labels["env"], "production");
+        assert_eq!(selector.match_formats.len(), 2);
+        assert_eq!(selector.match_pattern, Some("libs-*".to_string()));
+        assert_eq!(selector.match_repos.len(), 1);
+    }
+
+    #[test]
+    fn test_repo_selector_from_json_empty() {
+        use crate::services::repo_selector_service::RepoSelector;
+        let json = serde_json::json!({});
+        let selector: RepoSelector = serde_json::from_value(json).unwrap();
+        assert!(selector.match_labels.is_empty());
+        assert!(selector.match_formats.is_empty());
+        assert!(selector.match_pattern.is_none());
+        assert!(selector.match_repos.is_empty());
+    }
+
+    #[test]
+    fn test_repo_selector_from_json_partial() {
+        use crate::services::repo_selector_service::RepoSelector;
+        let json = serde_json::json!({"match_formats": ["pypi"]});
+        let selector: RepoSelector = serde_json::from_value(json).unwrap();
+        assert!(selector.match_labels.is_empty());
+        assert_eq!(selector.match_formats, vec!["pypi"]);
+        assert!(selector.match_pattern.is_none());
+    }
+
+    #[test]
+    fn test_repo_selector_invalid_json_rejected() {
+        use crate::services::repo_selector_service::RepoSelector;
+        let json = serde_json::json!("not an object");
+        assert!(serde_json::from_value::<RepoSelector>(json).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // OpenAPI doc validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_openapi_doc_has_paths() {
+        let doc = ServiceAccountsApiDoc::openapi();
+        let paths = doc.paths.paths.len();
+        assert!(paths >= 4, "Expected at least 4 paths, got {}", paths);
+    }
+
+    #[test]
+    fn test_openapi_doc_has_schemas() {
+        let doc = ServiceAccountsApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.len();
+        assert!(
+            schemas >= 10,
+            "Expected at least 10 schemas, got {}",
+            schemas
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Round-trip serialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_service_account_round_trip() {
+        let original = r#"{"name":"svc-test","description":"round trip"}"#;
+        let req: CreateServiceAccountRequest = serde_json::from_str(original).unwrap();
+        assert_eq!(req.name, "svc-test");
+        assert_eq!(req.description, Some("round trip".to_string()));
+    }
+
+    #[test]
+    fn test_summary_response_round_trip() {
+        let now = Utc::now();
+        let resp = ServiceAccountSummaryResponse {
+            id: Uuid::nil(),
+            username: "svc-round".to_string(),
+            display_name: Some("Round Trip".to_string()),
+            is_active: true,
+            token_count: 5,
+            created_at: now,
+            updated_at: now,
+        };
+        let serialized = serde_json::to_string(&resp).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(json["username"], "svc-round");
+        assert_eq!(json["token_count"], 5);
+    }
+}

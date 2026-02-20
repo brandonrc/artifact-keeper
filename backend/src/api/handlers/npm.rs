@@ -1735,4 +1735,270 @@ mod tests {
         assert_eq!(entry["name"], "custom-name");
         assert_eq!(entry["version"], "0.9.0");
     }
+
+    // -----------------------------------------------------------------------
+    // parse_npm_publish_payload
+    // -----------------------------------------------------------------------
+
+    fn make_valid_publish_body(package_name: &str, version: &str) -> Bytes {
+        let tarball_data = b"fake tarball content";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(tarball_data);
+        let tarball_filename = build_npm_tarball_filename(package_name, version);
+
+        let payload = serde_json::json!({
+            "name": package_name,
+            "versions": {
+                version: {
+                    "name": package_name,
+                    "version": version,
+                    "description": "A test package"
+                }
+            },
+            "_attachments": {
+                tarball_filename: {
+                    "content_type": "application/octet-stream",
+                    "data": b64,
+                    "length": tarball_data.len()
+                }
+            }
+        });
+        Bytes::from(serde_json::to_vec(&payload).unwrap())
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_valid() {
+        let body = make_valid_publish_body("express", "4.18.2");
+        let result = parse_npm_publish_payload(&body, "express");
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        assert_eq!(parsed.versions.len(), 1);
+        assert_eq!(parsed.versions[0].version, "4.18.2");
+        assert_eq!(parsed.versions[0].tarball_filename, "express-4.18.2.tgz");
+        assert!(!parsed.versions[0].tarball_bytes.is_empty());
+        assert_eq!(parsed.versions[0].sha256.len(), 64);
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_scoped() {
+        let body = make_valid_publish_body("@babel/core", "7.24.0");
+        let result = parse_npm_publish_payload(&body, "@babel/core");
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        assert_eq!(parsed.versions[0].version, "7.24.0");
+        assert_eq!(parsed.versions[0].tarball_filename, "core-7.24.0.tgz");
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_invalid_json() {
+        let body = Bytes::from(b"not json at all".to_vec());
+        let result = parse_npm_publish_payload(&body, "pkg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_name_mismatch() {
+        let payload = serde_json::json!({
+            "name": "wrong-name",
+            "versions": { "1.0.0": {} },
+            "_attachments": { "wrong-name-1.0.0.tgz": { "data": "dGVzdA==" } }
+        });
+        let body = Bytes::from(serde_json::to_vec(&payload).unwrap());
+        let result = parse_npm_publish_payload(&body, "correct-name");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_missing_versions() {
+        let payload = serde_json::json!({
+            "name": "pkg",
+            "_attachments": {}
+        });
+        let body = Bytes::from(serde_json::to_vec(&payload).unwrap());
+        let result = parse_npm_publish_payload(&body, "pkg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_missing_attachments() {
+        let payload = serde_json::json!({
+            "name": "pkg",
+            "versions": { "1.0.0": {} }
+        });
+        let body = Bytes::from(serde_json::to_vec(&payload).unwrap());
+        let result = parse_npm_publish_payload(&body, "pkg");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_npm_publish_payload_no_name_field_uses_url_name() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"data");
+        let payload = serde_json::json!({
+            "versions": {
+                "1.0.0": { "version": "1.0.0" }
+            },
+            "_attachments": {
+                "pkg-1.0.0.tgz": { "data": b64 }
+            }
+        });
+        let body = Bytes::from(serde_json::to_vec(&payload).unwrap());
+        let result = parse_npm_publish_payload(&body, "pkg");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_npm_publish_preserves_version_data() {
+        let body = make_valid_publish_body("mylib", "2.0.0");
+        let parsed = parse_npm_publish_payload(&body, "mylib").unwrap();
+        let vd = &parsed.versions[0].version_data;
+        assert_eq!(vd["description"], "A test package");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_version_tarball
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_version_tarball_unscoped() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"tarball bytes");
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "mylib-1.0.0.tgz".to_string(),
+            serde_json::json!({ "data": b64 }),
+        );
+
+        let result = extract_version_tarball(
+            "mylib",
+            "1.0.0",
+            serde_json::json!({"version": "1.0.0"}),
+            &attachments,
+        );
+        assert!(result.is_ok());
+        let ver = result.unwrap();
+        assert_eq!(ver.version, "1.0.0");
+        assert_eq!(ver.tarball_filename, "mylib-1.0.0.tgz");
+        assert_eq!(ver.tarball_bytes, b"tarball bytes");
+        assert_eq!(ver.sha256.len(), 64);
+    }
+
+    #[test]
+    fn test_extract_version_tarball_scoped() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"scoped data");
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "core-7.0.0.tgz".to_string(),
+            serde_json::json!({ "data": b64 }),
+        );
+
+        let result =
+            extract_version_tarball("@babel/core", "7.0.0", serde_json::json!({}), &attachments);
+        assert!(result.is_ok());
+        let ver = result.unwrap();
+        assert_eq!(ver.tarball_filename, "core-7.0.0.tgz");
+    }
+
+    #[test]
+    fn test_extract_version_tarball_falls_back_to_first_attachment() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"fallback data");
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "different-name.tgz".to_string(),
+            serde_json::json!({ "data": b64 }),
+        );
+
+        let result = extract_version_tarball("mylib", "1.0.0", serde_json::json!({}), &attachments);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_version_tarball_empty_attachments() {
+        let attachments = serde_json::Map::new();
+        let result = extract_version_tarball("mylib", "1.0.0", serde_json::json!({}), &attachments);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_version_tarball_missing_data_field() {
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "mylib-1.0.0.tgz".to_string(),
+            serde_json::json!({ "content_type": "application/octet-stream" }),
+        );
+
+        let result = extract_version_tarball("mylib", "1.0.0", serde_json::json!({}), &attachments);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_version_tarball_invalid_base64() {
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "mylib-1.0.0.tgz".to_string(),
+            serde_json::json!({ "data": "!!!not-base64!!!" }),
+        );
+
+        let result = extract_version_tarball("mylib", "1.0.0", serde_json::json!({}), &attachments);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_version_tarball_sha256_matches_content() {
+        let content = b"deterministic content";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(content);
+        let mut attachments = serde_json::Map::new();
+        attachments.insert(
+            "pkg-1.0.0.tgz".to_string(),
+            serde_json::json!({ "data": b64 }),
+        );
+
+        let ver =
+            extract_version_tarball("pkg", "1.0.0", serde_json::json!({}), &attachments).unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let expected_sha256 = format!("{:x}", hasher.finalize());
+        assert_eq!(ver.sha256, expected_sha256);
+    }
+
+    // -----------------------------------------------------------------------
+    // ParsedNpmPublish / NpmVersionToPublish structs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_npm_version_to_publish_fields() {
+        let ver = NpmVersionToPublish {
+            version: "3.0.0".to_string(),
+            version_data: serde_json::json!({"description": "test"}),
+            tarball_filename: "pkg-3.0.0.tgz".to_string(),
+            tarball_bytes: vec![1, 2, 3],
+            sha256: "abc".to_string(),
+        };
+        assert_eq!(ver.version, "3.0.0");
+        assert_eq!(ver.tarball_bytes.len(), 3);
+        assert_eq!(ver.version_data["description"], "test");
+    }
+
+    #[test]
+    fn test_parsed_npm_publish_multiple_versions() {
+        let b64_a = base64::engine::general_purpose::STANDARD.encode(b"version a");
+        let b64_b = base64::engine::general_purpose::STANDARD.encode(b"version b");
+
+        let payload = serde_json::json!({
+            "name": "multi",
+            "versions": {
+                "1.0.0": { "version": "1.0.0" },
+                "2.0.0": { "version": "2.0.0" }
+            },
+            "_attachments": {
+                "multi-1.0.0.tgz": { "data": b64_a },
+                "multi-2.0.0.tgz": { "data": b64_b }
+            }
+        });
+        let body = Bytes::from(serde_json::to_vec(&payload).unwrap());
+        let parsed = parse_npm_publish_payload(&body, "multi").unwrap();
+        assert_eq!(parsed.versions.len(), 2);
+
+        let version_names: Vec<&str> = parsed.versions.iter().map(|v| v.version.as_str()).collect();
+        assert!(version_names.contains(&"1.0.0"));
+        assert!(version_names.contains(&"2.0.0"));
+    }
 }

@@ -193,11 +193,7 @@ impl MigrationWorker {
         }
 
         // Update final status
-        let final_status = if total_failed > 0 && total_completed == 0 {
-            MigrationJobStatus::Failed
-        } else {
-            MigrationJobStatus::Completed
-        };
+        let final_status = determine_final_status(total_failed, total_completed);
 
         self.migration_service
             .update_job_status(job_id, final_status)
@@ -267,13 +263,9 @@ impl MigrationWorker {
                     return Ok(());
                 }
 
-                let artifact_path = if artifact.path == "." {
-                    artifact.name.clone()
-                } else {
-                    format!("{}/{}", artifact.path, artifact.name)
-                };
+                let artifact_path = build_artifact_path(&artifact.path, &artifact.name);
 
-                let source_path = format!("{}/{}", repo_key, artifact_path);
+                let source_path = build_source_path(repo_key, &artifact_path);
                 let size = artifact.size.unwrap_or(0);
                 let checksum = artifact
                     .sha256
@@ -458,13 +450,7 @@ impl MigrationWorker {
     /// Verify a transfer's checksum against the expected value.
     /// Returns true if verification passes or is not applicable.
     fn verify_transfer_checksum(&self, expected: &Option<String>, actual: &Option<String>) -> bool {
-        if !self.config.verify_checksums {
-            return true;
-        }
-        match (expected, actual) {
-            (Some(exp), Some(act)) => exp == act,
-            _ => true, // No checksum to verify
-        }
+        verify_checksums_match(self.config.verify_checksums, expected, actual)
     }
 
     /// Send a progress update through the channel, if one is configured
@@ -608,7 +594,7 @@ impl MigrationWorker {
                     .await?;
 
             if let Some((repository_id,)) = repo_id {
-                let name = artifact_path.rsplit('/').next().unwrap_or(artifact_path);
+                let name = extract_name_from_path(artifact_path);
                 let path_str = format!("{}/{}", repo_key, artifact_path);
                 sqlx::query(
                     r#"
@@ -628,7 +614,7 @@ impl MigrationWorker {
             }
         }
 
-        let target_path = format!("{}/{}", repo_key, artifact_path);
+        let target_path = build_source_path(repo_key, artifact_path);
 
         tracing::debug!(
             path = %artifact_path,
@@ -1070,6 +1056,59 @@ struct TransferResult {
     metadata: Option<std::collections::HashMap<String, Vec<String>>>,
 }
 
+/// Determine the final job status based on completed and failed counts.
+/// Returns Failed only when all items failed (failed > 0 and completed == 0),
+/// otherwise returns Completed.
+pub(crate) fn determine_final_status(
+    total_failed: i32,
+    total_completed: i32,
+) -> MigrationJobStatus {
+    if total_failed > 0 && total_completed == 0 {
+        MigrationJobStatus::Failed
+    } else {
+        MigrationJobStatus::Completed
+    }
+}
+
+/// Check whether an expected checksum matches an actual checksum.
+/// Returns true (pass) when verification is disabled, when either value
+/// is missing, or when both values are present and equal.
+pub(crate) fn verify_checksums_match(
+    verify_enabled: bool,
+    expected: &Option<String>,
+    actual: &Option<String>,
+) -> bool {
+    if !verify_enabled {
+        return true;
+    }
+    match (expected, actual) {
+        (Some(exp), Some(act)) => exp == act,
+        _ => true,
+    }
+}
+
+/// Build the artifact path from the directory path and artifact name.
+/// When the path is "." (root), the name alone is used.
+pub(crate) fn build_artifact_path(path: &str, name: &str) -> String {
+    if path == "." {
+        name.to_string()
+    } else {
+        format!("{}/{}", path, name)
+    }
+}
+
+/// Build the full source path by combining a repository key with an artifact path.
+pub(crate) fn build_source_path(repo_key: &str, artifact_path: &str) -> String {
+    format!("{}/{}", repo_key, artifact_path)
+}
+
+/// Extract the file name from an artifact path.
+/// Returns the portion after the last '/' separator, or the entire
+/// string if no separator is present.
+pub(crate) fn extract_name_from_path(artifact_path: &str) -> &str {
+    artifact_path.rsplit('/').next().unwrap_or(artifact_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1372,5 +1411,412 @@ mod tests {
             };
             let _ = format!("{:?}", update);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // determine_final_status
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_determine_final_status_all_completed() {
+        let status = determine_final_status(0, 50);
+        assert_eq!(status, MigrationJobStatus::Completed);
+    }
+
+    #[test]
+    fn test_determine_final_status_all_failed() {
+        let status = determine_final_status(10, 0);
+        assert_eq!(status, MigrationJobStatus::Failed);
+    }
+
+    #[test]
+    fn test_determine_final_status_mixed() {
+        let status = determine_final_status(3, 7);
+        assert_eq!(status, MigrationJobStatus::Completed);
+    }
+
+    #[test]
+    fn test_determine_final_status_no_items() {
+        let status = determine_final_status(0, 0);
+        assert_eq!(status, MigrationJobStatus::Completed);
+    }
+
+    #[test]
+    fn test_determine_final_status_one_failure_one_success() {
+        let status = determine_final_status(1, 1);
+        assert_eq!(status, MigrationJobStatus::Completed);
+    }
+
+    #[test]
+    fn test_determine_final_status_single_failure() {
+        let status = determine_final_status(1, 0);
+        assert_eq!(status, MigrationJobStatus::Failed);
+    }
+
+    #[test]
+    fn test_determine_final_status_large_counts() {
+        assert_eq!(
+            determine_final_status(0, 100_000),
+            MigrationJobStatus::Completed
+        );
+        assert_eq!(
+            determine_final_status(100_000, 0),
+            MigrationJobStatus::Failed
+        );
+        assert_eq!(
+            determine_final_status(50_000, 50_000),
+            MigrationJobStatus::Completed
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // verify_checksums_match
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_verify_checksums_match_disabled() {
+        let expected = Some("abc123".to_string());
+        let actual = Some("different".to_string());
+        assert!(verify_checksums_match(false, &expected, &actual));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_both_present_equal() {
+        let expected = Some("abc123".to_string());
+        let actual = Some("abc123".to_string());
+        assert!(verify_checksums_match(true, &expected, &actual));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_both_present_different() {
+        let expected = Some("abc123".to_string());
+        let actual = Some("def456".to_string());
+        assert!(!verify_checksums_match(true, &expected, &actual));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_expected_none() {
+        let actual = Some("abc123".to_string());
+        assert!(verify_checksums_match(true, &None, &actual));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_actual_none() {
+        let expected = Some("abc123".to_string());
+        assert!(verify_checksums_match(true, &expected, &None));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_both_none() {
+        assert!(verify_checksums_match(true, &None, &None));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_disabled_both_none() {
+        assert!(verify_checksums_match(false, &None, &None));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_empty_strings() {
+        let expected = Some(String::new());
+        let actual = Some(String::new());
+        assert!(verify_checksums_match(true, &expected, &actual));
+    }
+
+    #[test]
+    fn test_verify_checksums_match_case_sensitive() {
+        let expected = Some("ABC123".to_string());
+        let actual = Some("abc123".to_string());
+        assert!(!verify_checksums_match(true, &expected, &actual));
+    }
+
+    // -----------------------------------------------------------------------
+    // build_artifact_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_artifact_path_root() {
+        assert_eq!(build_artifact_path(".", "lib.jar"), "lib.jar");
+    }
+
+    #[test]
+    fn test_build_artifact_path_nested() {
+        assert_eq!(
+            build_artifact_path("com/example", "lib.jar"),
+            "com/example/lib.jar"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_path_single_directory() {
+        assert_eq!(
+            build_artifact_path("libs", "artifact.tar.gz"),
+            "libs/artifact.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_path_deep_nesting() {
+        assert_eq!(
+            build_artifact_path(
+                "org/apache/maven/plugins",
+                "maven-compiler-plugin-3.11.0.jar"
+            ),
+            "org/apache/maven/plugins/maven-compiler-plugin-3.11.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_path_empty_name_at_root() {
+        assert_eq!(build_artifact_path(".", ""), "");
+    }
+
+    #[test]
+    fn test_build_artifact_path_empty_path() {
+        assert_eq!(build_artifact_path("", "file.jar"), "/file.jar");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_source_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_source_path_simple() {
+        assert_eq!(
+            build_source_path("libs-release", "com/example/lib.jar"),
+            "libs-release/com/example/lib.jar"
+        );
+    }
+
+    #[test]
+    fn test_build_source_path_root_artifact() {
+        assert_eq!(build_source_path("my-repo", "file.bin"), "my-repo/file.bin");
+    }
+
+    #[test]
+    fn test_build_source_path_empty_repo() {
+        assert_eq!(build_source_path("", "file.jar"), "/file.jar");
+    }
+
+    #[test]
+    fn test_build_source_path_empty_artifact() {
+        assert_eq!(build_source_path("repo", ""), "repo/");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_name_from_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_name_from_path_nested() {
+        assert_eq!(
+            extract_name_from_path("com/example/lib-1.0.jar"),
+            "lib-1.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_path_root_file() {
+        assert_eq!(extract_name_from_path("file.jar"), "file.jar");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_deep() {
+        assert_eq!(
+            extract_name_from_path("org/apache/maven/plugins/maven-compiler-plugin-3.11.0.jar"),
+            "maven-compiler-plugin-3.11.0.jar"
+        );
+    }
+
+    #[test]
+    fn test_extract_name_from_path_empty() {
+        assert_eq!(extract_name_from_path(""), "");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_trailing_slash() {
+        assert_eq!(extract_name_from_path("com/example/"), "");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_no_extension() {
+        assert_eq!(extract_name_from_path("dir/LICENSE"), "LICENSE");
+    }
+
+    #[test]
+    fn test_extract_name_from_path_dots_in_name() {
+        assert_eq!(
+            extract_name_from_path("repo/artifact-1.2.3-SNAPSHOT.jar"),
+            "artifact-1.2.3-SNAPSHOT.jar"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration of helpers: artifact path -> source path -> name extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_full_path_pipeline_root_artifact() {
+        let artifact_path = build_artifact_path(".", "my-library.jar");
+        let source_path = build_source_path("libs-release", &artifact_path);
+        let name = extract_name_from_path(&artifact_path);
+
+        assert_eq!(artifact_path, "my-library.jar");
+        assert_eq!(source_path, "libs-release/my-library.jar");
+        assert_eq!(name, "my-library.jar");
+    }
+
+    #[test]
+    fn test_full_path_pipeline_nested_artifact() {
+        let artifact_path = build_artifact_path("com/example/1.0", "example-1.0.pom");
+        let source_path = build_source_path("maven-central", &artifact_path);
+        let name = extract_name_from_path(&artifact_path);
+
+        assert_eq!(artifact_path, "com/example/1.0/example-1.0.pom");
+        assert_eq!(source_path, "maven-central/com/example/1.0/example-1.0.pom");
+        assert_eq!(name, "example-1.0.pom");
+    }
+
+    // -----------------------------------------------------------------------
+    // TransferResult with metadata map
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_transfer_result_metadata_multiple_keys() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("build.name".to_string(), vec!["my-build".to_string()]);
+        metadata.insert(
+            "build.number".to_string(),
+            vec!["42".to_string(), "43".to_string()],
+        );
+
+        let result = TransferResult {
+            target_path: "repo/artifact.jar".to_string(),
+            calculated_checksum: Some("deadbeef".to_string()),
+            metadata: Some(metadata),
+        };
+
+        let meta = result.metadata.as_ref().unwrap();
+        assert_eq!(meta.len(), 2);
+        assert_eq!(meta["build.name"], vec!["my-build".to_string()]);
+        assert_eq!(meta["build.number"].len(), 2);
+    }
+
+    #[test]
+    fn test_transfer_result_empty_metadata() {
+        let result = TransferResult {
+            target_path: "repo/file.bin".to_string(),
+            calculated_checksum: None,
+            metadata: Some(std::collections::HashMap::new()),
+        };
+        assert!(result.metadata.as_ref().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ProgressUpdate - edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_progress_update_zero_bytes() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 50,
+            failed: 0,
+            skipped: 0,
+            transferred_bytes: 0,
+            current_item: None,
+            status: MigrationJobStatus::Running,
+        };
+        assert_eq!(update.transferred_bytes, 0);
+        assert_eq!(update.completed, 50);
+    }
+
+    #[test]
+    fn test_progress_update_large_transfer() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 10_000,
+            failed: 100,
+            skipped: 500,
+            transferred_bytes: 1_000_000_000_000, // 1 TB
+            current_item: Some("large-artifact.tar.gz".to_string()),
+            status: MigrationJobStatus::Running,
+        };
+        assert_eq!(update.transferred_bytes, 1_000_000_000_000);
+        assert_eq!(update.completed, 10_000);
+    }
+
+    #[test]
+    fn test_progress_update_failed_status() {
+        let update = ProgressUpdate {
+            job_id: Uuid::new_v4(),
+            completed: 0,
+            failed: 50,
+            skipped: 0,
+            transferred_bytes: 0,
+            current_item: None,
+            status: MigrationJobStatus::Failed,
+        };
+        assert_eq!(update.failed, 50);
+        assert_eq!(update.completed, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ConflictResolution - mixed case and whitespace-adjacent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_conflict_resolution_from_str_mixed_case() {
+        assert_eq!(
+            ConflictResolution::from_str("oVeRwRiTe"),
+            ConflictResolution::Overwrite
+        );
+        assert_eq!(
+            ConflictResolution::from_str("rEnAmE"),
+            ConflictResolution::Rename
+        );
+    }
+
+    #[test]
+    fn test_conflict_resolution_from_str_whitespace_not_trimmed() {
+        assert_eq!(
+            ConflictResolution::from_str(" skip "),
+            ConflictResolution::Skip
+        );
+        assert_eq!(
+            ConflictResolution::from_str(" overwrite"),
+            ConflictResolution::Skip
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // WorkerConfig - boundary values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_worker_config_zero_concurrency() {
+        let config = WorkerConfig {
+            concurrency: 0,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(config.concurrency, 0);
+    }
+
+    #[test]
+    fn test_worker_config_max_retries_zero() {
+        let config = WorkerConfig {
+            max_retries: 0,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(config.max_retries, 0);
+    }
+
+    #[test]
+    fn test_worker_config_large_batch_size() {
+        let config = WorkerConfig {
+            batch_size: i64::MAX,
+            ..WorkerConfig::default()
+        };
+        assert_eq!(config.batch_size, i64::MAX);
     }
 }
