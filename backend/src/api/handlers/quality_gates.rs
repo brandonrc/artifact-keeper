@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
+use crate::services::event_bus::DomainEvent;
 use crate::services::quality_check_service::QualityCheckService;
 
 /// Create quality gate routes
@@ -763,7 +764,7 @@ async fn list_gates(
 )]
 async fn create_gate(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Json(body): Json<CreateGateRequest>,
 ) -> Result<Json<GateResponse>> {
     let qc_service = QualityCheckService::new(state.db.clone());
@@ -784,6 +785,7 @@ async fn create_gate(
         action: body.action,
     };
     let gate = qc_service.create_gate(input).await?;
+    state.event_bus.publish(DomainEvent::now("quality_gate.created", gate.id.to_string(), Some(auth.username.clone())));
     Ok(Json(GateResponse::from(gate)))
 }
 
@@ -828,7 +830,7 @@ async fn get_gate(
 )]
 async fn update_gate(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateGateRequest>,
 ) -> Result<Json<GateResponse>> {
@@ -850,6 +852,7 @@ async fn update_gate(
         is_enabled: body.is_enabled,
     };
     let gate = qc_service.update_gate(id, input).await?;
+    state.event_bus.publish(DomainEvent::now("quality_gate.updated", gate.id.to_string(), Some(auth.username.clone())));
     Ok(Json(GateResponse::from(gate)))
 }
 
@@ -869,11 +872,12 @@ async fn update_gate(
 )]
 async fn delete_gate(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     let qc_service = QualityCheckService::new(state.db.clone());
     qc_service.delete_gate(id).await?;
+    state.event_bus.publish(DomainEvent::now("quality_gate.deleted", id.to_string(), Some(auth.username.clone())));
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::api::dto::Pagination;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
+use crate::services::event_bus::DomainEvent;
 
 /// Create group routes
 pub fn router() -> Router<SharedState> {
@@ -212,6 +213,8 @@ pub async fn create_group(
         }
     })?;
 
+    state.event_bus.publish(DomainEvent::now("group.created", group.id.to_string(), None));
+
     Ok(Json(GroupResponse {
         id: group.id,
         name: group.name,
@@ -318,6 +321,8 @@ pub async fn update_group(
             .await
             .unwrap_or(0);
 
+    state.event_bus.publish(DomainEvent::now("group.updated", group.id.to_string(), None));
+
     Ok(Json(GroupResponse {
         id: group.id,
         name: group.name,
@@ -354,6 +359,8 @@ pub async fn delete_group(State(state): State<SharedState>, Path(id): Path<Uuid>
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Group not found".to_string()));
     }
+
+    state.event_bus.publish(DomainEvent::now("group.deleted", id.to_string(), None));
 
     Ok(())
 }
@@ -400,6 +407,8 @@ pub async fn add_members(
         .map_err(|e| AppError::Database(e.to_string()))?;
     }
 
+    state.event_bus.publish(DomainEvent::now("group.member_added", id.to_string(), None));
+
     Ok(())
 }
 
@@ -433,6 +442,8 @@ pub async fn remove_members(
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
     }
+
+    state.event_bus.publish(DomainEvent::now("group.member_removed", id.to_string(), None));
 
     Ok(())
 }

@@ -15,6 +15,18 @@ pub struct DomainEvent {
     pub timestamp: String,
 }
 
+impl DomainEvent {
+    /// Create a domain event timestamped to now.
+    pub fn now(event_type: impl Into<String>, entity_id: impl Into<String>, actor: Option<String>) -> Self {
+        Self {
+            event_type: event_type.into(),
+            entity_id: entity_id.into(),
+            actor,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 /// Broadcast-based event bus for domain events.
 ///
 /// Subscribers receive events via `tokio::sync::broadcast`. If a subscriber

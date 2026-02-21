@@ -16,6 +16,7 @@ use crate::api::SharedState;
 use crate::error::{AppError, Result};
 use crate::models::user::{AuthProvider, User};
 use crate::services::auth_service::AuthService;
+use crate::services::event_bus::DomainEvent;
 use std::sync::atomic::Ordering;
 
 /// Create user routes
@@ -205,7 +206,7 @@ pub async fn list_users(
 )]
 pub async fn create_user(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<CreateUserResponse>> {
     // Generate password if not provided, otherwise validate
@@ -257,6 +258,8 @@ pub async fn create_user(
             AppError::Database(msg)
         }
     })?;
+
+    state.event_bus.publish(DomainEvent::now("user.created", user.id.to_string(), Some(auth.username.clone())));
 
     Ok(Json(CreateUserResponse {
         user: user_to_response(user),
@@ -323,7 +326,7 @@ pub async fn get_user(
 )]
 pub async fn update_user(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateUserRequest>,
 ) -> Result<Json<AdminUserResponse>> {
@@ -355,6 +358,8 @@ pub async fn update_user(
     .await
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    state.event_bus.publish(DomainEvent::now("user.updated", user.id.to_string(), Some(auth.username.clone())));
 
     Ok(Json(user_to_response(user)))
 }
@@ -393,6 +398,8 @@ pub async fn delete_user(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("User not found".to_string()));
     }
+
+    state.event_bus.publish(DomainEvent::now("user.deleted", id.to_string(), Some(auth.username.clone())));
 
     Ok(())
 }

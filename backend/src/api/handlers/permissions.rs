@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::api::dto::Pagination;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
+use crate::services::event_bus::DomainEvent;
 
 /// Create permission routes
 pub fn router() -> Router<SharedState> {
@@ -258,6 +259,8 @@ pub async fn create_permission(
         }
     })?;
 
+    state.event_bus.publish(DomainEvent::now("permission.created", permission.id.to_string(), None));
+
     Ok(Json(PermissionResponse {
         id: permission.id,
         principal_type: permission.principal_type,
@@ -373,6 +376,8 @@ pub async fn update_permission(
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound("Permission not found".to_string()))?;
 
+    state.event_bus.publish(DomainEvent::now("permission.updated", permission.id.to_string(), None));
+
     Ok(Json(PermissionResponse {
         id: permission.id,
         principal_type: permission.principal_type,
@@ -416,6 +421,8 @@ pub async fn delete_permission(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Permission not found".to_string()));
     }
+
+    state.event_bus.publish(DomainEvent::now("permission.deleted", id.to_string(), None));
 
     Ok(())
 }

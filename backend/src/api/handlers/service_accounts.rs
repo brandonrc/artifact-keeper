@@ -18,6 +18,7 @@ use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
 use crate::services::auth_service::AuthService;
+use crate::services::event_bus::DomainEvent;
 use crate::services::service_account_service::{ServiceAccountService, ServiceAccountSummary};
 use crate::services::token_service::TokenService;
 
@@ -292,6 +293,8 @@ pub async fn create_service_account(
         .create(&payload.name, payload.description.as_deref())
         .await?;
 
+    state.event_bus.publish(DomainEvent::now("service_account.created", user.id.to_string(), Some(auth.username.clone())));
+
     Ok(Json(ServiceAccountResponse {
         id: user.id,
         username: user.username,
@@ -362,6 +365,8 @@ pub async fn update_service_account(
         .update(id, payload.display_name.as_deref(), payload.is_active)
         .await?;
 
+    state.event_bus.publish(DomainEvent::now("service_account.updated", user.id.to_string(), Some(auth.username.clone())));
+
     Ok(Json(ServiceAccountResponse {
         id: user.id,
         username: user.username,
@@ -394,6 +399,8 @@ pub async fn delete_service_account(
 
     let svc = ServiceAccountService::new(state.db.clone());
     svc.delete(id).await?;
+
+    state.event_bus.publish(DomainEvent::now("service_account.deleted", id.to_string(), Some(auth.username.clone())));
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
