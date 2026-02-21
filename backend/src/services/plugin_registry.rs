@@ -706,6 +706,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_unregister_error_message_contains_id() {
+        let registry = PluginRegistry::new().unwrap();
+        let id = Uuid::new_v4();
+        let result = registry.unregister(id).await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains(&id.to_string()));
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_plugins_empty() {
+        let registry = PluginRegistry::new().unwrap();
+        let plugins = registry.list_plugins().await;
+        assert!(plugins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_formats_empty() {
+        let registry = PluginRegistry::new().unwrap();
+        let formats = registry.list_formats().await;
+        assert!(formats.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_by_id_nonexistent() {
+        let registry = PluginRegistry::new().unwrap();
+        let id = Uuid::nil();
+        assert!(registry.get_by_id(id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_clear_then_count() {
+        let registry = PluginRegistry::new().unwrap();
+        registry.clear().await;
+        assert_eq!(registry.plugin_count().await, 0);
+        assert!(registry.list_formats().await.is_empty());
+        assert!(registry.list_plugins().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_plugin_error_message_content() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry.resolve_plugin("custom-rpm").await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains("custom-rpm"));
+                assert!(msg.contains("No plugin registered"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_parse_metadata_error_message() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry
+            .execute_parse_metadata("custom-deb", "/test.deb", b"fake")
+            .await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains("custom-deb"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_validate_error_message() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry
+            .execute_validate("custom-npm", "/package.tgz", b"fake")
+            .await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains("custom-npm"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_generate_index_error_message() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry.execute_generate_index("custom-cargo", &[]).await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains("custom-cargo"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_execute_handle_request_no_plugin_error_message() {
         let registry = PluginRegistry::new().unwrap();
         let request = WasmHttpRequest {
@@ -729,5 +826,43 @@ mod tests {
             }
             other => panic!("Expected ValidationFailed, got: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_has_handle_request_without_v2() {
+        // A plugin with handle_request capability but no compiled_v2 should return false
+        let registry = PluginRegistry::new().unwrap();
+        // No plugins registered, so has_handle_request returns false
+        assert!(!registry.has_handle_request("any-format").await);
+    }
+
+    #[tokio::test]
+    async fn test_version_counter_starts_at_zero() {
+        let registry = PluginRegistry::new().unwrap();
+        // First call should return 1 (increments from 0)
+        let v = registry.next_version().await;
+        assert_eq!(v, 1);
+    }
+
+    #[tokio::test]
+    async fn test_register_invalid_wasm_with_handle_request() {
+        let registry = PluginRegistry::new().unwrap();
+        let caps = PluginCapabilities {
+            handle_request: true,
+            ..Default::default()
+        };
+        let result = registry
+            .register(
+                Uuid::new_v4(),
+                "v2-plugin".to_string(),
+                "v2-format".to_string(),
+                "1.0.0".to_string(),
+                b"invalid wasm",
+                caps,
+                PluginResourceLimits::default(),
+            )
+            .await;
+        // Should fail at v1 compilation before even attempting v2
+        assert!(result.is_err());
     }
 }

@@ -66,6 +66,42 @@ fn headers_to_pairs(headers: &HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Check whether a repository's format key matches the expected format key.
+/// Returns an error message string if they don't match, or None if they match.
+fn check_format_key_match(
+    repo_key: &str,
+    repo_format_key: Option<&str>,
+    expected_format_key: &str,
+) -> Option<String> {
+    if repo_format_key != Some(expected_format_key) {
+        Some(format!(
+            "Repository '{}' uses format '{}', not '{}'",
+            repo_key,
+            repo_format_key.unwrap_or("none"),
+            expected_format_key
+        ))
+    } else {
+        None
+    }
+}
+
+/// Convert raw artifact row data to WasmMetadata.
+fn artifact_to_wasm_metadata(
+    path: String,
+    version: Option<String>,
+    content_type: String,
+    size_bytes: i64,
+    checksum_sha256: String,
+) -> WasmMetadata {
+    WasmMetadata {
+        path,
+        version,
+        content_type,
+        size_bytes: size_bytes as u64,
+        checksum_sha256: Some(checksum_sha256),
+    }
+}
+
 async fn handle_wasm_request(
     State(state): State<SharedState>,
     method: Method,
@@ -108,16 +144,8 @@ async fn handle_wasm_request(
         )
     })?;
 
-    if repo_format_key.as_deref() != Some(format_key) {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            &format!(
-                "Repository '{}' uses format '{}', not '{}'",
-                repo_key,
-                repo_format_key.as_deref().unwrap_or("none"),
-                format_key
-            ),
-        ));
+    if let Some(msg) = check_format_key_match(repo_key, repo_format_key.as_deref(), format_key) {
+        return Err(error_response(StatusCode::BAD_REQUEST, &msg));
     }
 
     // 4. Gather artifact metadata from DB
@@ -223,12 +251,14 @@ async fn fetch_repo_artifacts(
 
     Ok(rows
         .into_iter()
-        .map(|r| WasmMetadata {
-            path: r.path,
-            version: r.version,
-            content_type: r.content_type,
-            size_bytes: r.size_bytes as u64,
-            checksum_sha256: Some(r.checksum_sha256),
+        .map(|r| {
+            artifact_to_wasm_metadata(
+                r.path,
+                r.version,
+                r.content_type,
+                r.size_bytes,
+                r.checksum_sha256,
+            )
         })
         .collect())
 }
@@ -387,6 +417,91 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "Bad Request");
         assert_eq!(json["message"], "wrong format");
+    }
+
+    // -----------------------------------------------------------------------
+    // headers_to_pairs (non-UTF-8 filtering)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_headers_to_pairs_skips_non_utf8() {
+        let mut headers = HeaderMap::new();
+        headers.insert("good", HeaderValue::from_static("valid"));
+        headers.insert("binary", HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap());
+        let pairs = headers_to_pairs(&headers);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "good");
+        assert_eq!(pairs[0].1, "valid");
+    }
+
+    // -----------------------------------------------------------------------
+    // check_format_key_match
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_key_match_ok() {
+        assert!(check_format_key_match("my-repo", Some("pypi-custom"), "pypi-custom").is_none());
+    }
+
+    #[test]
+    fn test_format_key_mismatch() {
+        let msg = check_format_key_match("my-repo", Some("rpm-custom"), "pypi-custom").unwrap();
+        assert!(msg.contains("my-repo"));
+        assert!(msg.contains("rpm-custom"));
+        assert!(msg.contains("pypi-custom"));
+    }
+
+    #[test]
+    fn test_format_key_none() {
+        let msg = check_format_key_match("my-repo", None, "pypi-custom").unwrap();
+        assert!(msg.contains("none"));
+        assert!(msg.contains("pypi-custom"));
+    }
+
+    // -----------------------------------------------------------------------
+    // artifact_to_wasm_metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_artifact_to_wasm_metadata_basic() {
+        let meta = artifact_to_wasm_metadata(
+            "pkg/lib-1.0.tar.gz".to_string(),
+            Some("1.0".to_string()),
+            "application/gzip".to_string(),
+            4096,
+            "abc123".to_string(),
+        );
+        assert_eq!(meta.path, "pkg/lib-1.0.tar.gz");
+        assert_eq!(meta.version, Some("1.0".to_string()));
+        assert_eq!(meta.content_type, "application/gzip");
+        assert_eq!(meta.size_bytes, 4096);
+        assert_eq!(meta.checksum_sha256, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_artifact_to_wasm_metadata_no_version() {
+        let meta = artifact_to_wasm_metadata(
+            "data.bin".to_string(),
+            None,
+            "application/octet-stream".to_string(),
+            0,
+            "def456".to_string(),
+        );
+        assert_eq!(meta.version, None);
+        assert_eq!(meta.size_bytes, 0);
+        assert_eq!(meta.checksum_sha256, Some("def456".to_string()));
+    }
+
+    #[test]
+    fn test_artifact_to_wasm_metadata_large_size() {
+        let meta = artifact_to_wasm_metadata(
+            "big.iso".to_string(),
+            Some("22.04".to_string()),
+            "application/x-iso9660-image".to_string(),
+            4_294_967_296, // > u32::MAX
+            "sha".to_string(),
+        );
+        assert_eq!(meta.size_bytes, 4_294_967_296);
     }
 
     // -----------------------------------------------------------------------
