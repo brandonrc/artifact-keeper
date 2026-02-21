@@ -661,4 +661,73 @@ mod tests {
         let registry = PluginRegistry::new().unwrap();
         let _runtime = registry.runtime();
     }
+
+    #[tokio::test]
+    async fn test_register_invalid_wasm_bytes() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry
+            .register(
+                Uuid::new_v4(),
+                "bad-plugin".to_string(),
+                "bad-format".to_string(),
+                "1.0.0".to_string(),
+                b"not valid wasm bytes",
+                PluginCapabilities::default(),
+                PluginResourceLimits::default(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_register_empty_wasm_bytes() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry
+            .register(
+                Uuid::new_v4(),
+                "empty-plugin".to_string(),
+                "empty-format".to_string(),
+                "1.0.0".to_string(),
+                b"",
+                PluginCapabilities::default(),
+                PluginResourceLimits::default(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_with_runtime_constructor() {
+        let runtime = WasmRuntime::new().unwrap();
+        let registry = PluginRegistry::with_runtime(runtime);
+        assert_eq!(registry.plugin_count().await, 0);
+        assert!(registry.list_formats().await.is_empty());
+        assert!(!registry.has_format("test").await);
+    }
+
+    #[tokio::test]
+    async fn test_execute_handle_request_no_plugin_error_message() {
+        let registry = PluginRegistry::new().unwrap();
+        let request = WasmHttpRequest {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: String::new(),
+            headers: vec![],
+            body: vec![],
+        };
+        let context = WasmRepoContext {
+            repo_key: "r".to_string(),
+            base_url: "http://localhost".to_string(),
+            download_base_url: "http://localhost/dl".to_string(),
+        };
+        let result = registry
+            .execute_handle_request("no-such-format", &request, &context, &[])
+            .await;
+        match result {
+            Err(WasmError::ValidationFailed(msg)) => {
+                assert!(msg.contains("no-such-format"));
+            }
+            other => panic!("Expected ValidationFailed, got: {:?}", other),
+        }
+    }
 }

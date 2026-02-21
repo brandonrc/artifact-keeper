@@ -129,32 +129,8 @@ async fn handle_wasm_request(
     })?;
 
     // 5. Build request and context
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:8080");
-    let scheme = scheme_for_host(host);
-    let base_url = format!("{}://{}/ext/{}/{}", scheme, host, format_key, repo_key);
-    let download_base_url = format!(
-        "{}://{}/api/v1/repositories/{}/download",
-        scheme, host, repo_key
-    );
-
-    let header_pairs = headers_to_pairs(&headers);
-
-    let wasm_request = WasmHttpRequest {
-        method: method.to_string(),
-        path: request_path,
-        query: String::new(), // TODO: extract from raw URI if needed
-        headers: header_pairs,
-        body: body.to_vec(),
-    };
-
-    let wasm_context = WasmRepoContext {
-        repo_key: repo_key.to_string(),
-        base_url,
-        download_base_url,
-    };
+    let (wasm_request, wasm_context) =
+        build_wasm_request(&headers, &method, request_path, body, format_key, repo_key);
 
     // 6. Execute plugin
     let response = registry
@@ -169,6 +145,49 @@ async fn handle_wasm_request(
         })?;
 
     // 7. Convert WASM response to HTTP response
+    wasm_response_to_http(response)
+}
+
+/// Build the WASM request and repo context from HTTP request components.
+fn build_wasm_request(
+    headers: &HeaderMap,
+    method: &Method,
+    request_path: String,
+    body: Bytes,
+    format_key: &str,
+    repo_key: &str,
+) -> (WasmHttpRequest, WasmRepoContext) {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:8080");
+    let scheme = scheme_for_host(host);
+    let base_url = format!("{}://{}/ext/{}/{}", scheme, host, format_key, repo_key);
+    let download_base_url = format!(
+        "{}://{}/api/v1/repositories/{}/download",
+        scheme, host, repo_key
+    );
+    let header_pairs = headers_to_pairs(headers);
+
+    let wasm_request = WasmHttpRequest {
+        method: method.to_string(),
+        path: request_path,
+        query: String::new(),
+        headers: header_pairs,
+        body: body.to_vec(),
+    };
+    let wasm_context = WasmRepoContext {
+        repo_key: repo_key.to_string(),
+        base_url,
+        download_base_url,
+    };
+    (wasm_request, wasm_context)
+}
+
+/// Convert a WASM HTTP response to an axum HTTP response.
+fn wasm_response_to_http(
+    response: crate::services::wasm_bindings::WasmHttpResponse,
+) -> Result<Response<Body>, Response<Body>> {
     let mut builder = Response::builder().status(response.status);
     for (key, value) in &response.headers {
         builder = builder.header(key.as_str(), value.as_str());
@@ -367,5 +386,120 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "Bad Request");
         assert_eq!(json["message"], "wrong format");
+    }
+
+    // -----------------------------------------------------------------------
+    // build_wasm_request
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_wasm_request_localhost() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("localhost:8080"));
+        headers.insert("accept", HeaderValue::from_static("text/html"));
+        let (req, ctx) = build_wasm_request(
+            &headers,
+            &Method::GET,
+            "/simple/".to_string(),
+            Bytes::new(),
+            "pypi-custom",
+            "my-pypi",
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/simple/");
+        assert!(req.body.is_empty());
+        assert_eq!(req.headers.len(), 2);
+        assert_eq!(ctx.repo_key, "my-pypi");
+        assert_eq!(
+            ctx.base_url,
+            "http://localhost:8080/ext/pypi-custom/my-pypi"
+        );
+        assert_eq!(
+            ctx.download_base_url,
+            "http://localhost:8080/api/v1/repositories/my-pypi/download"
+        );
+    }
+
+    #[test]
+    fn test_build_wasm_request_remote_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("registry.example.com"));
+        let (req, ctx) = build_wasm_request(
+            &headers,
+            &Method::POST,
+            "/upload".to_string(),
+            Bytes::from(vec![0xde, 0xad]),
+            "rpm-custom",
+            "centos-repo",
+        );
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body, vec![0xde, 0xad]);
+        assert_eq!(ctx.repo_key, "centos-repo");
+        assert!(ctx.base_url.starts_with("https://"));
+        assert!(ctx.download_base_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_build_wasm_request_no_host_header() {
+        let headers = HeaderMap::new();
+        let (_, ctx) = build_wasm_request(
+            &headers,
+            &Method::GET,
+            "/".to_string(),
+            Bytes::new(),
+            "fmt",
+            "repo",
+        );
+        assert!(ctx.base_url.starts_with("http://localhost:8080"));
+    }
+
+    // -----------------------------------------------------------------------
+    // wasm_response_to_http
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_wasm_response_to_http_ok() {
+        let wasm_resp = crate::services::wasm_bindings::WasmHttpResponse {
+            status: 200,
+            headers: vec![
+                ("content-type".to_string(), "text/html".to_string()),
+                ("x-plugin".to_string(), "pypi-custom".to_string()),
+            ],
+            body: b"<html>index</html>".to_vec(),
+        };
+        let resp = wasm_response_to_http(wasm_resp).unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.headers().get("content-type").unwrap(), "text/html");
+        assert_eq!(resp.headers().get("x-plugin").unwrap(), "pypi-custom");
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert_eq!(body.as_ref(), b"<html>index</html>");
+    }
+
+    #[tokio::test]
+    async fn test_wasm_response_to_http_empty() {
+        let wasm_resp = crate::services::wasm_bindings::WasmHttpResponse {
+            status: 404,
+            headers: vec![],
+            body: vec![],
+        };
+        let resp = wasm_response_to_http(wasm_resp).unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_wasm_response_to_http_binary() {
+        let wasm_resp = crate::services::wasm_bindings::WasmHttpResponse {
+            status: 200,
+            headers: vec![(
+                "content-type".to_string(),
+                "application/octet-stream".to_string(),
+            )],
+            body: vec![0x1f, 0x8b, 0x08, 0x00],
+        };
+        let resp = wasm_response_to_http(wasm_resp).unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+        assert_eq!(body.as_ref(), &[0x1f, 0x8b, 0x08, 0x00]);
     }
 }
