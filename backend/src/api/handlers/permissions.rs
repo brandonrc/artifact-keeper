@@ -259,7 +259,11 @@ pub async fn create_permission(
         }
     })?;
 
-    state.event_bus.publish(DomainEvent::now("permission.created", permission.id.to_string(), None));
+    state.event_bus.publish(DomainEvent::now(
+        "permission.created",
+        permission.id.to_string(),
+        None,
+    ));
 
     Ok(Json(PermissionResponse {
         id: permission.id,
@@ -376,7 +380,11 @@ pub async fn update_permission(
     .map_err(|e| AppError::Database(e.to_string()))?
     .ok_or_else(|| AppError::NotFound("Permission not found".to_string()))?;
 
-    state.event_bus.publish(DomainEvent::now("permission.updated", permission.id.to_string(), None));
+    state.event_bus.publish(DomainEvent::now(
+        "permission.updated",
+        permission.id.to_string(),
+        None,
+    ));
 
     Ok(Json(PermissionResponse {
         id: permission.id,
@@ -422,7 +430,9 @@ pub async fn delete_permission(
         return Err(AppError::NotFound("Permission not found".to_string()));
     }
 
-    state.event_bus.publish(DomainEvent::now("permission.deleted", id.to_string(), None));
+    state
+        .event_bus
+        .publish(DomainEvent::now("permission.deleted", id.to_string(), None));
 
     Ok(())
 }
