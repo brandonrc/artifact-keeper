@@ -4,7 +4,6 @@
 //! Okta, Azure AD, ADFS, Shibboleth, etc.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
 
 use quick_xml::escape::unescape;
@@ -50,28 +49,21 @@ pub struct SamlConfig {
     pub require_signed_assertions: bool,
 }
 
-impl fmt::Debug for SamlConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SamlConfig")
-            .field("idp_metadata_url", &self.idp_metadata_url)
-            .field("idp_sso_url", &self.idp_sso_url)
-            .field("idp_issuer", &self.idp_issuer)
-            .field(
-                "idp_certificate",
-                &self.idp_certificate.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("sp_entity_id", &self.sp_entity_id)
-            .field("acs_url", &self.acs_url)
-            .field("username_attr", &self.username_attr)
-            .field("email_attr", &self.email_attr)
-            .field("display_name_attr", &self.display_name_attr)
-            .field("groups_attr", &self.groups_attr)
-            .field("admin_group", &self.admin_group)
-            .field("sign_requests", &self.sign_requests)
-            .field("require_signed_assertions", &self.require_signed_assertions)
-            .finish()
-    }
-}
+redacted_debug!(SamlConfig {
+    show idp_metadata_url,
+    show idp_sso_url,
+    show idp_issuer,
+    redact_option idp_certificate,
+    show sp_entity_id,
+    show acs_url,
+    show username_attr,
+    show email_attr,
+    show display_name_attr,
+    show groups_attr,
+    show admin_group,
+    show sign_requests,
+    show require_signed_assertions,
+});
 
 impl SamlConfig {
     /// Create SAML config from environment variables

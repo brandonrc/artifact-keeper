@@ -3,7 +3,6 @@
 //! Provides authentication against LDAP/Active Directory servers.
 //! Uses a simple bind-based authentication approach.
 
-use std::fmt;
 use std::sync::Arc;
 
 use reqwest::Client;
@@ -42,26 +41,19 @@ pub struct LdapConfig {
     pub use_starttls: bool,
 }
 
-impl fmt::Debug for LdapConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LdapConfig")
-            .field("url", &self.url)
-            .field("base_dn", &self.base_dn)
-            .field("user_filter", &self.user_filter)
-            .field("bind_dn", &self.bind_dn)
-            .field(
-                "bind_password",
-                &self.bind_password.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("username_attr", &self.username_attr)
-            .field("email_attr", &self.email_attr)
-            .field("display_name_attr", &self.display_name_attr)
-            .field("groups_attr", &self.groups_attr)
-            .field("admin_group_dn", &self.admin_group_dn)
-            .field("use_starttls", &self.use_starttls)
-            .finish()
-    }
-}
+redacted_debug!(LdapConfig {
+    show url,
+    show base_dn,
+    show user_filter,
+    show bind_dn,
+    redact_option bind_password,
+    show username_attr,
+    show email_attr,
+    show display_name_attr,
+    show groups_attr,
+    show admin_group_dn,
+    show use_starttls,
+});
 
 impl LdapConfig {
     /// Create LDAP config from application config

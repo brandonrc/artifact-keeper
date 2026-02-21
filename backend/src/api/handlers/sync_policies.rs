@@ -796,6 +796,39 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_selector_rejects_oversized_array() {
+        let items: Vec<serde_json::Value> = (0..1001).map(|i| serde_json::json!(i)).collect();
+        let val = serde_json::Value::Array(items);
+        let result: Result<RepoSelector> = parse_selector(Some(val));
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("too many items"),
+            "expected 'too many items' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_selector_rejects_oversized_object() {
+        let mut map = serde_json::Map::new();
+        for i in 0..1001 {
+            map.insert(format!("key_{i}"), serde_json::json!(i));
+        }
+        let val = serde_json::Value::Object(map);
+        let result: Result<RepoSelector> = parse_selector(Some(val));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_selector_accepts_max_size_array() {
+        let items: Vec<serde_json::Value> = (0..1000).map(|i| serde_json::json!(i)).collect();
+        let val = serde_json::Value::Array(items);
+        // Array of ints won't deserialize to RepoSelector, so falls back to default
+        let result: RepoSelector = parse_selector(Some(val)).unwrap();
+        assert!(result.match_labels.is_empty());
+    }
+
+    #[test]
     fn test_sync_policy_response_json_contract() {
         let resp = SyncPolicyResponse {
             id: uuid::Uuid::nil(),
