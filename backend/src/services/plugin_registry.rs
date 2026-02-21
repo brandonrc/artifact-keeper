@@ -17,8 +17,8 @@ use super::wasm_bindings::{
     WitMetadataV2, WitRepoContext,
 };
 use super::wasm_runtime::{
-    CompiledPlugin, WasmError, WasmIndexFile, WasmMetadata, WasmResult, WasmRuntime,
-    WasmValidationError,
+    CompiledPlugin, PluginContext, WasmError, WasmIndexFile, WasmMetadata, WasmResult,
+    WasmRuntime, WasmValidationError,
 };
 
 /// Active plugin in the registry.
@@ -282,32 +282,18 @@ impl PluginRegistry {
         info!("Plugin registry cleared");
     }
 
-    /// Execute parse_metadata on a plugin.
-    ///
-    /// Looks up the plugin by format key and executes the parse_metadata
-    /// function with timeout protection.
-    pub async fn execute_parse_metadata(
-        &self,
-        format_key: &str,
-        path: &str,
-        data: &[u8],
-    ) -> WasmResult<WasmMetadata> {
-        let plugin = self.get_by_format(format_key).await.ok_or_else(|| {
+    /// Resolve a plugin by format key, returning an error if not registered.
+    async fn resolve_plugin(&self, format_key: &str) -> WasmResult<Arc<ActivePlugin>> {
+        self.get_by_format(format_key).await.ok_or_else(|| {
             WasmError::ValidationFailed(format!("No plugin registered for format '{}'", format_key))
-        })?;
+        })
+    }
 
-        if !plugin.capabilities.parse_metadata {
-            return Err(WasmError::ValidationFailed(format!(
-                "Plugin '{}' does not support parse_metadata",
-                plugin.name
-            )));
-        }
-
-        debug!(
-            "Executing parse_metadata on plugin {} for path {}",
-            plugin.name, path
-        );
-
+    /// Create a store and instantiate a v1 FormatPlugin for the given plugin.
+    async fn instantiate_v1(
+        &self,
+        plugin: &ActivePlugin,
+    ) -> WasmResult<(wasmtime::Store<PluginContext>, FormatPlugin)> {
         let mut store = self.runtime.create_store(
             &plugin.compiled,
             &plugin.id.to_string(),
@@ -323,6 +309,34 @@ impl PluginRegistry {
         .await
         .map_err(|e| WasmError::InstantiationFailed(e.to_string()))?;
 
+        Ok((store, instance))
+    }
+
+    /// Execute parse_metadata on a plugin.
+    ///
+    /// Looks up the plugin by format key and executes the parse_metadata
+    /// function with timeout protection.
+    pub async fn execute_parse_metadata(
+        &self,
+        format_key: &str,
+        path: &str,
+        data: &[u8],
+    ) -> WasmResult<WasmMetadata> {
+        let plugin = self.resolve_plugin(format_key).await?;
+
+        if !plugin.capabilities.parse_metadata {
+            return Err(WasmError::ValidationFailed(format!(
+                "Plugin '{}' does not support parse_metadata",
+                plugin.name
+            )));
+        }
+
+        debug!(
+            "Executing parse_metadata on plugin {} for path {}",
+            plugin.name, path
+        );
+
+        let (mut store, instance) = self.instantiate_v1(&plugin).await?;
         let handler = instance.artifact_keeper_format_handler();
         let result = handler
             .call_parse_metadata(&mut store, path, data)
@@ -345,12 +359,9 @@ impl PluginRegistry {
         path: &str,
         data: &[u8],
     ) -> WasmResult<Result<(), WasmValidationError>> {
-        let plugin = self.get_by_format(format_key).await.ok_or_else(|| {
-            WasmError::ValidationFailed(format!("No plugin registered for format '{}'", format_key))
-        })?;
+        let plugin = self.resolve_plugin(format_key).await?;
 
         if !plugin.capabilities.validate_artifact {
-            // If plugin doesn't support validation, treat as valid
             return Ok(Ok(()));
         }
 
@@ -359,21 +370,7 @@ impl PluginRegistry {
             plugin.name, path
         );
 
-        let mut store = self.runtime.create_store(
-            &plugin.compiled,
-            &plugin.id.to_string(),
-            &plugin.format_key,
-            &plugin.limits,
-        )?;
-
-        let instance = FormatPlugin::instantiate_async(
-            &mut store,
-            plugin.compiled.component(),
-            plugin.compiled.linker(),
-        )
-        .await
-        .map_err(|e| WasmError::InstantiationFailed(e.to_string()))?;
-
+        let (mut store, instance) = self.instantiate_v1(&plugin).await?;
         let handler = instance.artifact_keeper_format_handler();
         let result = handler
             .call_validate(&mut store, path, data)
@@ -398,12 +395,9 @@ impl PluginRegistry {
         format_key: &str,
         artifacts: &[WasmMetadata],
     ) -> WasmResult<Option<Vec<WasmIndexFile>>> {
-        let plugin = self.get_by_format(format_key).await.ok_or_else(|| {
-            WasmError::ValidationFailed(format!("No plugin registered for format '{}'", format_key))
-        })?;
+        let plugin = self.resolve_plugin(format_key).await?;
 
         if !plugin.capabilities.generate_index {
-            // If plugin doesn't support index generation, return None
             return Ok(None);
         }
 
@@ -413,23 +407,9 @@ impl PluginRegistry {
             artifacts.len()
         );
 
-        let mut store = self.runtime.create_store(
-            &plugin.compiled,
-            &plugin.id.to_string(),
-            &plugin.format_key,
-            &plugin.limits,
-        )?;
-
+        let (mut store, instance) = self.instantiate_v1(&plugin).await?;
         let wit_artifacts: Vec<super::wasm_bindings::WitMetadata> =
             artifacts.iter().map(Into::into).collect();
-
-        let instance = FormatPlugin::instantiate_async(
-            &mut store,
-            plugin.compiled.component(),
-            plugin.compiled.linker(),
-        )
-        .await
-        .map_err(|e| WasmError::InstantiationFailed(e.to_string()))?;
 
         let handler = instance.artifact_keeper_format_handler();
         let result = handler
@@ -606,5 +586,78 @@ mod tests {
         assert_eq!(v1, 1);
         assert_eq!(v2, 2);
         assert_eq!(v3, 3);
+    }
+
+    #[tokio::test]
+    async fn test_has_handle_request_no_plugin() {
+        let registry = PluginRegistry::new().unwrap();
+        assert!(!registry.has_handle_request("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn test_execute_handle_request_no_plugin() {
+        let registry = PluginRegistry::new().unwrap();
+        let request = WasmHttpRequest {
+            method: "GET".to_string(),
+            path: "/simple/".to_string(),
+            query: String::new(),
+            headers: vec![],
+            body: vec![],
+        };
+        let context = WasmRepoContext {
+            repo_key: "test-repo".to_string(),
+            base_url: "http://localhost/ext/pypi/test-repo".to_string(),
+            download_base_url: "http://localhost/api/v1/repositories/test-repo/download".to_string(),
+        };
+        let result = registry
+            .execute_handle_request("nonexistent", &request, &context, &[])
+            .await;
+        assert!(matches!(result, Err(WasmError::ValidationFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_plugin_not_found() {
+        let registry = PluginRegistry::new().unwrap();
+        let result = registry.resolve_plugin("missing-format").await;
+        assert!(result.is_err());
+        if let Err(WasmError::ValidationFailed(msg)) = result {
+            assert!(msg.contains("missing-format"));
+        }
+    }
+
+    #[test]
+    fn test_plugin_info_debug_clone() {
+        let info = PluginInfo {
+            id: Uuid::nil(),
+            name: "test".to_string(),
+            format_key: "fmt".to_string(),
+            version: "0.1.0".to_string(),
+            internal_version: 42,
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.format_key, "fmt");
+        assert_eq!(cloned.version, "0.1.0");
+        assert_eq!(cloned.internal_version, 42);
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("PluginInfo"));
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn test_registry_default() {
+        // Default should succeed (creates a WasmRuntime internally)
+        let registry = PluginRegistry::default();
+        // Verify it's empty
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            assert_eq!(registry.plugin_count().await, 0);
+        });
+    }
+
+    #[test]
+    fn test_registry_runtime_accessor() {
+        let registry = PluginRegistry::new().unwrap();
+        let _runtime = registry.runtime();
     }
 }
