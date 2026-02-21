@@ -1,5 +1,7 @@
 //! API token model.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sqlx::FromRow;
@@ -10,7 +12,7 @@ use uuid::Uuid;
 /// Tokens are stored as hashes with only a prefix stored in plaintext
 /// for identification purposes. The full token is only returned once
 /// during creation and cannot be retrieved later.
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Clone, FromRow, Serialize)]
 pub struct ApiToken {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -27,8 +29,22 @@ pub struct ApiToken {
     pub repo_selector: Option<serde_json::Value>,
 }
 
+impl fmt::Debug for ApiToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiToken")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("name", &self.name)
+            .field("token_hash", &"[REDACTED]")
+            .field("token_prefix", &self.token_prefix)
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Response type for API token creation (includes the actual token only once).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ApiTokenCreated {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -40,4 +56,15 @@ pub struct ApiTokenCreated {
     pub created_at: DateTime<Utc>,
     pub description: Option<String>,
     pub repository_ids: Vec<Uuid>,
+}
+
+impl fmt::Debug for ApiTokenCreated {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiTokenCreated")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("token", &"[REDACTED]")
+            .field("token_prefix", &self.token_prefix)
+            .finish_non_exhaustive()
+    }
 }

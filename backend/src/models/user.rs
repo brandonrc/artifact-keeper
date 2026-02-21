@@ -1,5 +1,7 @@
 //! User model.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -40,7 +42,7 @@ pub struct User {
 }
 
 /// API token entity
-#[derive(Debug, Clone, FromRow, Serialize)]
+#[derive(Clone, FromRow, Serialize)]
 pub struct ApiToken {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -54,4 +56,18 @@ pub struct ApiToken {
     pub created_at: DateTime<Utc>,
     pub created_by_user_id: Option<Uuid>,
     pub description: Option<String>,
+}
+
+impl fmt::Debug for ApiToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiToken")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("name", &self.name)
+            .field("token_hash", &"[REDACTED]")
+            .field("token_prefix", &self.token_prefix)
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }

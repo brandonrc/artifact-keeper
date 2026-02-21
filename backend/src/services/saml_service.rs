@@ -4,6 +4,7 @@
 //! Okta, Azure AD, ADFS, Shibboleth, etc.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use quick_xml::escape::unescape;
@@ -19,7 +20,7 @@ use crate::error::{AppError, Result};
 use crate::models::user::{AuthProvider, User};
 
 /// SAML configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SamlConfig {
     /// SAML IdP metadata URL
     pub idp_metadata_url: Option<String>,
@@ -47,6 +48,26 @@ pub struct SamlConfig {
     pub sign_requests: bool,
     /// Require signed assertions
     pub require_signed_assertions: bool,
+}
+
+impl fmt::Debug for SamlConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SamlConfig")
+            .field("idp_metadata_url", &self.idp_metadata_url)
+            .field("idp_sso_url", &self.idp_sso_url)
+            .field("idp_issuer", &self.idp_issuer)
+            .field("idp_certificate", &self.idp_certificate.as_ref().map(|_| "[REDACTED]"))
+            .field("sp_entity_id", &self.sp_entity_id)
+            .field("acs_url", &self.acs_url)
+            .field("username_attr", &self.username_attr)
+            .field("email_attr", &self.email_attr)
+            .field("display_name_attr", &self.display_name_attr)
+            .field("groups_attr", &self.groups_attr)
+            .field("admin_group", &self.admin_group)
+            .field("sign_requests", &self.sign_requests)
+            .field("require_signed_assertions", &self.require_signed_assertions)
+            .finish()
+    }
 }
 
 impl SamlConfig {

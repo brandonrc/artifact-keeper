@@ -4,6 +4,8 @@
 //! stored in the database, including encrypted credential storage and
 //! SSO session management for CSRF protection during auth flows.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
@@ -32,7 +34,7 @@ pub struct OidcConfigRow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Clone, FromRow)]
 pub struct LdapConfigRow {
     pub id: Uuid,
     pub name: String,
@@ -55,7 +57,21 @@ pub struct LdapConfigRow {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, FromRow)]
+impl fmt::Debug for LdapConfigRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LdapConfigRow")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("server_url", &self.server_url)
+            .field("bind_dn", &self.bind_dn)
+            .field("bind_password_encrypted", &self.bind_password_encrypted.as_ref().map(|_| "[REDACTED]"))
+            .field("user_base_dn", &self.user_base_dn)
+            .field("is_enabled", &self.is_enabled)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, FromRow)]
 pub struct SamlConfigRow {
     pub id: Uuid,
     pub name: String,
@@ -72,6 +88,20 @@ pub struct SamlConfigRow {
     pub is_enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl fmt::Debug for SamlConfigRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SamlConfigRow")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("entity_id", &self.entity_id)
+            .field("sso_url", &self.sso_url)
+            .field("certificate", &"[REDACTED]")
+            .field("sp_entity_id", &self.sp_entity_id)
+            .field("is_enabled", &self.is_enabled)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]
