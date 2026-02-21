@@ -282,6 +282,17 @@ mod tests {
     use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
+    // router
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_router_creates_without_panic() {
+        // Verifies the router function constructs all routes successfully.
+        // The Router<SharedState> requires state at serve-time, not construction.
+        let _r = router();
+    }
+
+    // -----------------------------------------------------------------------
     // extract_param
     // -----------------------------------------------------------------------
 
