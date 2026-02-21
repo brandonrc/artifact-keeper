@@ -727,4 +727,45 @@ mod tests {
         assert_eq!(cloned.email, user_info.email);
         assert_eq!(cloned.groups, user_info.groups);
     }
+
+    #[test]
+    fn test_ldap_config_debug_redacts_bind_password() {
+        let config = LdapConfig {
+            url: "ldap://ldap.example.com:389".to_string(),
+            base_dn: "dc=example,dc=com".to_string(),
+            user_filter: "(uid={username})".to_string(),
+            bind_dn: Some("cn=admin,dc=example,dc=com".to_string()),
+            bind_password: Some("super-secret-ldap-password".to_string()),
+            username_attr: "uid".to_string(),
+            email_attr: "mail".to_string(),
+            display_name_attr: "cn".to_string(),
+            groups_attr: "memberOf".to_string(),
+            admin_group_dn: None,
+            use_starttls: true,
+        };
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("ldap.example.com"));
+        assert!(debug.contains("dc=example,dc=com"));
+        assert!(!debug.contains("super-secret-ldap-password"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn test_ldap_config_debug_shows_none_for_missing_password() {
+        let config = LdapConfig {
+            url: "ldap://localhost".to_string(),
+            base_dn: "dc=test".to_string(),
+            user_filter: "(uid={username})".to_string(),
+            bind_dn: None,
+            bind_password: None,
+            username_attr: "uid".to_string(),
+            email_attr: "mail".to_string(),
+            display_name_attr: "cn".to_string(),
+            groups_attr: "memberOf".to_string(),
+            admin_group_dn: None,
+            use_starttls: false,
+        };
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("None"));
+    }
 }

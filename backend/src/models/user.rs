@@ -65,3 +65,30 @@ redacted_debug!(ApiToken {
     show scopes,
     show expires_at,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_api_token_debug_redacts_token_hash() {
+        let token = ApiToken {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            name: "ci-token".to_string(),
+            token_hash: "$argon2id$v=19$secret_hash".to_string(),
+            token_prefix: "ak_1234".to_string(),
+            scopes: vec!["read:artifacts".to_string()],
+            expires_at: None,
+            last_used_at: None,
+            created_at: Utc::now(),
+            created_by_user_id: None,
+            description: Some("CI pipeline token".to_string()),
+        };
+        let debug = format!("{:?}", token);
+        assert!(debug.contains("ci-token"));
+        assert!(debug.contains("ak_1234"));
+        assert!(!debug.contains("secret_hash"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+}
