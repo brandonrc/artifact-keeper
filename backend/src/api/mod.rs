@@ -17,6 +17,7 @@ use crate::services::quality_check_service::QualityCheckService;
 use crate::services::repository_service::RepositoryService;
 use crate::services::scanner_service::ScannerService;
 use crate::services::wasm_plugin_service::WasmPluginService;
+use crate::services::event_bus::EventBus;
 use crate::storage::StorageBackend;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
@@ -39,6 +40,7 @@ pub struct AppState {
     pub metrics_handle: Option<Arc<PrometheusHandle>>,
     /// When true, most API endpoints return 403 until the admin changes the default password.
     pub setup_required: Arc<AtomicBool>,
+    pub event_bus: Arc<EventBus>,
 }
 
 impl AppState {
@@ -56,6 +58,7 @@ impl AppState {
             proxy_service: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
+            event_bus: Arc::new(EventBus::new(1024)),
         }
     }
 
@@ -80,6 +83,7 @@ impl AppState {
             proxy_service: None,
             metrics_handle: None,
             setup_required: Arc::new(AtomicBool::new(false)),
+            event_bus: Arc::new(EventBus::new(1024)),
         }
     }
 
