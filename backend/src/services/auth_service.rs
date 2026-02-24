@@ -1405,5 +1405,4 @@ mod tests {
             .count();
         assert_eq!(dev_count, 1, "developer role should not be duplicated");
     }
-
 }
