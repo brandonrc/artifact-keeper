@@ -205,9 +205,16 @@ pub async fn list_users(
 )]
 pub async fn create_user(
     State(state): State<SharedState>,
-    Extension(_auth): Extension<AuthExtension>,
+    Extension(auth): Extension<AuthExtension>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<CreateUserResponse>> {
+    // Only admins can create users
+    if !auth.is_admin {
+        return Err(AppError::Authorization(
+            "Only administrators can create users".to_string(),
+        ));
+    }
+
     // Generate password if not provided, otherwise validate
     let (password, auto_generated) = match payload.password {
         Some(ref p) if p.len() >= 8 => (p.clone(), false),
