@@ -369,6 +369,10 @@ impl AuthService {
         scopes: Vec<String>,
         expires_in_days: Option<i64>,
     ) -> Result<(String, Uuid)> {
+        if scopes.len() > 50 {
+            return Err(AppError::Validation("Too many scopes (max 50)".to_string()));
+        }
+
         // Generate random token
         let token = format!(
             "{}_{}",
@@ -1401,4 +1405,5 @@ mod tests {
             .count();
         assert_eq!(dev_count, 1, "developer role should not be duplicated");
     }
+
 }

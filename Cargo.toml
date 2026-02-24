@@ -88,7 +88,7 @@ wasmtime = { version = "24.0", features = ["component-model", "async"] }
 wasmtime-wasi = "24.0"
 
 # Git operations
-git2 = "0.19"
+git2 = "0.20"
 
 # OpenSSL (vendored feature for cross-compilation in release builds)
 openssl = { version = "0.10" }
