@@ -1,0 +1,89 @@
+name: Scanner Version Check
+
+on:
+  schedule:
+    # Every Wednesday at 8 AM UTC (offset from Monday container scan)
+    - cron: '0 8 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-versions:
+    name: Check for scanner updates
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check for new grype/trivy releases
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DOCKERFILE="docker/Dockerfile.backend"
+
+          # Extract current pinned versions from Dockerfile
+          CURRENT_TRIVY=$(grep -oP 'ARG TRIVY_VERSION=\K[^\s]+' "$DOCKERFILE")
+          CURRENT_GRYPE=$(grep -oP 'ARG GRYPE_VERSION=\K[^\s]+' "$DOCKERFILE")
+
+          echo "Current Trivy: $CURRENT_TRIVY"
+          echo "Current Grype: $CURRENT_GRYPE"
+
+          # Fetch latest stable releases (exclude pre-releases)
+          LATEST_TRIVY=$(gh api repos/aquasecurity/trivy/releases/latest --jq '.tag_name')
+          LATEST_GRYPE=$(gh api repos/anchore/grype/releases/latest --jq '.tag_name')
+
+          echo "Latest Trivy: $LATEST_TRIVY"
+          echo "Latest Grype: $LATEST_GRYPE"
+
+          UPDATES=""
+          if [ "$CURRENT_TRIVY" != "$LATEST_TRIVY" ]; then
+            UPDATES="trivy"
+            sed -i "s/ARG TRIVY_VERSION=.*/ARG TRIVY_VERSION=${LATEST_TRIVY}/" "$DOCKERFILE"
+            echo "Updated Trivy: $CURRENT_TRIVY -> $LATEST_TRIVY"
+          fi
+
+          if [ "$CURRENT_GRYPE" != "$LATEST_GRYPE" ]; then
+            UPDATES="${UPDATES:+$UPDATES,}grype"
+            sed -i "s/ARG GRYPE_VERSION=.*/ARG GRYPE_VERSION=${LATEST_GRYPE}/" "$DOCKERFILE"
+            echo "Updated Grype: $CURRENT_GRYPE -> $LATEST_GRYPE"
+          fi
+
+          echo "updates=$UPDATES" >> "$GITHUB_OUTPUT"
+          echo "current_trivy=$CURRENT_TRIVY" >> "$GITHUB_OUTPUT"
+          echo "current_grype=$CURRENT_GRYPE" >> "$GITHUB_OUTPUT"
+          echo "latest_trivy=$LATEST_TRIVY" >> "$GITHUB_OUTPUT"
+          echo "latest_grype=$LATEST_GRYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.check.outputs.updates != ''
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: bump scanner versions (${{ steps.check.outputs.updates }})"
+          branch: chore/bump-scanner-versions
+          delete-branch: true
+          title: "chore: bump scanner versions (${{ steps.check.outputs.updates }})"
+          body: |
+            ## Scanner Version Updates
+
+            Automated check found new releases for bundled scanner CLIs in `docker/Dockerfile.backend`.
+
+            | Scanner | Current | Latest |
+            |---------|---------|--------|
+            | Trivy | `${{ steps.check.outputs.current_trivy }}` | `${{ steps.check.outputs.latest_trivy }}` |
+            | Grype | `${{ steps.check.outputs.current_grype }}` | `${{ steps.check.outputs.latest_grype }}` |
+
+            ### Test plan
+            - [ ] Docker image builds successfully
+            - [ ] Weekly container scan shows reduced findings
+
+            Related: #276
+          labels: |
+            dependencies
+            docker
+          reviewers: artifact-keeper/maintainers
