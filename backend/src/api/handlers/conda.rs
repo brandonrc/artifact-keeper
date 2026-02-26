@@ -7166,7 +7166,7 @@ mod tests {
         assert_eq!(entry["fn"], "numpy-1.26.4-py312_0.conda");
         assert_eq!(entry["size"], 8192);
         assert_eq!(entry["license"], "MIT");
-        assert!(entry["depends"].as_array().unwrap().len() >= 1);
+        assert!(!entry["depends"].as_array().unwrap().is_empty());
     }
 
     #[test]
