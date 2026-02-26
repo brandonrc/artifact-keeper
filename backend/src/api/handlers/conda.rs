@@ -1532,6 +1532,78 @@ async fn upload_post_with_token(
 // Package metadata extraction
 // ---------------------------------------------------------------------------
 
+/// Validate a conda package structure.
+///
+/// Returns Ok(()) if the package is valid, or Err with a descriptive error message.
+/// Checks:
+/// - .conda v2: must be a valid ZIP containing an info-*.tar.zst archive
+/// - .tar.bz2 v1: must be a valid bzip2-compressed tar containing info/index.json
+/// - Extracted metadata must have required fields: name, version
+fn validate_conda_package(content: &[u8], filename: &str) -> Result<(), String> {
+    if filename.ends_with(".conda") {
+        // Validate .conda v2 structure
+        let cursor = std::io::Cursor::new(content);
+        let mut archive = zip::ZipArchive::new(cursor)
+            .map_err(|e| format!("Invalid .conda package: not a valid ZIP archive: {}", e))?;
+
+        // Check for info-*.tar.zst
+        let file_names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+
+        let has_info = file_names
+            .iter()
+            .any(|n| n.starts_with("info-") && n.ends_with(".tar.zst"));
+        if !has_info {
+            return Err(
+                "Invalid .conda package: missing info-*.tar.zst archive".to_string(),
+            );
+        }
+    } else if filename.ends_with(".tar.bz2") {
+        // Validate .tar.bz2 v1 structure
+        let decoder = bzip2::read::BzDecoder::new(std::io::Cursor::new(content));
+        let mut archive = tar::Archive::new(decoder);
+
+        let entries = archive
+            .entries()
+            .map_err(|e| format!("Invalid .tar.bz2 package: not a valid bzip2 tar: {}", e))?;
+
+        let has_index = entries
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.path()
+                    .ok()
+                    .map(|p| p.to_string_lossy() == "info/index.json")
+                    .unwrap_or(false)
+            });
+
+        if !has_index {
+            return Err(
+                "Invalid .tar.bz2 package: missing info/index.json".to_string(),
+            );
+        }
+    } else {
+        return Err(format!(
+            "Unsupported package format: expected .conda or .tar.bz2, got {}",
+            filename
+        ));
+    }
+
+    // Validate that metadata extraction succeeds and has required fields
+    if let Some(meta) = extract_conda_metadata(content, filename) {
+        if meta.get("name").and_then(|v| v.as_str()).is_none() {
+            return Err("Invalid package metadata: missing 'name' field".to_string());
+        }
+        if meta.get("version").and_then(|v| v.as_str()).is_none() {
+            return Err("Invalid package metadata: missing 'version' field".to_string());
+        }
+    }
+    // Note: we don't fail if metadata extraction fails entirely, since
+    // the filename already carries name/version info. The package is still usable.
+
+    Ok(())
+}
+
 /// Extract metadata from a conda package.
 ///
 /// For .conda (v2) packages: ZIP archive containing `metadata.json` at the root
@@ -1657,6 +1729,11 @@ async fn store_conda_package(
         (StatusCode::BAD_REQUEST, "Could not parse package version").into_response()
     })?;
     let build_string = path_info.build.unwrap_or_else(|| "0".to_string());
+
+    // Validate package structure before storing
+    validate_conda_package(&content, filename).map_err(|e| {
+        (StatusCode::BAD_REQUEST, e).into_response()
+    })?;
 
     // Compute SHA256 and MD5
     let mut sha256_hasher = Sha256::new();
@@ -3019,6 +3096,83 @@ mod tests {
 
         // Compress with bzip2
         bzip2_compress(&tar_buf)
+    }
+
+    // -----------------------------------------------------------------------
+    // Upload validation (bead: artifact-keeper-4rn)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_v2_package_valid() {
+        let index = serde_json::json!({
+            "name": "test-pkg",
+            "version": "1.0.0",
+            "build": "py312_0",
+            "build_number": 0,
+            "depends": [],
+            "constrains": [],
+            "license": "MIT",
+            "subdir": "linux-64"
+        });
+        let package = build_test_conda_v2_package(&index);
+        let result = validate_conda_package(&package, "test-pkg-1.0.0-py312_0.conda");
+        assert!(result.is_ok(), "Valid .conda package should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_v2_package_invalid_zip() {
+        let result = validate_conda_package(b"not a zip file", "pkg.conda");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a valid ZIP"));
+    }
+
+    #[test]
+    fn test_validate_v2_package_missing_info_tar() {
+        // ZIP without info-*.tar.zst
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::SimpleFileOptions::default();
+            zip_writer.start_file("metadata.json", options).unwrap();
+            zip_writer.write_all(b"{\"name\":\"test\"}").unwrap();
+            zip_writer.finish().unwrap();
+        }
+        let result = validate_conda_package(&zip_buf, "test.conda");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing info-*.tar.zst"));
+    }
+
+    #[test]
+    fn test_validate_v1_package_valid() {
+        let index = serde_json::json!({
+            "name": "test-pkg",
+            "version": "2.0.0",
+            "build": "0",
+            "depends": [],
+        });
+        let package = build_test_conda_v1_package(&index);
+        let result = validate_conda_package(&package, "test-pkg-2.0.0-0.tar.bz2");
+        assert!(result.is_ok(), "Valid .tar.bz2 package should pass: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_v1_package_invalid_bz2() {
+        let result = validate_conda_package(b"not bzip2 data", "pkg.tar.bz2");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // May error as "not a valid bzip2 tar" or "missing info/index.json"
+        assert!(
+            err.contains("bzip2") || err.contains("info/index.json"),
+            "Unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validate_unknown_extension() {
+        let result = validate_conda_package(b"data", "pkg.zip");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported package format"));
     }
 
     #[test]
