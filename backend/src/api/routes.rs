@@ -62,6 +62,8 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/alpine", handlers::alpine::router())
         // Conda Channel API
         .nest("/conda", handlers::conda::router())
+        // Conda with URL path token authentication (/conda/t/<TOKEN>/<repo_key>/...)
+        .nest("/conda/t", handlers::conda::token_router())
         // Swift Package Registry (SE-0292)
         .nest("/swift", handlers::swift::router())
         // Terraform Registry Protocol

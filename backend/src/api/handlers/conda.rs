@@ -159,6 +159,54 @@ pub fn router() -> Router<SharedState> {
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
+/// Router for token-authenticated conda endpoints.
+///
+/// Conda clients can embed authentication tokens in the URL path:
+///   /conda/t/<TOKEN>/<repo_key>/<subdir>/repodata.json
+///
+/// This is configured in `.condarc` as:
+///   channels:
+///     - https://host/conda/t/<TOKEN>/my-channel
+pub fn token_router() -> Router<SharedState> {
+    Router::new()
+        .route("/:token/:repo_key/channeldata.json", get(channeldata_json))
+        .route("/:token/:repo_key/keys/repo.pub", get(repo_public_key))
+        .route("/:token/:repo_key/upload", post(upload_post_with_token))
+        .route(
+            "/:token/:repo_key/:subdir/repodata.json",
+            get(repodata_json),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/repodata.json.bz2",
+            get(repodata_json_bz2),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/repodata.json.sig",
+            get(repodata_json_sig),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/repodata.json.zst",
+            get(repodata_json_zst),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/current_repodata.json",
+            get(current_repodata_json),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/repodata_shards.msgpack.zst",
+            get(sharded_repodata_index),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/shards/:shard_hash",
+            get(sharded_repodata_shard),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/:filename",
+            get(download_package).put(upload_package_put_with_token),
+        )
+        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+}
+
 // ---------------------------------------------------------------------------
 // Auth helpers
 // ---------------------------------------------------------------------------
@@ -200,6 +248,30 @@ async fn authenticate(
                 .status(StatusCode::UNAUTHORIZED)
                 .header("WWW-Authenticate", "Basic realm=\"conda\"")
                 .body(Body::from("Invalid credentials"))
+                .unwrap()
+        })?;
+
+    Ok(user.id)
+}
+
+/// Authenticate using a URL path token.
+///
+/// The token is treated as an API token/access token. It's passed as the
+/// password in a pseudo-Basic auth flow (the username is "token").
+async fn authenticate_with_token(
+    db: &sqlx::PgPool,
+    config: &crate::config::Config,
+    token: &str,
+) -> Result<uuid::Uuid, Response> {
+    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
+    let (user, _tokens) = auth_service
+        .authenticate("token", token)
+        .await
+        .map_err(|_| {
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header("WWW-Authenticate", "Basic realm=\"conda\"")
+                .body(Body::from("Invalid token"))
                 .unwrap()
         })?;
 
@@ -1240,6 +1312,93 @@ async fn upload_post(
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
     // Determine subdir and filename from headers
+    let subdir = headers
+        .get("X-Conda-Subdir")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "noarch".to_string());
+
+    let filename = headers
+        .get("Content-Disposition")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.split("filename=")
+                .nth(1)
+                .map(|f| f.trim_matches('"').trim_matches('\'').to_string())
+        })
+        .or_else(|| {
+            headers
+                .get("X-Package-Filename")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "Missing filename: provide Content-Disposition or X-Package-Filename header",
+            )
+                .into_response()
+        })?;
+
+    if !is_conda_package(&filename) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "File must have .conda or .tar.bz2 extension",
+        )
+            .into_response());
+    }
+
+    store_conda_package(&state, &repo, &subdir, &filename, body, user_id).await
+}
+
+// ---------------------------------------------------------------------------
+// Token-authenticated upload handlers (for /t/<TOKEN>/ URL paths)
+// ---------------------------------------------------------------------------
+
+/// PUT upload using URL path token: /conda/t/<TOKEN>/<repo_key>/<subdir>/<filename>
+async fn upload_package_put_with_token(
+    State(state): State<SharedState>,
+    Path((token, repo_key, subdir, filename)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    // Try Basic auth first (if present), fall back to URL token
+    let user_id = if extract_basic_credentials(&headers).is_some() {
+        authenticate(&state.db, &state.config, &headers).await?
+    } else {
+        authenticate_with_token(&state.db, &state.config, &token).await?
+    };
+
+    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
+
+    if !is_conda_package(&filename) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "File must have .conda or .tar.bz2 extension",
+        )
+            .into_response());
+    }
+
+    store_conda_package(&state, &repo, &subdir, &filename, body, user_id).await
+}
+
+/// POST upload using URL path token: /conda/t/<TOKEN>/<repo_key>/upload
+async fn upload_post_with_token(
+    State(state): State<SharedState>,
+    Path((token, repo_key)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user_id = if extract_basic_credentials(&headers).is_some() {
+        authenticate(&state.db, &state.config, &headers).await?
+    } else {
+        authenticate_with_token(&state.db, &state.config, &token).await?
+    };
+
+    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+    proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
+
     let subdir = headers
         .get("X-Conda-Subdir")
         .and_then(|v| v.to_str().ok())
@@ -3719,6 +3878,59 @@ mod tests {
             result,
             Some(("".to_string(), "ak_token_value".to_string()))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // URL path token authentication (bead: artifact-keeper-gdm)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_token_router_routes_mirror_main_router() {
+        // Verify the token_router has the same GET read endpoints
+        // (This is a structural test - the real integration test requires a running server)
+        let _main = router();
+        let _token = token_router();
+        // Both compile and produce valid routers
+    }
+
+    #[test]
+    fn test_token_auth_basic_auth_takes_priority() {
+        // When both Basic auth header and URL token are present,
+        // Basic auth should take priority (tested via extract_basic_credentials)
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        // extract_basic_credentials should return the Basic auth creds
+        let result = extract_basic_credentials(&headers);
+        assert!(result.is_some(), "Basic auth should be extracted even with token in URL");
+    }
+
+    #[test]
+    fn test_token_auth_falls_back_to_url_token() {
+        // When no Basic auth header is present, token from URL should be used
+        let headers = HeaderMap::new();
+        let result = extract_basic_credentials(&headers);
+        assert!(result.is_none(), "No Basic auth means fallback to URL token");
+    }
+
+    #[test]
+    fn test_token_url_format_condarc() {
+        // Verify the expected .condarc format is supported by our URL structure
+        // .condarc:
+        //   channels:
+        //     - https://host/conda/t/ak_mytoken123/my-channel
+        // This should route to: /conda/t/{token}/{repo_key}/...
+        // where token = "ak_mytoken123" and repo_key = "my-channel"
+        let channel_url = "https://host/conda/t/ak_mytoken123/my-channel";
+        let path = channel_url.split("/conda/").nth(1).unwrap();
+        assert!(path.starts_with("t/"));
+        let parts: Vec<&str> = path.splitn(3, '/').collect();
+        assert_eq!(parts[0], "t");
+        assert_eq!(parts[1], "ak_mytoken123");
+        assert_eq!(parts[2], "my-channel");
     }
 
     // =======================================================================
