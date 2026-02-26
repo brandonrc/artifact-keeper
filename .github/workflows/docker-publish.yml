@@ -75,6 +75,8 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=backend-${{ matrix.platform }}
           cache-to: type=gha,scope=backend-${{ matrix.platform }},mode=max
+          sbom: true
+          provenance: mode=max
 
       - name: Export digest
         run: |
@@ -139,6 +141,8 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OPENSCAP_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=openscap-${{ matrix.platform }}
           cache-to: type=gha,scope=openscap-${{ matrix.platform }},mode=max
+          sbom: true
+          provenance: mode=max
 
       - name: Export digest
         run: |

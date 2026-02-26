@@ -6,7 +6,9 @@ RUN ARCH=$(uname -m) && \
     dnf install -y --nodocs 'dnf-command(config-manager)' && \
     dnf config-manager --add-repo "https://mirror.stream.centos.org/9-stream/AppStream/${ARCH}/os/"
 
-# Install OpenSCAP, SCAP content, and Python into a clean rootfs
+# Install OpenSCAP, SCAP content, and Python into a clean rootfs.
+# Then remove pip/setuptools wheel packages from RPM database (not needed
+# at runtime) and strip the bundled ensurepip module to eliminate pip CVEs.
 RUN mkdir -p /mnt/rootfs && \
     dnf install --installroot /mnt/rootfs --releasever 9 \
         --setopt install_weak_deps=0 --nodocs --nogpgcheck -y \
@@ -15,6 +17,8 @@ RUN mkdir -p /mnt/rootfs && \
         openscap-scanner \
         scap-security-guide \
         python3 \
+    && rpm --root /mnt/rootfs -e --nodeps python3-pip-wheel python3-setuptools-wheel \
+    && rm -rf /mnt/rootfs/usr/lib/python3.9/ensurepip \
     && dnf --installroot /mnt/rootfs clean all \
     && rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
 
