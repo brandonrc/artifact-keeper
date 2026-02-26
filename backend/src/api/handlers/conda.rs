@@ -48,6 +48,186 @@ use crate::formats::conda_native::CondaNativeHandler;
 use crate::services::auth_service::AuthService;
 use crate::services::signing_service::SigningService;
 
+// ---------------------------------------------------------------------------
+// CEP-26: Conda naming constraints
+// ---------------------------------------------------------------------------
+//
+// Package names, version strings, build strings, and filenames must conform
+// to strict regex patterns and length limits defined in CEP-26.
+
+/// Maximum length for a conda package name (CEP-26).
+const CEP26_MAX_NAME_LEN: usize = 64;
+/// Maximum length for a conda version string (CEP-26).
+const CEP26_MAX_VERSION_LEN: usize = 64;
+/// Maximum length for a conda build string (CEP-26).
+const CEP26_MAX_BUILD_LEN: usize = 64;
+/// Maximum length for a conda package filename (CEP-26).
+const CEP26_MAX_FILENAME_LEN: usize = 211;
+
+/// Validate a conda package name per CEP-26.
+///
+/// Pattern: lowercase alphanumeric, may contain `.`, `-`, `_` as separators
+/// but no consecutive underscores. Must start with a letter or digit.
+fn validate_cep26_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("package name must not be empty".to_string());
+    }
+    if name.len() > CEP26_MAX_NAME_LEN {
+        return Err(format!(
+            "package name '{}' exceeds max length of {} characters (got {})",
+            name, CEP26_MAX_NAME_LEN, name.len()
+        ));
+    }
+    // Must be lowercase
+    if name != name.to_lowercase() {
+        return Err(format!(
+            "package name '{}' must be lowercase",
+            name
+        ));
+    }
+    // Must start with alphanumeric
+    if !name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        return Err(format!(
+            "package name '{}' must start with a lowercase letter or digit",
+            name
+        ));
+    }
+    // Only allowed characters: lowercase alphanumeric, `.`, `-`, `_`
+    for ch in name.chars() {
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '.' && ch != '-' && ch != '_' {
+            return Err(format!(
+                "package name '{}' contains invalid character '{}'",
+                name, ch
+            ));
+        }
+    }
+    // No consecutive underscores
+    if name.contains("__") {
+        return Err(format!(
+            "package name '{}' must not contain consecutive underscores",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a conda version string per CEP-26.
+///
+/// Allowed characters: digits, periods, lowercase letters, `_`, `+`, `!`
+fn validate_cep26_version(version: &str) -> Result<(), String> {
+    if version.is_empty() {
+        return Err("version must not be empty".to_string());
+    }
+    if version.len() > CEP26_MAX_VERSION_LEN {
+        return Err(format!(
+            "version '{}' exceeds max length of {} characters (got {})",
+            version, CEP26_MAX_VERSION_LEN, version.len()
+        ));
+    }
+    for ch in version.chars() {
+        if !ch.is_ascii_digit()
+            && !ch.is_ascii_lowercase()
+            && ch != '.'
+            && ch != '_'
+            && ch != '+'
+            && ch != '!'
+        {
+            return Err(format!(
+                "version '{}' contains invalid character '{}'",
+                version, ch
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a conda build string per CEP-26.
+///
+/// Pattern: `^[a-zA-Z0-9_.+]+$`
+fn validate_cep26_build(build: &str) -> Result<(), String> {
+    if build.is_empty() {
+        return Err("build string must not be empty".to_string());
+    }
+    if build.len() > CEP26_MAX_BUILD_LEN {
+        return Err(format!(
+            "build string '{}' exceeds max length of {} characters (got {})",
+            build, CEP26_MAX_BUILD_LEN, build.len()
+        ));
+    }
+    for ch in build.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '+' {
+            return Err(format!(
+                "build string '{}' contains invalid character '{}'",
+                build, ch
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a conda filename per CEP-26.
+///
+/// Format: `<name>-<version>-<build>.<ext>`, max 211 characters.
+fn validate_cep26_filename(filename: &str) -> Result<(), String> {
+    if filename.len() > CEP26_MAX_FILENAME_LEN {
+        return Err(format!(
+            "filename '{}' exceeds max length of {} characters (got {})",
+            filename, CEP26_MAX_FILENAME_LEN, filename.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a conda subdir name per CEP-26.
+///
+/// Must be `noarch` or match `^[a-z0-9]+-[a-z0-9]+$`, max 32 characters.
+fn validate_cep26_subdir(subdir: &str) -> Result<(), String> {
+    if subdir.len() > 32 {
+        return Err(format!(
+            "subdir '{}' exceeds max length of 32 characters (got {})",
+            subdir, subdir.len()
+        ));
+    }
+    if subdir == "noarch" {
+        return Ok(());
+    }
+    // Must match <platform>-<arch> pattern
+    let parts: Vec<&str> = subdir.splitn(2, '-').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "subdir '{}' must be 'noarch' or '<platform>-<arch>'",
+            subdir
+        ));
+    }
+    for part in &parts {
+        for ch in part.chars() {
+            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() {
+                return Err(format!(
+                    "subdir '{}' contains invalid character '{}'",
+                    subdir, ch
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Perform full CEP-26 naming validation on a conda package upload.
+fn validate_cep26_naming(
+    name: &str,
+    version: &str,
+    build: &str,
+    filename: &str,
+    subdir: &str,
+) -> Result<(), String> {
+    validate_cep26_name(name)?;
+    validate_cep26_version(version)?;
+    validate_cep26_build(build)?;
+    validate_cep26_filename(filename)?;
+    validate_cep26_subdir(subdir)?;
+    Ok(())
+}
+
 /// Common Conda subdirectories.
 const KNOWN_SUBDIRS: &[&str] = &[
     "noarch",
@@ -2321,6 +2501,16 @@ async fn store_conda_package(
         (StatusCode::BAD_REQUEST, "Could not parse package version").into_response()
     })?;
     let build_string = path_info.build.unwrap_or_else(|| "0".to_string());
+
+    // CEP-26: Validate naming constraints before accepting the upload
+    validate_cep26_naming(&pkg_name, &pkg_version, &build_string, filename, subdir)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("CEP-26 naming violation: {}", e),
+            )
+                .into_response()
+        })?;
 
     // Validate package structure before storing
     validate_conda_package(&content, filename).map_err(|e| {
@@ -6702,5 +6892,140 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0]["op"], "replace");
         assert_eq!(ops[0]["path"], "/removed");
+    }
+
+    // -----------------------------------------------------------------------
+    // CEP-26: Naming validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cep26_valid_package_names() {
+        assert!(validate_cep26_name("numpy").is_ok());
+        assert!(validate_cep26_name("scikit-learn").is_ok());
+        assert!(validate_cep26_name("python-dateutil").is_ok());
+        assert!(validate_cep26_name("h5py").is_ok());
+        assert!(validate_cep26_name("r-base").is_ok());
+        assert!(validate_cep26_name("7zip").is_ok());
+        assert!(validate_cep26_name("libffi").is_ok());
+        assert!(validate_cep26_name("ca-certificates").is_ok());
+        assert!(validate_cep26_name("pip").is_ok());
+        assert!(validate_cep26_name("blas.1.0").is_ok());
+    }
+
+    #[test]
+    fn test_cep26_invalid_package_names() {
+        // Uppercase not allowed
+        assert!(validate_cep26_name("NumPy").is_err());
+        // Empty
+        assert!(validate_cep26_name("").is_err());
+        // Too long
+        assert!(validate_cep26_name(&"a".repeat(65)).is_err());
+        // 64 chars is OK
+        assert!(validate_cep26_name(&"a".repeat(64)).is_ok());
+        // Consecutive underscores
+        assert!(validate_cep26_name("bad__name").is_err());
+        // Invalid characters
+        assert!(validate_cep26_name("pkg@1.0").is_err());
+        assert!(validate_cep26_name("pkg name").is_err());
+        assert!(validate_cep26_name("pkg/name").is_err());
+        // Must start with alphanumeric
+        assert!(validate_cep26_name("-leading").is_err());
+        assert!(validate_cep26_name(".leading").is_err());
+        assert!(validate_cep26_name("_leading").is_err());
+    }
+
+    #[test]
+    fn test_cep26_valid_versions() {
+        assert!(validate_cep26_version("1.0").is_ok());
+        assert!(validate_cep26_version("1.26.4").is_ok());
+        assert!(validate_cep26_version("2024.01.01").is_ok());
+        assert!(validate_cep26_version("1.0rc1").is_ok());
+        assert!(validate_cep26_version("1.0+local").is_ok());
+        assert!(validate_cep26_version("1!2.0").is_ok()); // epoch
+        assert!(validate_cep26_version("0").is_ok());
+    }
+
+    #[test]
+    fn test_cep26_invalid_versions() {
+        assert!(validate_cep26_version("").is_err());
+        assert!(validate_cep26_version(&"1".repeat(65)).is_err());
+        assert!(validate_cep26_version("1.0 beta").is_err()); // space
+        assert!(validate_cep26_version("1.0@2").is_err()); // @ not allowed
+        assert!(validate_cep26_version("V1.0").is_err()); // uppercase
+    }
+
+    #[test]
+    fn test_cep26_valid_build_strings() {
+        assert!(validate_cep26_build("py312_0").is_ok());
+        assert!(validate_cep26_build("py312h2809609_0").is_ok());
+        assert!(validate_cep26_build("hd8ed1ab_0").is_ok());
+        assert!(validate_cep26_build("0").is_ok());
+        assert!(validate_cep26_build("cuda12.0_0").is_ok());
+        assert!(validate_cep26_build("np1.26+mkl").is_ok());
+    }
+
+    #[test]
+    fn test_cep26_invalid_build_strings() {
+        assert!(validate_cep26_build("").is_err());
+        assert!(validate_cep26_build(&"a".repeat(65)).is_err());
+        assert!(validate_cep26_build("build-string").is_err()); // hyphen not allowed
+        assert!(validate_cep26_build("build string").is_err()); // space
+    }
+
+    #[test]
+    fn test_cep26_filename_length() {
+        assert!(validate_cep26_filename("numpy-1.26.4-py312_0.conda").is_ok());
+        assert!(validate_cep26_filename(&"a".repeat(211)).is_ok());
+        assert!(validate_cep26_filename(&"a".repeat(212)).is_err());
+    }
+
+    #[test]
+    fn test_cep26_valid_subdirs() {
+        assert!(validate_cep26_subdir("noarch").is_ok());
+        assert!(validate_cep26_subdir("linux-64").is_ok());
+        assert!(validate_cep26_subdir("linux-aarch64").is_ok());
+        assert!(validate_cep26_subdir("osx-arm64").is_ok());
+        assert!(validate_cep26_subdir("win-64").is_ok());
+        assert!(validate_cep26_subdir("linux-32").is_ok());
+        assert!(validate_cep26_subdir("linux-ppc64le").is_ok());
+        assert!(validate_cep26_subdir("linux-s390x").is_ok());
+    }
+
+    #[test]
+    fn test_cep26_invalid_subdirs() {
+        // Too long
+        assert!(validate_cep26_subdir(&"a".repeat(33)).is_err());
+        // Uppercase
+        assert!(validate_cep26_subdir("Linux-64").is_err());
+        // No hyphen
+        assert!(validate_cep26_subdir("linux64").is_err());
+        // Special characters
+        assert!(validate_cep26_subdir("linux_64").is_err());
+    }
+
+    #[test]
+    fn test_cep26_naming_integration() {
+        // Valid full set
+        assert!(validate_cep26_naming(
+            "numpy", "1.26.4", "py312_0", "numpy-1.26.4-py312_0.conda", "linux-64"
+        ).is_ok());
+
+        // Invalid name bubbles up
+        let err = validate_cep26_naming(
+            "NumPy", "1.26.4", "py312_0", "NumPy-1.26.4-py312_0.conda", "linux-64"
+        ).unwrap_err();
+        assert!(err.contains("lowercase"), "error should mention lowercase: {}", err);
+
+        // Invalid version bubbles up
+        let err = validate_cep26_naming(
+            "numpy", "1.26 4", "py312_0", "numpy-1.26 4-py312_0.conda", "linux-64"
+        ).unwrap_err();
+        assert!(err.contains("invalid character"), "error: {}", err);
+
+        // Invalid build bubbles up
+        let err = validate_cep26_naming(
+            "numpy", "1.26.4", "py312-0", "numpy-1.26.4-py312-0.conda", "linux-64"
+        ).unwrap_err();
+        assert!(err.contains("invalid character"), "error: {}", err);
     }
 }
