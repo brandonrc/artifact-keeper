@@ -1121,6 +1121,30 @@ async fn channeldata_json(
     Path(repo_key): Path<String>,
 ) -> Result<Response, Response> {
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+
+    // For remote repos, proxy channeldata from upstream
+    if repo.repo_type == "remote" {
+        if let Some(ref upstream_url) = repo.upstream_url {
+            if let Some(ref proxy) = state.proxy_service {
+                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    &repo_key,
+                    upstream_url,
+                    "channeldata.json",
+                )
+                .await
+                {
+                    return Ok(cacheable_response(
+                        content.to_vec(),
+                        "application/json",
+                        &headers,
+                    ));
+                }
+            }
+        }
+    }
+
     let artifacts = list_conda_artifacts(&state.db, repo.id).await?;
 
     // Query for the latest version of each package (ordered by created_at DESC,
@@ -1410,6 +1434,36 @@ async fn repodata_json(
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+
+    // For remote repos, proxy repodata from upstream
+    if repo.repo_type == "remote" {
+        if let Some(ref upstream_url) = repo.upstream_url {
+            if let Some(ref proxy) = state.proxy_service {
+                let upstream_path = format!("{}/repodata.json", subdir);
+                match proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    &repo_key,
+                    upstream_url,
+                    &upstream_path,
+                )
+                .await
+                {
+                    Ok((content, _ct)) => {
+                        return Ok(cacheable_response(
+                            content.to_vec(),
+                            "application/json",
+                            &headers,
+                        ));
+                    }
+                    Err(_) => {
+                        // Upstream unavailable, fall through to local DB
+                    }
+                }
+            }
+        }
+    }
+
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
 
     let body = serde_json::to_string_pretty(&repodata)
@@ -1429,6 +1483,31 @@ async fn repodata_json_bz2(
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+
+    // For remote repos, proxy compressed repodata from upstream
+    if repo.repo_type == "remote" {
+        if let Some(ref upstream_url) = repo.upstream_url {
+            if let Some(ref proxy) = state.proxy_service {
+                let upstream_path = format!("{}/repodata.json.bz2", subdir);
+                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    &repo_key,
+                    upstream_url,
+                    &upstream_path,
+                )
+                .await
+                {
+                    return Ok(cacheable_response(
+                        content.to_vec(),
+                        "application/x-bzip2",
+                        &headers,
+                    ));
+                }
+            }
+        }
+    }
+
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
 
     let json_bytes = serde_json::to_vec(&repodata).unwrap();
@@ -1498,6 +1577,31 @@ async fn repodata_json_zst(
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+
+    // For remote repos, proxy compressed repodata from upstream
+    if repo.repo_type == "remote" {
+        if let Some(ref upstream_url) = repo.upstream_url {
+            if let Some(ref proxy) = state.proxy_service {
+                let upstream_path = format!("{}/repodata.json.zst", subdir);
+                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    &repo_key,
+                    upstream_url,
+                    &upstream_path,
+                )
+                .await
+                {
+                    return Ok(cacheable_response(
+                        content.to_vec(),
+                        "application/zstd",
+                        &headers,
+                    ));
+                }
+            }
+        }
+    }
+
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
     let json_bytes = serde_json::to_vec(&repodata).unwrap();
     let compressed = zstd_compress(&json_bytes).map_err(|e| {

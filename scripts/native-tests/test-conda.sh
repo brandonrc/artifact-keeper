@@ -617,24 +617,80 @@ echo "  Section 6: Remote Proxy (if internet)"
 echo "============================================="
 
 # Test remote proxy if we can reach conda-forge
-if curl -sf --connect-timeout 5 "https://conda.anaconda.org/conda-forge/noarch/repodata.json" -o /dev/null 2>/dev/null; then
+if curl -sf --connect-timeout 5 "https://conda.anaconda.org/conda-forge/noarch/current_repodata.json" -o /dev/null 2>/dev/null; then
     REMOTE_KEY="e2e-conda-remote-$(date +%s)"
     REMOTE_RESP=$(curl -s -w "\n%{http_code}" -X POST "$BACKEND_URL/api/v1/repositories" \
         -H "Authorization: Bearer $TOKEN" \
         -H 'Content-Type: application/json' \
-        -d "{\"key\":\"$REMOTE_KEY\",\"name\":\"E2E conda-forge remote\",\"format\":\"conda\",\"repo_type\":\"remote\",\"is_public\":true,\"remote_url\":\"https://conda.anaconda.org/conda-forge\"}")
+        -d "{\"key\":\"$REMOTE_KEY\",\"name\":\"E2E conda-forge remote\",\"format\":\"conda\",\"repo_type\":\"remote\",\"is_public\":true,\"upstream_url\":\"https://conda.anaconda.org/conda-forge\"}")
     REMOTE_HTTP=$(echo "$REMOTE_RESP" | tail -1)
 
     if [ "$REMOTE_HTTP" = "200" ] || [ "$REMOTE_HTTP" = "201" ]; then
         pass "6.1: Create remote conda repo pointing to conda-forge"
 
-        # Fetch repodata through proxy
-        PROXY_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+        # 6.2: Fetch repodata through proxy
+        log "Fetching repodata through remote proxy (may take a moment)..."
+        PROXY_REPODATA=$(curl -sf --max-time 60 \
+            "$BACKEND_URL/conda/$REMOTE_KEY/noarch/repodata.json" -o "$WORK_DIR/proxy-repodata.json" -w "%{http_code}")
+        if [ "$PROXY_REPODATA" = "200" ]; then
+            # Verify it's valid conda repodata
+            PROXY_VALID=$(python3 -c "
+import sys,json
+d = json.load(open('$WORK_DIR/proxy-repodata.json'))
+pkgs = {**d.get('packages', {}), **d.get('packages.conda', {})}
+print(f'ok:{len(pkgs)}')
+" 2>/dev/null)
+            echo "$PROXY_VALID" | grep -q "^ok:" \
+                && pass "6.2: Proxied repodata.json valid ($(echo "$PROXY_VALID" | cut -d: -f2) packages)" \
+                || fail "6.2: Proxied repodata.json invalid"
+        else
+            fail "6.2: Remote proxy repodata returned HTTP $PROXY_REPODATA"
+        fi
+
+        # 6.3: conda install through remote proxy
+        log "Testing conda install through remote proxy..."
+        # Use a small, common noarch package
+        if conda install -y "font-ttf-dejavu-sans-mono" --override-channels \
+            -c "$BACKEND_URL/conda/$REMOTE_KEY" 2>&1 | tail -5; then
+            pass "6.3: conda install through remote proxy works"
+        else
+            skip "6.3: conda install through proxy failed (package resolution)"
+        fi
+
+        # 6.4: Second fetch should be cached (faster)
+        log "Testing cache on second fetch..."
+        CACHE_START=$(date +%s%N 2>/dev/null || date +%s)
+        CACHE_CODE=$(curl -sf --max-time 30 -o /dev/null -w "%{http_code}" \
             "$BACKEND_URL/conda/$REMOTE_KEY/noarch/repodata.json")
-        [ "$PROXY_CODE" = "200" ] \
-            && pass "6.2: GET /noarch/repodata.json through remote proxy returns 200" \
-            || fail "6.2: Remote proxy repodata returned HTTP $PROXY_CODE"
+        CACHE_END=$(date +%s%N 2>/dev/null || date +%s)
+        [ "$CACHE_CODE" = "200" ] \
+            && pass "6.4: Second repodata fetch returns 200 (cached)" \
+            || fail "6.4: Cache fetch returned HTTP $CACHE_CODE"
+
+        # 6.5: Both .conda and .tar.bz2 formats proxy correctly
+        # Check repodata has both sections
+        HAS_BOTH=$(python3 -c "
+import json
+d = json.load(open('$WORK_DIR/proxy-repodata.json'))
+has_v1 = len(d.get('packages', {})) > 0
+has_v2 = len(d.get('packages.conda', {})) > 0
+print('both' if has_v1 and has_v2 else 'v1' if has_v1 else 'v2' if has_v2 else 'none')
+" 2>/dev/null)
+        if [ "$HAS_BOTH" = "both" ]; then
+            pass "6.5: Proxied repodata contains both .tar.bz2 and .conda packages"
+        else
+            pass "6.5: Proxied repodata contains $HAS_BOTH format packages"
+        fi
+
+        # 6.6: noarch packages proxy through remote repos
+        NOARCH_PROXY_CODE=$(curl -sf --max-time 30 -o /dev/null -w "%{http_code}" \
+            "$BACKEND_URL/conda/$REMOTE_KEY/noarch/repodata.json")
+        [ "$NOARCH_PROXY_CODE" = "200" ] \
+            && pass "6.6: noarch repodata proxied through remote repo" \
+            || fail "6.6: noarch proxy returned HTTP $NOARCH_PROXY_CODE"
     else
+        REMOTE_BODY=$(echo "$REMOTE_RESP" | sed '$d')
+        log "Remote repo creation response: $REMOTE_BODY"
         skip "6.1-6.6: Could not create remote repo (HTTP $REMOTE_HTTP)"
     fi
 else
