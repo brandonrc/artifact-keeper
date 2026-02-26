@@ -7149,6 +7149,267 @@ mod tests {
     }
 
     // =======================================================================
+    // build_artifact_entry tests
+    // =======================================================================
+
+    #[test]
+    fn test_build_artifact_entry_with_full_metadata() {
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
+        let entry = build_artifact_entry(&artifact, "numpy-1.26.4-py312_0.conda", "linux-64");
+
+        assert_eq!(entry["name"], "numpy");
+        assert_eq!(entry["version"], "1.26.4");
+        assert_eq!(entry["build"], "py312_0");
+        assert_eq!(entry["build_number"], 0);
+        assert_eq!(entry["subdir"], "linux-64");
+        assert_eq!(entry["fn"], "numpy-1.26.4-py312_0.conda");
+        assert_eq!(entry["size"], 8192);
+        assert_eq!(entry["license"], "MIT");
+        assert!(entry["depends"].as_array().unwrap().len() >= 1);
+    }
+
+    #[test]
+    fn test_build_artifact_entry_no_metadata() {
+        let artifact = CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path: "linux-64/mypkg-1.0-0.conda".to_string(),
+            name: "mypkg".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 4096,
+            checksum_sha256: "abc123".to_string(),
+            storage_key: "key".to_string(),
+            metadata: None,
+        };
+        let entry = build_artifact_entry(&artifact, "mypkg-1.0-0.conda", "linux-64");
+
+        assert_eq!(entry["name"], "mypkg"); // falls back to artifact.name
+        assert_eq!(entry["version"], "1.0"); // falls back to artifact.version
+        assert_eq!(entry["build"], "0"); // default when no metadata
+        assert_eq!(entry["build_number"], 0);
+        assert_eq!(entry["fn"], "mypkg-1.0-0.conda");
+        assert_eq!(entry["size"], 4096);
+        assert_eq!(entry["sha256"], "abc123");
+        assert_eq!(entry["license"], "");
+        assert_eq!(entry["md5"], "");
+        assert_eq!(entry["depends"], serde_json::json!([]));
+        assert_eq!(entry["constrains"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_build_artifact_entry_no_version_anywhere() {
+        let artifact = CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path: "noarch/pkg-0-0.conda".to_string(),
+            name: "pkg".to_string(),
+            version: None,
+            size_bytes: 100,
+            checksum_sha256: "sha".to_string(),
+            storage_key: "key".to_string(),
+            metadata: None,
+        };
+        let entry = build_artifact_entry(&artifact, "pkg-0-0.conda", "noarch");
+        assert_eq!(entry["version"], "0"); // fallback
+    }
+
+    #[test]
+    fn test_build_artifact_entry_metadata_overrides_artifact_fields() {
+        let artifact = CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path: "linux-64/pkg-1.0-0.conda".to_string(),
+            name: "pkg-old-name".to_string(),
+            version: Some("0.9".to_string()),
+            size_bytes: 100,
+            checksum_sha256: "sha".to_string(),
+            storage_key: "key".to_string(),
+            metadata: Some(serde_json::json!({
+                "name": "pkg-new-name",
+                "version": "2.0",
+                "build": "custom_1",
+                "build_number": 5,
+            })),
+        };
+        let entry = build_artifact_entry(&artifact, "pkg-2.0-custom_1.conda", "linux-64");
+
+        assert_eq!(entry["name"], "pkg-new-name"); // metadata wins over artifact.name
+        assert_eq!(entry["version"], "2.0"); // metadata wins over artifact.version
+        assert_eq!(entry["build"], "custom_1");
+        assert_eq!(entry["build_number"], 5);
+    }
+
+    #[test]
+    fn test_build_artifact_entry_optional_fields_included_when_present() {
+        let artifact = CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path: "noarch/pkg-1.0-0.conda".to_string(),
+            name: "pkg".to_string(),
+            version: Some("1.0".to_string()),
+            size_bytes: 100,
+            checksum_sha256: "sha".to_string(),
+            storage_key: "key".to_string(),
+            metadata: Some(serde_json::json!({
+                "name": "pkg",
+                "version": "1.0",
+                "build": "0",
+                "noarch": "python",
+                "license_family": "MIT",
+                "features": "mkl",
+                "track_features": "mkl",
+                "timestamp": 1700000000000_u64,
+            })),
+        };
+        let entry = build_artifact_entry(&artifact, "pkg-1.0-0.conda", "noarch");
+
+        assert_eq!(entry["noarch"], "python");
+        assert_eq!(entry["license_family"], "MIT");
+        assert_eq!(entry["features"], "mkl");
+        assert_eq!(entry["track_features"], "mkl");
+        assert_eq!(entry["timestamp"], 1700000000000_u64);
+    }
+
+    #[test]
+    fn test_build_artifact_entry_optional_fields_omitted_when_empty() {
+        let artifact = make_full_conda_artifact("pkg", "1.0", "0", "linux-64", "conda", 100);
+        let entry = build_artifact_entry(&artifact, "pkg-1.0-0.conda", "linux-64");
+
+        // These optional fields should not be present since make_full_conda_artifact
+        // doesn't include them in metadata
+        assert!(entry.get("noarch").is_none());
+        assert!(entry.get("features").is_none());
+        assert!(entry.get("track_features").is_none());
+        assert!(entry.get("timestamp").is_none());
+    }
+
+    #[test]
+    fn test_build_artifact_entry_v1_package() {
+        let artifact = make_full_conda_artifact(
+            "requests",
+            "2.31.0",
+            "pyhd8ed1ab_0",
+            "noarch",
+            "tar.bz2",
+            4096,
+        );
+        let entry =
+            build_artifact_entry(&artifact, "requests-2.31.0-pyhd8ed1ab_0.tar.bz2", "noarch");
+
+        assert_eq!(entry["name"], "requests");
+        assert_eq!(entry["fn"], "requests-2.31.0-pyhd8ed1ab_0.tar.bz2");
+        assert_eq!(entry["subdir"], "noarch");
+    }
+
+    // =======================================================================
+    // Additional CEP-27 edge case tests
+    // =======================================================================
+
+    #[test]
+    fn test_cep27_missing_type_field() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "subject": [{"name": "pkg.conda", "digest": {"sha256": sha}}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("_type"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_missing_predicate_type() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"name": "pkg.conda", "digest": {"sha256": sha}}],
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("predicateType"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_missing_subject() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("subject"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_missing_digest() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"name": "pkg.conda"}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("digest"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_missing_sha256_in_digest() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"name": "pkg.conda", "digest": {}}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("sha256"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_missing_subject_name() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"digest": {"sha256": sha}}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("name"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_empty_target_channel() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"name": "pkg.conda", "digest": {"sha256": sha}}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+            "predicate": { "targetChannel": "" },
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("1-2083"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_predicate_not_object() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [{"name": "pkg.conda", "digest": {"sha256": sha}}],
+            "predicateType": CEP27_PREDICATE_TYPE,
+            "predicate": "not-an-object",
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("object"), "error: {}", err);
+    }
+
+    #[test]
+    fn test_cep27_empty_subjects_array() {
+        let sha = "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b";
+        let att = serde_json::json!({
+            "_type": INTOTO_STATEMENT_V1,
+            "subject": [],
+            "predicateType": CEP27_PREDICATE_TYPE,
+        });
+        let err = validate_cep27_attestation(&att, "pkg.conda", sha).unwrap_err();
+        assert!(err.contains("exactly 1"), "error: {}", err);
+    }
+
+    // =======================================================================
     // CEP-16 Sharded Repodata (bead: artifact-keeper-372)
     // =======================================================================
 
