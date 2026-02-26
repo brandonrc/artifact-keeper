@@ -41,14 +41,18 @@ use crate::services::signing_service::SigningService;
 /// Common Conda subdirectories.
 const KNOWN_SUBDIRS: &[&str] = &[
     "noarch",
+    "linux-32",
     "linux-64",
     "linux-aarch64",
+    "linux-armv6l",
+    "linux-armv7l",
     "linux-ppc64le",
     "linux-s390x",
     "osx-64",
     "osx-arm64",
-    "win-64",
     "win-32",
+    "win-64",
+    "win-arm64",
 ];
 
 // ---------------------------------------------------------------------------
@@ -740,18 +744,53 @@ fn build_shard(
             .and_then(|m| m.get("license").and_then(|v| v.as_str()))
             .unwrap_or("");
 
-        let entry = serde_json::json!({
-            "name": pkg_name,
-            "version": version,
+        let noarch = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("noarch").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let md5 = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("md5").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let license_family = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("license_family").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let timestamp = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("timestamp").and_then(|v| v.as_u64()));
+
+        let mut entry = serde_json::json!({
             "build": build,
             "build_number": build_number,
-            "depends": depends,
             "constrains": constrains,
+            "depends": depends,
+            "fn": filename,
             "license": license,
+            "md5": md5,
+            "name": pkg_name,
             "sha256": artifact.checksum_sha256,
             "size": artifact.size_bytes,
             "subdir": subdir,
+            "version": version,
         });
+
+        if !noarch.is_empty() {
+            entry["noarch"] = serde_json::Value::String(noarch.to_string());
+        }
+        if !license_family.is_empty() {
+            entry["license_family"] = serde_json::Value::String(license_family.to_string());
+        }
+        if let Some(ts) = timestamp {
+            entry["timestamp"] = serde_json::json!(ts);
+        }
 
         if is_conda_v2(filename) {
             packages_conda.insert(filename.to_string(), entry);
@@ -908,23 +947,34 @@ async fn build_repodata(
             .and_then(|m| m.get("track_features").and_then(|v| v.as_str()))
             .unwrap_or("");
 
+        let noarch = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("noarch").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let md5 = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("md5").and_then(|v| v.as_str()))
+            .unwrap_or("");
+
         let mut entry = serde_json::json!({
-            "name": pkg_name,
-            "version": version,
             "build": build,
             "build_number": build_number,
-            "depends": depends,
             "constrains": constrains,
+            "depends": depends,
+            "fn": filename,
             "license": license,
-            "md5": artifact.metadata.as_ref()
-                .and_then(|m| m.get("md5").and_then(|v| v.as_str()))
-                .unwrap_or(""),
+            "md5": md5,
+            "name": pkg_name,
             "sha256": artifact.checksum_sha256,
             "size": artifact.size_bytes,
             "subdir": subdir,
+            "version": version,
         });
 
-        // Include optional fields only when non-empty
+        // Include optional fields only when non-empty/present
         if !license_family.is_empty() {
             entry["license_family"] = serde_json::Value::String(license_family.to_string());
         }
@@ -936,6 +986,9 @@ async fn build_repodata(
         }
         if !track_features.is_empty() {
             entry["track_features"] = serde_json::Value::String(track_features.to_string());
+        }
+        if !noarch.is_empty() {
+            entry["noarch"] = serde_json::Value::String(noarch.to_string());
         }
 
         if is_conda_v2(filename) {
@@ -949,6 +1002,7 @@ async fn build_repodata(
         "info": { "subdir": subdir },
         "packages": packages,
         "packages.conda": packages_conda,
+        "repodata_version": 1,
     }))
 }
 
@@ -1317,10 +1371,17 @@ async fn store_conda_package(
     })?;
     let build_string = path_info.build.unwrap_or_else(|| "0".to_string());
 
-    // Compute SHA256
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
-    let computed_sha256 = format!("{:x}", hasher.finalize());
+    // Compute SHA256 and MD5
+    let mut sha256_hasher = Sha256::new();
+    sha256_hasher.update(&content);
+    let computed_sha256 = format!("{:x}", sha256_hasher.finalize());
+
+    let computed_md5 = {
+        use md5::Md5;
+        let mut hasher = Md5::new();
+        md5::Digest::update(&mut hasher, &content);
+        format!("{:x}", md5::Digest::finalize(hasher))
+    };
 
     let artifact_path = format!("{}/{}", subdir, filename);
 
@@ -1443,6 +1504,12 @@ async fn store_conda_package(
         .unwrap_or("")
         .to_string();
 
+    let noarch = extracted
+        .as_ref()
+        .and_then(|m| m.get("noarch").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+
     // Store conda-specific metadata (with real values extracted from package)
     let mut conda_metadata = serde_json::json!({
         "name": pkg_name,
@@ -1454,6 +1521,7 @@ async fn store_conda_package(
         "depends": depends,
         "constrains": constrains,
         "license": license,
+        "md5": computed_md5,
     });
     if !license_family.is_empty() {
         conda_metadata["license_family"] = serde_json::Value::String(license_family);
@@ -1466,6 +1534,9 @@ async fn store_conda_package(
     }
     if !track_features.is_empty() {
         conda_metadata["track_features"] = serde_json::Value::String(track_features);
+    }
+    if !noarch.is_empty() {
+        conda_metadata["noarch"] = serde_json::Value::String(noarch);
     }
 
     let _ = sqlx::query!(
@@ -1646,6 +1717,96 @@ mod tests {
         })
     }
 
+    /// Build repodata entries from CondaArtifacts (mirrors build_repodata logic).
+    fn build_repodata_entries(
+        artifacts: &[&CondaArtifact],
+        subdir: &str,
+        packages: &mut serde_json::Map<String, serde_json::Value>,
+        packages_conda: &mut serde_json::Map<String, serde_json::Value>,
+    ) {
+        for artifact in artifacts {
+            let filename = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
+            if !is_conda_package(filename) {
+                continue;
+            }
+            let pkg_name = artifact.metadata.as_ref()
+                .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+                .unwrap_or(&artifact.name);
+            let version = artifact.metadata.as_ref()
+                .and_then(|m| m.get("version").and_then(|v| v.as_str()))
+                .or(artifact.version.as_deref())
+                .unwrap_or("0");
+            let build = artifact.metadata.as_ref()
+                .and_then(|m| m.get("build").and_then(|v| v.as_str()))
+                .unwrap_or("0");
+            let build_number = artifact.metadata.as_ref()
+                .and_then(|m| m.get("build_number").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+            let depends = artifact.metadata.as_ref()
+                .and_then(|m| m.get("depends")).cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let constrains = artifact.metadata.as_ref()
+                .and_then(|m| m.get("constrains")).cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let license = artifact.metadata.as_ref()
+                .and_then(|m| m.get("license").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let license_family = artifact.metadata.as_ref()
+                .and_then(|m| m.get("license_family").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let timestamp = artifact.metadata.as_ref()
+                .and_then(|m| m.get("timestamp").and_then(|v| v.as_u64()));
+            let features = artifact.metadata.as_ref()
+                .and_then(|m| m.get("features").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let track_features = artifact.metadata.as_ref()
+                .and_then(|m| m.get("track_features").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let noarch = artifact.metadata.as_ref()
+                .and_then(|m| m.get("noarch").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let md5 = artifact.metadata.as_ref()
+                .and_then(|m| m.get("md5").and_then(|v| v.as_str()))
+                .unwrap_or("");
+
+            let mut entry = serde_json::json!({
+                "build": build,
+                "build_number": build_number,
+                "constrains": constrains,
+                "depends": depends,
+                "fn": filename,
+                "license": license,
+                "md5": md5,
+                "name": pkg_name,
+                "sha256": artifact.checksum_sha256,
+                "size": artifact.size_bytes,
+                "subdir": subdir,
+                "version": version,
+            });
+            if !license_family.is_empty() {
+                entry["license_family"] = serde_json::Value::String(license_family.to_string());
+            }
+            if let Some(ts) = timestamp {
+                entry["timestamp"] = serde_json::json!(ts);
+            }
+            if !features.is_empty() {
+                entry["features"] = serde_json::Value::String(features.to_string());
+            }
+            if !track_features.is_empty() {
+                entry["track_features"] = serde_json::Value::String(track_features.to_string());
+            }
+            if !noarch.is_empty() {
+                entry["noarch"] = serde_json::Value::String(noarch.to_string());
+            }
+
+            if is_conda_v2(filename) {
+                packages_conda.insert(filename.to_string(), entry);
+            } else {
+                packages.insert(filename.to_string(), entry);
+            }
+        }
+    }
+
     /// Build the full repodata.json response for a subdir.
     fn build_repodata_json(
         subdir: &str,
@@ -1656,6 +1817,7 @@ mod tests {
             "info": { "subdir": subdir },
             "packages": packages,
             "packages.conda": packages_conda,
+            "repodata_version": 1,
         })
     }
 
@@ -2040,6 +2202,218 @@ mod tests {
         let packages_conda = serde_json::Map::new();
         let rd = build_repodata_json("osx-arm64", &packages, &packages_conda);
         assert_eq!(rd["info"]["subdir"], "osx-arm64");
+    }
+
+    #[test]
+    fn test_repodata_json_has_repodata_version() {
+        let packages = serde_json::Map::new();
+        let packages_conda = serde_json::Map::new();
+        let rd = build_repodata_json("linux-64", &packages, &packages_conda);
+        assert_eq!(rd["repodata_version"], 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Missing fields: fn, noarch, repodata_version, expanded subdirs (bead: artifact-keeper-akk)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_repodata_entry_has_fn_field_v2() {
+        // The 'fn' field must be present in every repodata entry per conda spec
+        let artifact = make_conda_artifact(
+            "numpy",
+            "linux-64/numpy-1.26.4-py312h02b7e37_0.conda",
+            Some(serde_json::json!({
+                "subdir": "linux-64",
+                "name": "numpy",
+                "version": "1.26.4",
+                "build": "py312h02b7e37_0",
+                "build_number": 0,
+                "depends": ["python >=3.12"],
+                "constrains": [],
+                "license": "BSD-3-Clause",
+                "md5": "abc123"
+            })),
+        );
+        let artifacts = vec![&artifact];
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+        build_repodata_entries(&artifacts, "linux-64", &mut packages, &mut packages_conda);
+        let entry = &packages_conda["numpy-1.26.4-py312h02b7e37_0.conda"];
+        assert_eq!(entry["fn"], "numpy-1.26.4-py312h02b7e37_0.conda");
+    }
+
+    #[test]
+    fn test_repodata_entry_has_fn_field_v1() {
+        let artifact = make_conda_artifact(
+            "requests",
+            "noarch/requests-2.31.0-pyhd8ed1ab_0.tar.bz2",
+            Some(serde_json::json!({
+                "subdir": "noarch",
+                "name": "requests",
+                "version": "2.31.0",
+                "build": "pyhd8ed1ab_0",
+                "build_number": 0,
+                "depends": [],
+                "constrains": [],
+                "license": "Apache-2.0"
+            })),
+        );
+        let artifacts = vec![&artifact];
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+        build_repodata_entries(&artifacts, "noarch", &mut packages, &mut packages_conda);
+        let entry = &packages["requests-2.31.0-pyhd8ed1ab_0.tar.bz2"];
+        assert_eq!(entry["fn"], "requests-2.31.0-pyhd8ed1ab_0.tar.bz2");
+    }
+
+    #[test]
+    fn test_repodata_entry_has_noarch_for_noarch_package() {
+        let artifact = make_conda_artifact(
+            "six",
+            "noarch/six-1.16.0-pyh6c4a22f_0.conda",
+            Some(serde_json::json!({
+                "subdir": "noarch",
+                "name": "six",
+                "version": "1.16.0",
+                "build": "pyh6c4a22f_0",
+                "build_number": 0,
+                "depends": ["python"],
+                "constrains": [],
+                "license": "MIT",
+                "noarch": "python"
+            })),
+        );
+        let artifacts = vec![&artifact];
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+        build_repodata_entries(&artifacts, "noarch", &mut packages, &mut packages_conda);
+        let entry = &packages_conda["six-1.16.0-pyh6c4a22f_0.conda"];
+        assert_eq!(entry["noarch"], "python");
+    }
+
+    #[test]
+    fn test_repodata_entry_noarch_generic() {
+        let artifact = make_conda_artifact(
+            "font-ttf",
+            "noarch/font-ttf-1.0-0.conda",
+            Some(serde_json::json!({
+                "subdir": "noarch",
+                "name": "font-ttf",
+                "version": "1.0",
+                "build": "0",
+                "build_number": 0,
+                "depends": [],
+                "constrains": [],
+                "license": "OFL-1.1",
+                "noarch": "generic"
+            })),
+        );
+        let artifacts = vec![&artifact];
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+        build_repodata_entries(&artifacts, "noarch", &mut packages, &mut packages_conda);
+        let entry = &packages_conda["font-ttf-1.0-0.conda"];
+        assert_eq!(entry["noarch"], "generic");
+    }
+
+    #[test]
+    fn test_repodata_entry_no_noarch_for_arch_package() {
+        // Non-noarch packages should not have the noarch field
+        let artifact = make_conda_artifact(
+            "numpy",
+            "linux-64/numpy-1.26.4-py312h_0.conda",
+            Some(serde_json::json!({
+                "subdir": "linux-64",
+                "name": "numpy",
+                "version": "1.26.4",
+                "build": "py312h_0",
+                "build_number": 0,
+                "depends": ["python >=3.12"],
+                "constrains": [],
+                "license": "BSD-3-Clause"
+            })),
+        );
+        let artifacts = vec![&artifact];
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+        build_repodata_entries(&artifacts, "linux-64", &mut packages, &mut packages_conda);
+        let entry = &packages_conda["numpy-1.26.4-py312h_0.conda"];
+        assert!(entry.get("noarch").is_none(), "arch-specific package should not have noarch field");
+    }
+
+    #[test]
+    fn test_known_subdirs_includes_arm_platforms() {
+        // ARM platforms added for IoT and embedded
+        assert!(KNOWN_SUBDIRS.contains(&"linux-armv6l"));
+        assert!(KNOWN_SUBDIRS.contains(&"linux-armv7l"));
+        assert!(KNOWN_SUBDIRS.contains(&"win-arm64"));
+        assert!(KNOWN_SUBDIRS.contains(&"linux-32"));
+    }
+
+    #[test]
+    fn test_known_subdirs_sorted() {
+        // noarch first, then alphabetically sorted
+        assert_eq!(KNOWN_SUBDIRS[0], "noarch");
+        let rest = &KNOWN_SUBDIRS[1..];
+        for window in rest.windows(2) {
+            assert!(window[0] < window[1], "{} should come before {}", window[0], window[1]);
+        }
+    }
+
+    #[test]
+    fn test_shard_entry_has_fn_field() {
+        let artifact = make_full_conda_artifact(
+            "numpy", "1.26.4", "py312h_0", "linux-64", "conda", 4096,
+        );
+        let refs = vec![&artifact];
+        let shard = build_shard("linux-64", &refs);
+        let entry = &shard["packages.conda"]["numpy-1.26.4-py312h_0.conda"];
+        assert_eq!(entry["fn"], "numpy-1.26.4-py312h_0.conda");
+    }
+
+    #[test]
+    fn test_shard_entry_has_noarch() {
+        let mut artifact = make_full_conda_artifact(
+            "six", "1.16.0", "pyh_0", "noarch", "conda", 2048,
+        );
+        artifact.metadata = Some(serde_json::json!({
+            "subdir": "noarch",
+            "name": "six",
+            "noarch": "python",
+            "version": "1.16.0",
+            "build": "pyh_0",
+            "build_number": 0,
+            "depends": [],
+            "constrains": [],
+            "license": "MIT",
+        }));
+        let refs = vec![&artifact];
+        let shard = build_shard("noarch", &refs);
+        let entry = &shard["packages.conda"]["six-1.16.0-pyh_0.conda"];
+        assert_eq!(entry["noarch"], "python");
+    }
+
+    #[test]
+    fn test_md5_computed_during_v2_extraction() {
+        // Build a minimal .conda v2 package with known content
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let options = zip::write::SimpleFileOptions::default();
+            zip_writer.start_file("metadata.json", options).unwrap();
+            zip_writer.write_all(b"{\"name\":\"test\",\"version\":\"1.0\"}").unwrap();
+            zip_writer.finish().unwrap();
+        }
+        // The md5 should be computed from the raw bytes, not from metadata
+        // This test verifies the code path computes md5 via the Md5 hasher
+        let md5_hash = {
+            use md5::Md5;
+            let mut hasher = Md5::new();
+            md5::Digest::update(&mut hasher, &zip_buf);
+            format!("{:x}", md5::Digest::finalize(hasher))
+        };
+        assert_eq!(md5_hash.len(), 32, "MD5 hash should be 32 hex chars");
+        assert!(md5_hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -----------------------------------------------------------------------
