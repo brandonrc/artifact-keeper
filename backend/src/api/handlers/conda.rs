@@ -2230,6 +2230,71 @@ async fn build_repodata(
     }))
 }
 
+/// Merge package maps from a source into an accumulator using first-writer-wins.
+///
+/// Entries already present in the accumulator are not overwritten, so higher-priority
+/// members (inserted first) win on conflicts.
+fn merge_package_maps(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    source: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (k, v) in source {
+        target.entry(k.clone()).or_insert(v.clone());
+    }
+}
+
+/// Parse upstream repodata JSON and extract `packages` and `packages.conda` maps.
+///
+/// Returns `(packages, packages_conda)`. Missing keys are returned as empty maps.
+fn parse_upstream_repodata(
+    content: &[u8],
+) -> Option<(
+    serde_json::Map<String, serde_json::Value>,
+    serde_json::Map<String, serde_json::Value>,
+)> {
+    let value: serde_json::Value = serde_json::from_slice(content).ok()?;
+    let packages = value
+        .get("packages")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let packages_conda = value
+        .get("packages.conda")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    Some((packages, packages_conda))
+}
+
+/// Parse upstream channeldata JSON and extract the `packages` map.
+fn parse_upstream_channeldata(
+    content: &[u8],
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let value: serde_json::Value = serde_json::from_slice(content).ok()?;
+    value.get("packages").and_then(|v| v.as_object()).cloned()
+}
+
+/// Build a channeldata entry for a single conda artifact from its metadata.
+fn build_channeldata_entry(
+    version: Option<&str>,
+    metadata: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let subdir = metadata
+        .and_then(|m| m.get("subdir").and_then(|v| v.as_str()))
+        .unwrap_or("noarch");
+    let meta_str = |field: &str| {
+        metadata
+            .and_then(|m| m.get(field).and_then(|v| v.as_str()))
+            .unwrap_or("")
+    };
+    serde_json::json!({
+        "subdirs": [subdir],
+        "version": version.unwrap_or("0"),
+        "license": meta_str("license"),
+        "summary": meta_str("summary"),
+    })
+}
+
 /// Build merged repodata.json for a virtual repository by combining member repos.
 ///
 /// Members are iterated in priority order (from `virtual_repo_members` table).
@@ -2270,21 +2335,9 @@ async fn build_virtual_repodata(
                 )
                 .await
                 {
-                    if let Ok(upstream_rd) = serde_json::from_slice::<serde_json::Value>(&content) {
-                        if let Some(pkgs) = upstream_rd.get("packages").and_then(|v| v.as_object())
-                        {
-                            for (k, v) in pkgs {
-                                merged_packages.entry(k.clone()).or_insert(v.clone());
-                            }
-                        }
-                        if let Some(pkgs) = upstream_rd
-                            .get("packages.conda")
-                            .and_then(|v| v.as_object())
-                        {
-                            for (k, v) in pkgs {
-                                merged_packages_conda.entry(k.clone()).or_insert(v.clone());
-                            }
-                        }
+                    if let Some((pkgs, pkgs_conda)) = parse_upstream_repodata(&content) {
+                        merge_package_maps(&mut merged_packages, &pkgs);
+                        merge_package_maps(&mut merged_packages_conda, &pkgs_conda);
                     }
                 }
             }
@@ -2350,13 +2403,8 @@ async fn build_virtual_channeldata(
                 )
                 .await
                 {
-                    if let Ok(upstream_cd) = serde_json::from_slice::<serde_json::Value>(&content) {
-                        if let Some(pkgs) = upstream_cd.get("packages").and_then(|v| v.as_object())
-                        {
-                            for (k, v) in pkgs {
-                                merged_packages.entry(k.clone()).or_insert(v.clone());
-                            }
-                        }
+                    if let Some(pkgs) = parse_upstream_channeldata(&content) {
+                        merge_package_maps(&mut merged_packages, &pkgs);
                     }
                 }
             }
@@ -2375,22 +2423,7 @@ async fn build_virtual_channeldata(
                     .unwrap_or_else(|| artifact.name.clone());
 
                 merged_packages.entry(pkg_name).or_insert_with(|| {
-                    let subdir = artifact
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.get("subdir").and_then(|v| v.as_str()))
-                        .unwrap_or("noarch");
-                    let meta = artifact.metadata.as_ref();
-                    let meta_str = |field: &str| {
-                        meta.and_then(|m| m.get(field).and_then(|v| v.as_str()))
-                            .unwrap_or("")
-                    };
-                    serde_json::json!({
-                        "subdirs": [subdir],
-                        "version": artifact.version.as_deref().unwrap_or("0"),
-                        "license": meta_str("license"),
-                        "summary": meta_str("summary"),
-                    })
+                    build_channeldata_entry(artifact.version.as_deref(), artifact.metadata.as_ref())
                 });
             }
         }
@@ -6858,6 +6891,261 @@ mod tests {
         // v1 and v2 should be in their respective sections
         assert_eq!(rd["packages"].as_object().unwrap().len(), 1);
         assert_eq!(rd["packages.conda"].as_object().unwrap().len(), 1);
+    }
+
+    // =======================================================================
+    // Pure helper tests: merge_package_maps, parse_upstream_*, build_channeldata_entry
+    // =======================================================================
+
+    #[test]
+    fn test_merge_package_maps_adds_new_entries() {
+        let mut target = serde_json::Map::new();
+        target.insert("a".into(), serde_json::json!(1));
+
+        let mut source = serde_json::Map::new();
+        source.insert("b".into(), serde_json::json!(2));
+
+        merge_package_maps(&mut target, &source);
+        assert_eq!(target.len(), 2);
+        assert_eq!(target["a"], 1);
+        assert_eq!(target["b"], 2);
+    }
+
+    #[test]
+    fn test_merge_package_maps_first_writer_wins() {
+        let mut target = serde_json::Map::new();
+        target.insert("pkg".into(), serde_json::json!({"version": "1.0"}));
+
+        let mut source = serde_json::Map::new();
+        source.insert("pkg".into(), serde_json::json!({"version": "2.0"}));
+
+        merge_package_maps(&mut target, &source);
+        assert_eq!(target.len(), 1);
+        assert_eq!(target["pkg"]["version"], "1.0");
+    }
+
+    #[test]
+    fn test_merge_package_maps_empty_source() {
+        let mut target = serde_json::Map::new();
+        target.insert("a".into(), serde_json::json!(1));
+
+        let source = serde_json::Map::new();
+        merge_package_maps(&mut target, &source);
+        assert_eq!(target.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_package_maps_empty_target() {
+        let mut target = serde_json::Map::new();
+
+        let mut source = serde_json::Map::new();
+        source.insert("a".into(), serde_json::json!(1));
+        source.insert("b".into(), serde_json::json!(2));
+
+        merge_package_maps(&mut target, &source);
+        assert_eq!(target.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_package_maps_partial_overlap() {
+        let mut target = serde_json::Map::new();
+        target.insert("a".into(), serde_json::json!("target_a"));
+        target.insert("b".into(), serde_json::json!("target_b"));
+
+        let mut source = serde_json::Map::new();
+        source.insert("b".into(), serde_json::json!("source_b"));
+        source.insert("c".into(), serde_json::json!("source_c"));
+
+        merge_package_maps(&mut target, &source);
+        assert_eq!(target.len(), 3);
+        assert_eq!(target["a"], "target_a");
+        assert_eq!(target["b"], "target_b"); // target wins
+        assert_eq!(target["c"], "source_c");
+    }
+
+    #[test]
+    fn test_parse_upstream_repodata_both_sections() {
+        let content = serde_json::to_vec(&serde_json::json!({
+            "info": {"subdir": "linux-64"},
+            "packages": {
+                "old-1.0-0.tar.bz2": {"name": "old", "version": "1.0"}
+            },
+            "packages.conda": {
+                "new-2.0-0.conda": {"name": "new", "version": "2.0"}
+            },
+            "repodata_version": 1,
+        }))
+        .unwrap();
+
+        let (pkgs, pkgs_conda) = parse_upstream_repodata(&content).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains_key("old-1.0-0.tar.bz2"));
+        assert_eq!(pkgs_conda.len(), 1);
+        assert!(pkgs_conda.contains_key("new-2.0-0.conda"));
+    }
+
+    #[test]
+    fn test_parse_upstream_repodata_missing_packages_conda() {
+        let content = serde_json::to_vec(&serde_json::json!({
+            "packages": {
+                "pkg-1.0-0.tar.bz2": {"name": "pkg"}
+            },
+            "repodata_version": 1,
+        }))
+        .unwrap();
+
+        let (pkgs, pkgs_conda) = parse_upstream_repodata(&content).unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs_conda.is_empty());
+    }
+
+    #[test]
+    fn test_parse_upstream_repodata_empty_json() {
+        let content = b"{}";
+        let (pkgs, pkgs_conda) = parse_upstream_repodata(content).unwrap();
+        assert!(pkgs.is_empty());
+        assert!(pkgs_conda.is_empty());
+    }
+
+    #[test]
+    fn test_parse_upstream_repodata_invalid_json() {
+        let content = b"not json";
+        assert!(parse_upstream_repodata(content).is_none());
+    }
+
+    #[test]
+    fn test_parse_upstream_channeldata_with_packages() {
+        let content = serde_json::to_vec(&serde_json::json!({
+            "channeldata_version": 1,
+            "packages": {
+                "numpy": {"subdirs": ["linux-64"], "version": "1.26"},
+                "scipy": {"subdirs": ["noarch"], "version": "1.11"},
+            }
+        }))
+        .unwrap();
+
+        let pkgs = parse_upstream_channeldata(&content).unwrap();
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains_key("numpy"));
+        assert!(pkgs.contains_key("scipy"));
+    }
+
+    #[test]
+    fn test_parse_upstream_channeldata_missing_packages() {
+        let content = b"{}";
+        assert!(parse_upstream_channeldata(content).is_none());
+    }
+
+    #[test]
+    fn test_parse_upstream_channeldata_invalid_json() {
+        let content = b"invalid";
+        assert!(parse_upstream_channeldata(content).is_none());
+    }
+
+    #[test]
+    fn test_build_channeldata_entry_full_metadata() {
+        let meta = serde_json::json!({
+            "subdir": "linux-64",
+            "license": "BSD-3-Clause",
+            "summary": "A scientific computing package",
+            "name": "numpy",
+        });
+
+        let entry = build_channeldata_entry(Some("1.26.4"), Some(&meta));
+        assert_eq!(entry["version"], "1.26.4");
+        assert_eq!(entry["license"], "BSD-3-Clause");
+        assert_eq!(entry["summary"], "A scientific computing package");
+        assert_eq!(entry["subdirs"][0], "linux-64");
+    }
+
+    #[test]
+    fn test_build_channeldata_entry_no_metadata() {
+        let entry = build_channeldata_entry(Some("2.0"), None);
+        assert_eq!(entry["version"], "2.0");
+        assert_eq!(entry["license"], "");
+        assert_eq!(entry["summary"], "");
+        assert_eq!(entry["subdirs"][0], "noarch");
+    }
+
+    #[test]
+    fn test_build_channeldata_entry_no_version() {
+        let entry = build_channeldata_entry(None, None);
+        assert_eq!(entry["version"], "0");
+    }
+
+    #[test]
+    fn test_build_channeldata_entry_partial_metadata() {
+        let meta = serde_json::json!({
+            "license": "MIT",
+        });
+
+        let entry = build_channeldata_entry(Some("3.0"), Some(&meta));
+        assert_eq!(entry["version"], "3.0");
+        assert_eq!(entry["license"], "MIT");
+        assert_eq!(entry["summary"], ""); // missing from metadata
+        assert_eq!(entry["subdirs"][0], "noarch"); // missing subdir defaults to noarch
+    }
+
+    #[test]
+    fn test_merge_package_maps_multi_member_priority() {
+        // Simulate 3-member virtual repo merge
+        let mut merged = serde_json::Map::new();
+
+        // Member 1 (highest priority)
+        let mut m1 = serde_json::Map::new();
+        m1.insert("shared".into(), serde_json::json!({"from": "m1"}));
+        m1.insert("only_m1".into(), serde_json::json!({"from": "m1"}));
+        merge_package_maps(&mut merged, &m1);
+
+        // Member 2
+        let mut m2 = serde_json::Map::new();
+        m2.insert("shared".into(), serde_json::json!({"from": "m2"}));
+        m2.insert("only_m2".into(), serde_json::json!({"from": "m2"}));
+        merge_package_maps(&mut merged, &m2);
+
+        // Member 3 (lowest priority)
+        let mut m3 = serde_json::Map::new();
+        m3.insert("shared".into(), serde_json::json!({"from": "m3"}));
+        m3.insert("only_m3".into(), serde_json::json!({"from": "m3"}));
+        merge_package_maps(&mut merged, &m3);
+
+        assert_eq!(merged.len(), 4);
+        assert_eq!(merged["shared"]["from"], "m1"); // highest priority wins
+        assert_eq!(merged["only_m1"]["from"], "m1");
+        assert_eq!(merged["only_m2"]["from"], "m2");
+        assert_eq!(merged["only_m3"]["from"], "m3");
+    }
+
+    #[test]
+    fn test_parse_upstream_repodata_preserves_metadata_fields() {
+        let content = serde_json::to_vec(&serde_json::json!({
+            "packages.conda": {
+                "numpy-1.26.4-py312_0.conda": {
+                    "name": "numpy",
+                    "version": "1.26.4",
+                    "build": "py312_0",
+                    "build_number": 0,
+                    "depends": ["python >=3.12"],
+                    "constrains": [],
+                    "license": "BSD-3-Clause",
+                    "md5": "abc123",
+                    "sha256": "def456",
+                    "size": 8192,
+                    "subdir": "linux-64",
+                    "timestamp": 1700000000000_u64
+                }
+            }
+        }))
+        .unwrap();
+
+        let (_, pkgs_conda) = parse_upstream_repodata(&content).unwrap();
+        let entry = &pkgs_conda["numpy-1.26.4-py312_0.conda"];
+        assert_eq!(entry["name"], "numpy");
+        assert_eq!(entry["version"], "1.26.4");
+        assert_eq!(entry["build"], "py312_0");
+        assert_eq!(entry["license"], "BSD-3-Clause");
+        assert_eq!(entry["sha256"], "def456");
+        assert_eq!(entry["size"], 8192);
     }
 
     // =======================================================================
