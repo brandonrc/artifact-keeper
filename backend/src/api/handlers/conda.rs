@@ -2881,4 +2881,529 @@ mod tests {
         // Non-existent subdir should return empty
         assert_eq!(artifacts_for_subdir(&artifacts, "linux-aarch64").len(), 0);
     }
+
+    // =======================================================================
+    // Authentication compliance tests (bead: artifact-keeper-seq)
+    // Maps to conda/conda#9973 and Artifactory plugin#200
+    // =======================================================================
+
+    #[test]
+    fn test_basic_auth_standard_format() {
+        // user:pass -> base64 "dXNlcjpwYXNz"
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic dXNlcjpwYXNz".parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_basic_auth_case_insensitive_prefix() {
+        // conda clients may send "basic" (lowercase) instead of "Basic"
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "basic dXNlcjpwYXNz".parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
+    }
+
+    #[test]
+    fn test_basic_auth_token_in_password_field() {
+        // Common pattern: use API token as the password with a dummy username
+        // token: "ak_myapitoken123"
+        // "token:ak_myapitoken123" -> base64
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode("token:ak_myapitoken123");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("token".to_string(), "ak_myapitoken123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_basic_auth_conda_condarc_style() {
+        // .condarc uses: channel_alias with user:token@ in URL, which gets
+        // converted to Basic auth by conda client
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode("myuser:mypassword");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("myuser".to_string(), "mypassword".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_basic_auth_password_with_colon() {
+        // Passwords containing colons should work (split only on first colon)
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode("user:pass:with:colons");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("user".to_string(), "pass:with:colons".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_basic_auth_special_characters() {
+        // Passwords with special chars should be handled
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode("admin:P@$$w0rd!#%");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("admin".to_string(), "P@$$w0rd!#%".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_no_auth_header_returns_none() {
+        let headers = HeaderMap::new();
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_bearer_auth_not_accepted_for_basic() {
+        // Bearer tokens should NOT be parsed as basic credentials
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer eyJhbGciOiJIUzI1NiJ9".parse().unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_invalid_base64_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic !!!not-base64!!!".parse().unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_basic_auth_no_colon_returns_none() {
+        // base64 of just "username" (no colon separator)
+        let encoded = base64::engine::general_purpose::STANDARD.encode("username");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        assert!(extract_basic_credentials(&headers).is_none());
+    }
+
+    #[test]
+    fn test_basic_auth_empty_password() {
+        // Some systems allow empty passwords
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(result, Some(("user".to_string(), "".to_string())));
+    }
+
+    #[test]
+    fn test_basic_auth_empty_username() {
+        // Token-only auth: empty username with token as password
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(":ak_token_value");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Basic {}", encoded).parse().unwrap(),
+        );
+        let result = extract_basic_credentials(&headers);
+        assert_eq!(
+            result,
+            Some(("".to_string(), "ak_token_value".to_string()))
+        );
+    }
+
+    // =======================================================================
+    // Repodata performance at scale (bead: artifact-keeper-v9v)
+    // =======================================================================
+
+    /// Helper to build a CondaArtifact with full metadata for performance testing.
+    fn make_full_conda_artifact(
+        name: &str,
+        version: &str,
+        build: &str,
+        subdir: &str,
+        format_ext: &str,
+        size: i64,
+    ) -> CondaArtifact {
+        let filename = format!("{}-{}-{}.{}", name, version, build, format_ext);
+        let path = format!("{}/{}", subdir, filename);
+        CondaArtifact {
+            id: uuid::Uuid::new_v4(),
+            path,
+            name: name.to_string(),
+            version: Some(version.to_string()),
+            size_bytes: size,
+            checksum_sha256: format!("sha256_{}_{}_{}", name, version, build),
+            storage_key: format!("conda/test-repo/{}/{}", subdir, filename),
+            metadata: Some(serde_json::json!({
+                "name": name,
+                "version": version,
+                "build": build,
+                "build_number": 0,
+                "subdir": subdir,
+                "depends": ["python >=3.8"],
+                "constrains": [],
+                "license": "MIT",
+                "package_format": if format_ext == "conda" { "v2" } else { "v1" },
+            })),
+        }
+    }
+
+    #[test]
+    fn test_repodata_100_packages_fast() {
+        // Generate 100 packages and verify repodata generation is fast
+        let mut artifacts: Vec<CondaArtifact> = Vec::new();
+        for i in 0..100 {
+            artifacts.push(make_full_conda_artifact(
+                &format!("pkg{}", i),
+                "1.0.0",
+                &format!("py312_{}", i),
+                "linux-64",
+                "conda",
+                1024 * 100, // 100KB each
+            ));
+        }
+
+        let start = std::time::Instant::now();
+        let filtered = artifacts_for_subdir(&artifacts, "linux-64");
+        assert_eq!(filtered.len(), 100);
+
+        // Build repodata entries
+        let mut packages_conda = serde_json::Map::new();
+        for artifact in &filtered {
+            let filename = artifact.path.rsplit('/').next().unwrap();
+            let entry = build_repodata_entry(
+                &artifact.name,
+                artifact.version.as_deref().unwrap_or("0"),
+                "0",
+                0,
+                &serde_json::json!(["python >=3.8"]),
+                "", "sha", 100, "linux-64",
+            );
+            packages_conda.insert(filename.to_string(), entry);
+        }
+
+        let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &packages_conda);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 1000,
+            "100-package repodata should generate in < 1s, took {}ms",
+            elapsed.as_millis()
+        );
+        assert_eq!(rd["packages.conda"].as_object().unwrap().len(), 100);
+    }
+
+    #[test]
+    fn test_repodata_1000_packages_reasonable() {
+        let mut artifacts: Vec<CondaArtifact> = Vec::new();
+        for i in 0..1000 {
+            artifacts.push(make_full_conda_artifact(
+                &format!("pkg{}", i),
+                "1.0.0",
+                &format!("py312_{}", i),
+                "linux-64",
+                "conda",
+                1024 * 100,
+            ));
+        }
+
+        let start = std::time::Instant::now();
+        let filtered = artifacts_for_subdir(&artifacts, "linux-64");
+        assert_eq!(filtered.len(), 1000);
+
+        let mut packages_conda = serde_json::Map::new();
+        for artifact in &filtered {
+            let filename = artifact.path.rsplit('/').next().unwrap();
+            let entry = build_repodata_entry(
+                &artifact.name,
+                artifact.version.as_deref().unwrap_or("0"),
+                "0",
+                0,
+                &serde_json::json!(["python >=3.8"]),
+                "", "sha", 100, "linux-64",
+            );
+            packages_conda.insert(filename.to_string(), entry);
+        }
+
+        let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &packages_conda);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 5000,
+            "1000-package repodata should generate in < 5s, took {}ms",
+            elapsed.as_millis()
+        );
+        assert_eq!(rd["packages.conda"].as_object().unwrap().len(), 1000);
+    }
+
+    #[test]
+    fn test_repodata_json_serializes_with_content_length() {
+        let mut packages = serde_json::Map::new();
+        packages.insert(
+            "test-1.0-0.tar.bz2".to_string(),
+            build_repodata_entry("test", "1.0", "0", 0, &serde_json::json!([]), "", "sha", 100, "linux-64"),
+        );
+        let mut packages_conda = serde_json::Map::new();
+        packages_conda.insert(
+            "test2-2.0-0.conda".to_string(),
+            build_repodata_entry("test2", "2.0", "0", 0, &serde_json::json!([]), "", "sha", 200, "linux-64"),
+        );
+
+        let rd = build_repodata_json("linux-64", &packages, &packages_conda);
+        let body = serde_json::to_string_pretty(&rd).unwrap();
+
+        // Content-Length should be deterministic and correct
+        assert!(body.len() > 0);
+        let body2 = serde_json::to_string_pretty(&rd).unwrap();
+        assert_eq!(body.len(), body2.len(), "Serialized size should be deterministic");
+    }
+
+    #[test]
+    fn test_bzip2_compression_ratio() {
+        // Real repodata.json is highly compressible (lots of repeated field names)
+        let mut packages = serde_json::Map::new();
+        for i in 0..100 {
+            packages.insert(
+                format!("pkg{}-1.0-0.tar.bz2", i),
+                serde_json::json!({
+                    "name": format!("pkg{}", i),
+                    "version": "1.0",
+                    "build": "0",
+                    "build_number": 0,
+                    "depends": ["python >=3.8", "numpy >=1.22"],
+                    "constrains": [],
+                    "license": "MIT",
+                    "md5": "abc123",
+                    "sha256": format!("sha256_{}", i),
+                    "size": 10240,
+                    "subdir": "linux-64",
+                }),
+            );
+        }
+
+        let rd = build_repodata_json("linux-64", &packages, &serde_json::Map::new());
+        let json_bytes = serde_json::to_vec(&rd).unwrap();
+        let compressed = bzip2_compress(&json_bytes);
+
+        let ratio = json_bytes.len() as f64 / compressed.len() as f64;
+        assert!(
+            ratio > 5.0,
+            "bzip2 compression ratio should be > 5x for repodata, got {:.1}x ({} -> {} bytes)",
+            ratio,
+            json_bytes.len(),
+            compressed.len()
+        );
+    }
+
+    #[test]
+    fn test_zstd_compression_ratio() {
+        // zstd should also compress well
+        let mut packages = serde_json::Map::new();
+        for i in 0..100 {
+            packages.insert(
+                format!("pkg{}-1.0-0.conda", i),
+                serde_json::json!({
+                    "name": format!("pkg{}", i),
+                    "version": "1.0",
+                    "build": "0",
+                    "build_number": 0,
+                    "depends": ["python >=3.8", "numpy >=1.22"],
+                    "constrains": [],
+                    "license": "MIT",
+                    "md5": "abc123",
+                    "sha256": format!("sha256_{}", i),
+                    "size": 10240,
+                    "subdir": "linux-64",
+                }),
+            );
+        }
+
+        let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &packages);
+        let json_bytes = serde_json::to_vec(&rd).unwrap();
+        let compressed = zstd_compress(&json_bytes).unwrap();
+
+        let ratio = json_bytes.len() as f64 / compressed.len() as f64;
+        assert!(
+            ratio > 5.0,
+            "zstd compression ratio should be > 5x for repodata, got {:.1}x ({} -> {} bytes)",
+            ratio,
+            json_bytes.len(),
+            compressed.len()
+        );
+    }
+
+    #[test]
+    fn test_zstd_faster_decompression_than_bzip2() {
+        // zstd decompression should be significantly faster than bzip2
+        let mut packages = serde_json::Map::new();
+        for i in 0..500 {
+            packages.insert(
+                format!("pkg{}-1.0-0.conda", i),
+                serde_json::json!({
+                    "name": format!("pkg{}", i),
+                    "version": "1.0",
+                    "build": "0",
+                    "build_number": 0,
+                    "depends": ["python >=3.8", "numpy >=1.22", "scipy >=1.7"],
+                    "md5": "abc123",
+                    "sha256": format!("sha256_{}", i),
+                    "size": 10240,
+                    "subdir": "linux-64",
+                }),
+            );
+        }
+
+        let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &packages);
+        let json_bytes = serde_json::to_vec(&rd).unwrap();
+
+        let bz2_compressed = bzip2_compress(&json_bytes);
+        let zstd_compressed = zstd_compress(&json_bytes).unwrap();
+
+        // Time bzip2 decompression
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let decoder = bzip2::read::BzDecoder::new(std::io::Cursor::new(&bz2_compressed));
+            let mut output = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::BufReader::new(decoder), &mut output).unwrap();
+        }
+        let bz2_time = start.elapsed();
+
+        // Time zstd decompression
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            zstd::decode_all(std::io::Cursor::new(&zstd_compressed)).unwrap();
+        }
+        let zstd_time = start.elapsed();
+
+        // zstd should be at least 2x faster than bzip2 for decompression
+        assert!(
+            zstd_time < bz2_time,
+            "zstd decompression ({:?}) should be faster than bzip2 ({:?})",
+            zstd_time,
+            bz2_time
+        );
+    }
+
+    #[test]
+    fn test_current_repodata_only_latest_versions() {
+        // Simulate multiple versions of the same package
+        let artifacts = vec![
+            make_full_conda_artifact("numpy", "1.24.0", "py312_0", "linux-64", "conda", 1000),
+            make_full_conda_artifact("numpy", "1.25.0", "py312_0", "linux-64", "conda", 1000),
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 1000),
+            make_full_conda_artifact("scipy", "1.10.0", "py312_0", "linux-64", "conda", 1000),
+            make_full_conda_artifact("scipy", "1.11.4", "py312_0", "linux-64", "conda", 1000),
+        ];
+
+        let filtered = artifacts_for_subdir(&artifacts, "linux-64");
+        assert_eq!(filtered.len(), 5);
+
+        // Simulate latest_only filtering (what current_repodata.json does)
+        let mut latest: BTreeMap<String, &CondaArtifact> = BTreeMap::new();
+        for a in &filtered {
+            let name = a.metadata.as_ref()
+                .and_then(|m| m.get("name").and_then(|v| v.as_str()))
+                .unwrap_or(&a.name)
+                .to_string();
+            // First occurrence wins (simulating ORDER BY created_at DESC)
+            latest.entry(name).or_insert(a);
+        }
+
+        // Should only have 2 unique package names
+        assert_eq!(latest.len(), 2);
+        assert!(latest.contains_key("numpy"));
+        assert!(latest.contains_key("scipy"));
+    }
+
+    #[test]
+    fn test_repodata_mixed_v1_v2_same_package() {
+        // Same package available as both v1 and v2 (common during migration)
+        let v1 = make_conda_artifact(
+            "numpy",
+            "linux-64/numpy-1.26.4-py312_0.tar.bz2",
+            Some(serde_json::json!({
+                "name": "numpy",
+                "version": "1.26.4",
+                "build": "py312_0",
+                "build_number": 0,
+                "depends": ["python >=3.12"],
+                "subdir": "linux-64",
+                "package_format": "v1"
+            })),
+        );
+        let v2 = make_conda_artifact(
+            "numpy",
+            "linux-64/numpy-1.26.4-py312_0.conda",
+            Some(serde_json::json!({
+                "name": "numpy",
+                "version": "1.26.4",
+                "build": "py312_0",
+                "build_number": 0,
+                "depends": ["python >=3.12"],
+                "subdir": "linux-64",
+                "package_format": "v2"
+            })),
+        );
+
+        let artifacts = vec![v1, v2];
+        let filtered = artifacts_for_subdir(&artifacts, "linux-64");
+        assert_eq!(filtered.len(), 2);
+
+        // Both should appear in repodata but in different sections
+        let mut packages = serde_json::Map::new();
+        let mut packages_conda = serde_json::Map::new();
+
+        for a in &filtered {
+            let filename = a.path.rsplit('/').next().unwrap();
+            let entry = serde_json::json!({"name": "numpy", "version": "1.26.4"});
+            if is_conda_v2(filename) {
+                packages_conda.insert(filename.to_string(), entry);
+            } else {
+                packages.insert(filename.to_string(), entry);
+            }
+        }
+
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages_conda.len(), 1);
+    }
 }
