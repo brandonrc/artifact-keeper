@@ -12,6 +12,7 @@
 //!   GET  /conda/{repo_key}/{subdir}/repodata.json.zst        - Compressed repodata (zstd)
 //!   GET  /conda/{repo_key}/{subdir}/current_repodata.json    - Current (latest) repodata
 //!   GET  /conda/{repo_key}/{subdir}/run_exports.json         - Run exports metadata (CEP-12)
+//!   GET  /conda/{repo_key}/{subdir}/patch_instructions.json  - Repodata patch instructions
 //!   GET  /conda/{repo_key}/{subdir}/repodata_shards.msgpack.zst - CEP-16 shard index
 //!   GET  /conda/{repo_key}/{subdir}/shards/{hash}.msgpack.zst   - CEP-16 individual shard
 //!   GET  /conda/{repo_key}/{subdir}/{filename}               - Download package
@@ -154,6 +155,11 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/:subdir/run_exports.json",
             get(run_exports_json),
         )
+        // Patch instructions
+        .route(
+            "/:repo_key/:subdir/patch_instructions.json",
+            get(patch_instructions_json),
+        )
         // CEP-16 sharded repodata
         .route(
             "/:repo_key/:subdir/repodata_shards.msgpack.zst",
@@ -208,6 +214,10 @@ pub fn token_router() -> Router<SharedState> {
         .route(
             "/:token/:repo_key/:subdir/run_exports.json",
             get(run_exports_json),
+        )
+        .route(
+            "/:token/:repo_key/:subdir/patch_instructions.json",
+            get(patch_instructions_json),
         )
         .route(
             "/:token/:repo_key/:subdir/repodata_shards.msgpack.zst",
@@ -466,8 +476,20 @@ async fn channeldata_json(
             .collect()
     };
 
-    // Collect all packages with their subdirs
-    let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Collect all packages with their subdirs and metadata
+    struct ChanneldataEntry {
+        subdirs: BTreeSet<String>,
+        license: String,
+        license_family: String,
+        description: String,
+        summary: String,
+        home: String,
+        doc_url: String,
+        dev_url: String,
+        source_url: String,
+    }
+
+    let mut packages: BTreeMap<String, ChanneldataEntry> = BTreeMap::new();
 
     for artifact in &artifacts {
         let filename = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
@@ -490,17 +512,97 @@ async fn channeldata_json(
             .map(|s| s.to_string())
             .unwrap_or_else(|| artifact.name.clone());
 
-        packages.entry(pkg_name).or_default().insert(subdir);
+        let entry = packages.entry(pkg_name).or_insert_with(|| ChanneldataEntry {
+            subdirs: BTreeSet::new(),
+            license: String::new(),
+            license_family: String::new(),
+            description: String::new(),
+            summary: String::new(),
+            home: String::new(),
+            doc_url: String::new(),
+            dev_url: String::new(),
+            source_url: String::new(),
+        });
+        entry.subdirs.insert(subdir);
+
+        // Populate metadata from the most recently seen artifact with data
+        if let Some(ref meta) = artifact.metadata {
+            if entry.license.is_empty() {
+                if let Some(v) = meta.get("license").and_then(|v| v.as_str()) {
+                    entry.license = v.to_string();
+                }
+            }
+            if entry.license_family.is_empty() {
+                if let Some(v) = meta.get("license_family").and_then(|v| v.as_str()) {
+                    entry.license_family = v.to_string();
+                }
+            }
+            if entry.description.is_empty() {
+                if let Some(v) = meta.get("description").and_then(|v| v.as_str()) {
+                    entry.description = v.to_string();
+                }
+            }
+            if entry.summary.is_empty() {
+                if let Some(v) = meta.get("summary").and_then(|v| v.as_str()) {
+                    entry.summary = v.to_string();
+                }
+            }
+            if entry.home.is_empty() {
+                if let Some(v) = meta.get("home").and_then(|v| v.as_str()) {
+                    entry.home = v.to_string();
+                }
+            }
+            if entry.doc_url.is_empty() {
+                if let Some(v) = meta.get("doc_url").and_then(|v| v.as_str()) {
+                    entry.doc_url = v.to_string();
+                }
+            }
+            if entry.dev_url.is_empty() {
+                if let Some(v) = meta.get("dev_url").and_then(|v| v.as_str()) {
+                    entry.dev_url = v.to_string();
+                }
+            }
+            if entry.source_url.is_empty() {
+                if let Some(v) = meta.get("source_url").and_then(|v| v.as_str()) {
+                    entry.source_url = v.to_string();
+                }
+            }
+        }
     }
 
     let packages_json: serde_json::Map<String, serde_json::Value> = packages
         .into_iter()
-        .map(|(name, subdirs)| {
+        .map(|(name, entry)| {
             let version = latest_versions.get(&name).cloned().unwrap_or_default();
-            let val = serde_json::json!({
-                "subdirs": subdirs.into_iter().collect::<Vec<_>>(),
+            let mut val = serde_json::json!({
+                "subdirs": entry.subdirs.into_iter().collect::<Vec<_>>(),
                 "version": version,
             });
+            // Include optional fields when available
+            if !entry.license.is_empty() {
+                val["license"] = serde_json::Value::String(entry.license);
+            }
+            if !entry.license_family.is_empty() {
+                val["license_family"] = serde_json::Value::String(entry.license_family);
+            }
+            if !entry.description.is_empty() {
+                val["description"] = serde_json::Value::String(entry.description);
+            }
+            if !entry.summary.is_empty() {
+                val["summary"] = serde_json::Value::String(entry.summary);
+            }
+            if !entry.home.is_empty() {
+                val["home"] = serde_json::Value::String(entry.home);
+            }
+            if !entry.doc_url.is_empty() {
+                val["doc_url"] = serde_json::Value::String(entry.doc_url);
+            }
+            if !entry.dev_url.is_empty() {
+                val["dev_url"] = serde_json::Value::String(entry.dev_url);
+            }
+            if !entry.source_url.is_empty() {
+                val["source_url"] = serde_json::Value::String(entry.source_url);
+            }
             (name, val)
         })
         .collect();
@@ -583,6 +685,37 @@ async fn run_exports_json(
     let response = serde_json::json!({
         "info": { "subdir": subdir },
         "packages": packages,
+    });
+
+    let body = serde_json::to_vec_pretty(&response).unwrap();
+    Ok(cacheable_response(body, "application/json", &headers))
+}
+
+// ---------------------------------------------------------------------------
+// GET /conda/{repo_key}/{subdir}/patch_instructions.json
+// ---------------------------------------------------------------------------
+
+/// Patch instructions endpoint.
+///
+/// Returns an object of per-package patches that should be applied to
+/// repodata.json. Allows channel maintainers to fix dependency metadata,
+/// revoke packages, or update license info without re-uploading packages.
+///
+/// Currently returns an empty patch set. Future: store patch instructions
+/// in the database per repository/subdir.
+async fn patch_instructions_json(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path((repo_key, subdir)): Path<(String, String)>,
+) -> Result<Response, Response> {
+    let _repo = resolve_conda_repo(&state.db, &repo_key).await?;
+
+    let response = serde_json::json!({
+        "info": { "subdir": subdir },
+        "packages": {},
+        "packages.conda": {},
+        "remove": [],
+        "revoke": [],
     });
 
     let body = serde_json::to_vec_pretty(&response).unwrap();
@@ -4813,6 +4946,93 @@ mod tests {
         });
         let pkg = &re["packages"]["six-1.16.0-pyh_0.conda"];
         assert!(pkg["run_exports"].as_object().unwrap().is_empty());
+    }
+
+    // =======================================================================
+    // Patch instructions tests (bead: artifact-keeper-at5)
+    // =======================================================================
+
+    #[test]
+    fn test_patch_instructions_json_structure() {
+        let pi = serde_json::json!({
+            "info": { "subdir": "linux-64" },
+            "packages": {},
+            "packages.conda": {},
+            "remove": [],
+            "revoke": [],
+        });
+        assert_eq!(pi["info"]["subdir"], "linux-64");
+        assert!(pi["packages"].is_object());
+        assert!(pi["packages.conda"].is_object());
+        assert!(pi["remove"].is_array());
+        assert!(pi["revoke"].is_array());
+    }
+
+    #[test]
+    fn test_patch_instructions_with_patches() {
+        // When patch instructions exist, they override fields in repodata entries
+        let pi = serde_json::json!({
+            "info": { "subdir": "linux-64" },
+            "packages": {
+                "numpy-1.25.0-py312_0.tar.bz2": {
+                    "depends": ["python >=3.12,<3.13.0a0", "libopenblas >=0.3.27"]
+                }
+            },
+            "packages.conda": {},
+            "remove": ["old-pkg-0.1-0.tar.bz2"],
+            "revoke": ["vulnerable-pkg-1.0-0.conda"],
+        });
+        let patches = pi["packages"].as_object().unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(pi["remove"].as_array().unwrap().len(), 1);
+        assert_eq!(pi["revoke"].as_array().unwrap().len(), 1);
+    }
+
+    // =======================================================================
+    // Enriched channeldata tests (bead: artifact-keeper-vtf)
+    // =======================================================================
+
+    #[test]
+    fn test_channeldata_includes_license_when_available() {
+        // Channeldata should include license info from package metadata
+        let cd = serde_json::json!({
+            "channeldata_version": 1,
+            "packages": {
+                "numpy": {
+                    "subdirs": ["linux-64"],
+                    "version": "1.26.4",
+                    "license": "BSD-3-Clause",
+                    "license_family": "BSD",
+                    "home": "https://numpy.org",
+                    "summary": "Fundamental package for scientific computing"
+                }
+            },
+            "subdirs": KNOWN_SUBDIRS,
+        });
+        let pkg = &cd["packages"]["numpy"];
+        assert_eq!(pkg["license"], "BSD-3-Clause");
+        assert_eq!(pkg["license_family"], "BSD");
+        assert_eq!(pkg["home"], "https://numpy.org");
+        assert_eq!(pkg["summary"], "Fundamental package for scientific computing");
+    }
+
+    #[test]
+    fn test_channeldata_optional_fields_omitted_when_empty() {
+        // Fields should only be present when we have data
+        let cd = serde_json::json!({
+            "channeldata_version": 1,
+            "packages": {
+                "simple-pkg": {
+                    "subdirs": ["noarch"],
+                    "version": "1.0"
+                }
+            },
+            "subdirs": KNOWN_SUBDIRS,
+        });
+        let pkg = &cd["packages"]["simple-pkg"];
+        assert!(pkg.get("license").is_none());
+        assert!(pkg.get("home").is_none());
+        assert!(pkg.get("description").is_none());
     }
 
     // =======================================================================
