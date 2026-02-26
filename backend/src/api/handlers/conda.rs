@@ -75,15 +75,14 @@ fn validate_cep26_name(name: &str) -> Result<(), String> {
     if name.len() > CEP26_MAX_NAME_LEN {
         return Err(format!(
             "package name '{}' exceeds max length of {} characters (got {})",
-            name, CEP26_MAX_NAME_LEN, name.len()
+            name,
+            CEP26_MAX_NAME_LEN,
+            name.len()
         ));
     }
     // Must be lowercase
     if name != name.to_lowercase() {
-        return Err(format!(
-            "package name '{}' must be lowercase",
-            name
-        ));
+        return Err(format!("package name '{}' must be lowercase", name));
     }
     // Must start with alphanumeric
     if !name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) {
@@ -121,7 +120,9 @@ fn validate_cep26_version(version: &str) -> Result<(), String> {
     if version.len() > CEP26_MAX_VERSION_LEN {
         return Err(format!(
             "version '{}' exceeds max length of {} characters (got {})",
-            version, CEP26_MAX_VERSION_LEN, version.len()
+            version,
+            CEP26_MAX_VERSION_LEN,
+            version.len()
         ));
     }
     for ch in version.chars() {
@@ -151,7 +152,9 @@ fn validate_cep26_build(build: &str) -> Result<(), String> {
     if build.len() > CEP26_MAX_BUILD_LEN {
         return Err(format!(
             "build string '{}' exceeds max length of {} characters (got {})",
-            build, CEP26_MAX_BUILD_LEN, build.len()
+            build,
+            CEP26_MAX_BUILD_LEN,
+            build.len()
         ));
     }
     for ch in build.chars() {
@@ -172,7 +175,9 @@ fn validate_cep26_filename(filename: &str) -> Result<(), String> {
     if filename.len() > CEP26_MAX_FILENAME_LEN {
         return Err(format!(
             "filename '{}' exceeds max length of {} characters (got {})",
-            filename, CEP26_MAX_FILENAME_LEN, filename.len()
+            filename,
+            CEP26_MAX_FILENAME_LEN,
+            filename.len()
         ));
     }
     Ok(())
@@ -185,7 +190,8 @@ fn validate_cep26_subdir(subdir: &str) -> Result<(), String> {
     if subdir.len() > 32 {
         return Err(format!(
             "subdir '{}' exceeds max length of 32 characters (got {})",
-            subdir, subdir.len()
+            subdir,
+            subdir.len()
         ));
     }
     if subdir == "noarch" {
@@ -240,8 +246,7 @@ fn validate_cep26_naming(
 const INTOTO_STATEMENT_V1: &str = "https://in-toto.io/Statement/v1";
 
 /// The CEP-27 predicate type for conda publish attestations.
-const CEP27_PREDICATE_TYPE: &str =
-    "https://schemas.conda.org/attestations-publish-1.schema.json";
+const CEP27_PREDICATE_TYPE: &str = "https://schemas.conda.org/attestations-publish-1.schema.json";
 
 /// Validate a CEP-27 publish attestation structure.
 ///
@@ -332,9 +337,7 @@ fn validate_cep27_attestation(
                 .as_object()
                 .ok_or("attestation predicate must be an object or null")?;
             if let Some(target) = pred_obj.get("targetChannel") {
-                let url = target
-                    .as_str()
-                    .ok_or("targetChannel must be a string")?;
+                let url = target.as_str().ok_or("targetChannel must be a string")?;
                 if url.is_empty() || url.len() > 2083 {
                     return Err(format!(
                         "targetChannel must be 1-2083 characters, got {}",
@@ -419,11 +422,7 @@ fn gzip_compress(data: &[u8]) -> Vec<u8> {
 }
 
 /// Build a cacheable response with ETag and Cache-Control headers.
-fn cacheable_response(
-    body: Vec<u8>,
-    content_type: &str,
-    headers: &HeaderMap,
-) -> Response {
+fn cacheable_response(body: Vec<u8>, content_type: &str, headers: &HeaderMap) -> Response {
     let etag = compute_etag(&body);
 
     // Check for conditional request first
@@ -485,9 +484,9 @@ const JLAP_PATCH_STEPS_LIMIT: usize = 8192;
 /// Uses BLAKE2b in MAC mode with a 32-byte key as specified by the JLAP
 /// checksum chain protocol.
 fn blake2_256_keyed(data: &[u8], key: &[u8; 32]) -> [u8; 32] {
-    use blake2::Blake2bMac;
     use blake2::digest::consts::U32;
     use blake2::digest::{FixedOutput, KeyInit};
+    use blake2::Blake2bMac;
 
     let mut hasher = <Blake2bMac<U32>>::new_from_slice(key)
         .expect("BLAKE2b-256 keyed hash creation should not fail");
@@ -500,9 +499,9 @@ fn blake2_256_keyed(data: &[u8], key: &[u8; 32]) -> [u8; 32] {
 
 /// Compute BLAKE2b-256 unkeyed hash of data (for hashing repodata.json content).
 fn blake2_256(data: &[u8]) -> [u8; 32] {
-    use blake2::Blake2b;
     use blake2::digest::consts::U32;
     use blake2::digest::FixedOutput;
+    use blake2::Blake2b;
 
     type Blake2b256 = Blake2b<U32>;
     let mut hasher = Blake2b256::default();
@@ -693,7 +692,10 @@ fn verify_jlap_chain(content: &[u8]) -> Result<(), String> {
     let lines: Vec<&str> = text.split('\n').collect();
 
     if lines.len() < 3 {
-        return Err(format!("JLAP file too short: {} lines (need >= 3)", lines.len()));
+        return Err(format!(
+            "JLAP file too short: {} lines (need >= 3)",
+            lines.len()
+        ));
     }
 
     // Line 0 is the IV
@@ -759,10 +761,7 @@ pub fn router() -> Router<SharedState> {
             get(current_repodata_json),
         )
         // Run exports (CEP-12)
-        .route(
-            "/:repo_key/:subdir/run_exports.json",
-            get(run_exports_json),
-        )
+        .route("/:repo_key/:subdir/run_exports.json", get(run_exports_json))
         // Patch instructions
         .route(
             "/:repo_key/:subdir/patch_instructions.json",
@@ -1133,17 +1132,19 @@ async fn channeldata_json(
             .map(|s| s.to_string())
             .unwrap_or_else(|| artifact.name.clone());
 
-        let entry = packages.entry(pkg_name).or_insert_with(|| ChanneldataEntry {
-            subdirs: BTreeSet::new(),
-            license: String::new(),
-            license_family: String::new(),
-            description: String::new(),
-            summary: String::new(),
-            home: String::new(),
-            doc_url: String::new(),
-            dev_url: String::new(),
-            source_url: String::new(),
-        });
+        let entry = packages
+            .entry(pkg_name)
+            .or_insert_with(|| ChanneldataEntry {
+                subdirs: BTreeSet::new(),
+                license: String::new(),
+                license_family: String::new(),
+                description: String::new(),
+                summary: String::new(),
+                home: String::new(),
+                doc_url: String::new(),
+                dev_url: String::new(),
+                source_url: String::new(),
+            });
         entry.subdirs.insert(subdir);
 
         // Populate metadata from the most recently seen artifact with data
@@ -1234,7 +1235,9 @@ async fn channeldata_json(
         "subdirs": KNOWN_SUBDIRS,
     });
 
-    let body = serde_json::to_string_pretty(&channeldata).unwrap().into_bytes();
+    let body = serde_json::to_string_pretty(&channeldata)
+        .unwrap()
+        .into_bytes();
 
     Ok(cacheable_response(body, "application/json", &headers))
 }
@@ -1298,9 +1301,12 @@ async fn run_exports_json(
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        packages.insert(filename.to_string(), serde_json::json!({
-            "run_exports": run_exports,
-        }));
+        packages.insert(
+            filename.to_string(),
+            serde_json::json!({
+                "run_exports": run_exports,
+            }),
+        );
     }
 
     let response = serde_json::json!({
@@ -1355,7 +1361,9 @@ async fn repodata_json(
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
 
-    let body = serde_json::to_string_pretty(&repodata).unwrap().into_bytes();
+    let body = serde_json::to_string_pretty(&repodata)
+        .unwrap()
+        .into_bytes();
 
     Ok(cacheable_response(body, "application/json", &headers))
 }
@@ -1375,7 +1383,11 @@ async fn repodata_json_bz2(
     let json_bytes = serde_json::to_vec(&repodata).unwrap();
     let compressed = bzip2_compress(&json_bytes);
 
-    Ok(cacheable_response(compressed, "application/x-bzip2", &headers))
+    Ok(cacheable_response(
+        compressed,
+        "application/x-bzip2",
+        &headers,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1473,7 +1485,9 @@ async fn repodata_json_jlap(
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
 
     // Serialize repodata identically to how repodata_json serves it
-    let json_bytes = serde_json::to_string_pretty(&repodata).unwrap().into_bytes();
+    let json_bytes = serde_json::to_string_pretty(&repodata)
+        .unwrap()
+        .into_bytes();
 
     // Build the JLAP file
     let jlap_body = build_bootstrap_jlap(&json_bytes);
@@ -1486,7 +1500,10 @@ async fn repodata_json_jlap(
     }
 
     // Check for Range request
-    if let Some(range_header) = headers.get(axum::http::header::RANGE).and_then(|v| v.to_str().ok()) {
+    if let Some(range_header) = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(start) = parse_range_start(range_header, jlap_body.len()) {
             let end = jlap_body.len() - 1;
             if start > end {
@@ -1503,7 +1520,10 @@ async fn repodata_json_jlap(
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(CONTENT_TYPE, "application/json")
                 .header(CONTENT_LENGTH, slice.len().to_string())
-                .header("Content-Range", format!("bytes {}-{}/{}", start, end, jlap_body.len()))
+                .header(
+                    "Content-Range",
+                    format!("bytes {}-{}/{}", start, end, jlap_body.len()),
+                )
                 .header("Accept-Ranges", "bytes")
                 .header(ETAG, &etag)
                 .header(CACHE_CONTROL, "public, max-age=60")
@@ -1593,7 +1613,9 @@ async fn current_repodata_json(
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
     let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, true).await?;
 
-    let body = serde_json::to_string_pretty(&repodata).unwrap().into_bytes();
+    let body = serde_json::to_string_pretty(&repodata)
+        .unwrap()
+        .into_bytes();
 
     Ok(cacheable_response(body, "application/json", &headers))
 }
@@ -1634,10 +1656,18 @@ async fn sharded_repodata_index(
     for (pkg_name, artifacts) in &by_name {
         let shard = build_shard(&subdir, artifacts);
         let shard_msgpack = rmp_serde::to_vec(&shard).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("msgpack error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("msgpack error: {}", e),
+            )
+                .into_response()
         })?;
         let shard_compressed = zstd_compress(&shard_msgpack).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("zstd error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("zstd error: {}", e),
+            )
+                .into_response()
         })?;
 
         let mut hasher = Sha256::new();
@@ -1652,10 +1682,18 @@ async fn sharded_repodata_index(
     let index = build_sharded_index(&subdir, &base_url, &shards_map);
 
     let index_msgpack = rmp_serde::to_vec(&index).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("msgpack error: {}", e)).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("msgpack error: {}", e),
+        )
+            .into_response()
     })?;
     let compressed = zstd_compress(&index_msgpack).map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("zstd error: {}", e)).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("zstd error: {}", e),
+        )
+            .into_response()
     })?;
 
     Ok(Response::builder()
@@ -1678,9 +1716,11 @@ async fn sharded_repodata_shard(
 ) -> Result<Response, Response> {
     let hash_hex = shard_hash.trim_end_matches(".msgpack.zst");
     if hash_hex.len() != 64 || !hash_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(
-            (StatusCode::BAD_REQUEST, "Invalid shard hash (expected 64 hex chars)").into_response(),
-        );
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid shard hash (expected 64 hex chars)",
+        )
+            .into_response());
     }
 
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
@@ -1706,10 +1746,18 @@ async fn sharded_repodata_shard(
     for artifacts in by_name.values() {
         let shard = build_shard(&subdir, artifacts);
         let shard_msgpack = rmp_serde::to_vec(&shard).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("msgpack error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("msgpack error: {}", e),
+            )
+                .into_response()
         })?;
         let shard_compressed = zstd_compress(&shard_msgpack).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("zstd error: {}", e)).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("zstd error: {}", e),
+            )
+                .into_response()
         })?;
 
         let mut hasher = Sha256::new();
@@ -1735,10 +1783,7 @@ async fn sharded_repodata_shard(
 ///
 /// Contains all versions/builds of the package, split into `packages`
 /// (v1 .tar.bz2) and `packages.conda` (v2 .conda) maps.
-fn build_shard(
-    subdir: &str,
-    artifacts: &[&CondaArtifact],
-) -> serde_json::Value {
+fn build_shard(subdir: &str, artifacts: &[&CondaArtifact]) -> serde_json::Value {
     let mut packages = serde_json::Map::new();
     let mut packages_conda = serde_json::Map::new();
 
@@ -2459,9 +2504,7 @@ fn validate_conda_package(content: &[u8], filename: &str) -> Result<(), String> 
             .iter()
             .any(|n| n.starts_with("info-") && n.ends_with(".tar.zst"));
         if !has_info {
-            return Err(
-                "Invalid .conda package: missing info-*.tar.zst archive".to_string(),
-            );
+            return Err("Invalid .conda package: missing info-*.tar.zst archive".to_string());
         }
     } else if filename.ends_with(".tar.bz2") {
         // Validate .tar.bz2 v1 structure
@@ -2472,19 +2515,15 @@ fn validate_conda_package(content: &[u8], filename: &str) -> Result<(), String> 
             .entries()
             .map_err(|e| format!("Invalid .tar.bz2 package: not a valid bzip2 tar: {}", e))?;
 
-        let has_index = entries
-            .filter_map(|e| e.ok())
-            .any(|e| {
-                e.path()
-                    .ok()
-                    .map(|p| p.to_string_lossy() == "info/index.json")
-                    .unwrap_or(false)
-            });
+        let has_index = entries.filter_map(|e| e.ok()).any(|e| {
+            e.path()
+                .ok()
+                .map(|p| p.to_string_lossy() == "info/index.json")
+                .unwrap_or(false)
+        });
 
         if !has_index {
-            return Err(
-                "Invalid .tar.bz2 package: missing info/index.json".to_string(),
-            );
+            return Err("Invalid .tar.bz2 package: missing info/index.json".to_string());
         }
     } else {
         return Err(format!(
@@ -2550,12 +2589,7 @@ fn extract_conda_v2_metadata(content: &[u8]) -> Option<serde_json::Value> {
 
     // Collect file names first to avoid borrow conflicts
     let file_names: Vec<(usize, String)> = (0..archive.len())
-        .filter_map(|i| {
-            archive
-                .by_index(i)
-                .ok()
-                .map(|f| (i, f.name().to_string()))
-        })
+        .filter_map(|i| archive.by_index(i).ok().map(|f| (i, f.name().to_string())))
         .collect();
 
     for (idx, name) in &file_names {
@@ -2641,13 +2675,8 @@ async fn put_attestation(
     let (artifact_id, package_sha256) = artifact;
 
     // Parse and validate the attestation
-    let attestation: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid JSON: {}", e),
-        )
-            .into_response()
-    })?;
+    let attestation: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response())?;
 
     validate_cep27_attestation(&attestation, &filename, &package_sha256).map_err(|e| {
         (
@@ -2728,16 +2757,16 @@ async fn get_attestation(
             .into_response()
     })?;
 
-    let metadata = row.ok_or_else(|| {
-        (StatusCode::NOT_FOUND, "Package not found").into_response()
-    })?;
+    let metadata =
+        row.ok_or_else(|| (StatusCode::NOT_FOUND, "Package not found").into_response())?;
 
-    let attestation = metadata
-        .0
-        .get("attestation")
-        .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, "No attestation found for this package").into_response()
-        })?;
+    let attestation = metadata.0.get("attestation").ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "No attestation found for this package",
+        )
+            .into_response()
+    })?;
 
     let body = serde_json::to_string_pretty(attestation).unwrap();
     Ok(Response::builder()
@@ -2779,19 +2808,19 @@ async fn store_conda_package(
     let build_string = path_info.build.unwrap_or_else(|| "0".to_string());
 
     // CEP-26: Validate naming constraints before accepting the upload
-    validate_cep26_naming(&pkg_name, &pkg_version, &build_string, filename, subdir)
-        .map_err(|e| {
+    validate_cep26_naming(&pkg_name, &pkg_version, &build_string, filename, subdir).map_err(
+        |e| {
             (
                 StatusCode::BAD_REQUEST,
                 format!("CEP-26 naming violation: {}", e),
             )
                 .into_response()
-        })?;
+        },
+    )?;
 
     // Validate package structure before storing
-    validate_conda_package(&content, filename).map_err(|e| {
-        (StatusCode::BAD_REQUEST, e).into_response()
-    })?;
+    validate_conda_package(&content, filename)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
     // Compute SHA256 and MD5
     let mut sha256_hasher = Sha256::new();
@@ -3151,43 +3180,71 @@ mod tests {
             if !is_conda_package(filename) {
                 continue;
             }
-            let pkg_name = artifact.metadata.as_ref()
+            let pkg_name = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("name").and_then(|v| v.as_str()))
                 .unwrap_or(&artifact.name);
-            let version = artifact.metadata.as_ref()
+            let version = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("version").and_then(|v| v.as_str()))
                 .or(artifact.version.as_deref())
                 .unwrap_or("0");
-            let build = artifact.metadata.as_ref()
+            let build = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("build").and_then(|v| v.as_str()))
                 .unwrap_or("0");
-            let build_number = artifact.metadata.as_ref()
+            let build_number = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("build_number").and_then(|v| v.as_u64()))
                 .unwrap_or(0);
-            let depends = artifact.metadata.as_ref()
-                .and_then(|m| m.get("depends")).cloned()
+            let depends = artifact
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("depends"))
+                .cloned()
                 .unwrap_or_else(|| serde_json::json!([]));
-            let constrains = artifact.metadata.as_ref()
-                .and_then(|m| m.get("constrains")).cloned()
+            let constrains = artifact
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("constrains"))
+                .cloned()
                 .unwrap_or_else(|| serde_json::json!([]));
-            let license = artifact.metadata.as_ref()
+            let license = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("license").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let license_family = artifact.metadata.as_ref()
+            let license_family = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("license_family").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let timestamp = artifact.metadata.as_ref()
+            let timestamp = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("timestamp").and_then(|v| v.as_u64()));
-            let features = artifact.metadata.as_ref()
+            let features = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("features").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let track_features = artifact.metadata.as_ref()
+            let track_features = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("track_features").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let noarch = artifact.metadata.as_ref()
+            let noarch = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("noarch").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            let md5 = artifact.metadata.as_ref()
+            let md5 = artifact
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("md5").and_then(|v| v.as_str()))
                 .unwrap_or("");
 
@@ -3760,7 +3817,10 @@ mod tests {
         let mut packages_conda = serde_json::Map::new();
         build_repodata_entries(&artifacts, "linux-64", &mut packages, &mut packages_conda);
         let entry = &packages_conda["numpy-1.26.4-py312h_0.conda"];
-        assert!(entry.get("noarch").is_none(), "arch-specific package should not have noarch field");
+        assert!(
+            entry.get("noarch").is_none(),
+            "arch-specific package should not have noarch field"
+        );
     }
 
     #[test]
@@ -3778,15 +3838,19 @@ mod tests {
         assert_eq!(KNOWN_SUBDIRS[0], "noarch");
         let rest = &KNOWN_SUBDIRS[1..];
         for window in rest.windows(2) {
-            assert!(window[0] < window[1], "{} should come before {}", window[0], window[1]);
+            assert!(
+                window[0] < window[1],
+                "{} should come before {}",
+                window[0],
+                window[1]
+            );
         }
     }
 
     #[test]
     fn test_shard_entry_has_fn_field() {
-        let artifact = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312h_0", "linux-64", "conda", 4096,
-        );
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312h_0", "linux-64", "conda", 4096);
         let refs = vec![&artifact];
         let shard = build_shard("linux-64", &refs);
         let entry = &shard["packages.conda"]["numpy-1.26.4-py312h_0.conda"];
@@ -3795,9 +3859,8 @@ mod tests {
 
     #[test]
     fn test_shard_entry_has_noarch() {
-        let mut artifact = make_full_conda_artifact(
-            "six", "1.16.0", "pyh_0", "noarch", "conda", 2048,
-        );
+        let mut artifact =
+            make_full_conda_artifact("six", "1.16.0", "pyh_0", "noarch", "conda", 2048);
         artifact.metadata = Some(serde_json::json!({
             "subdir": "noarch",
             "name": "six",
@@ -3823,7 +3886,9 @@ mod tests {
             let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
             let options = zip::write::SimpleFileOptions::default();
             zip_writer.start_file("metadata.json", options).unwrap();
-            zip_writer.write_all(b"{\"name\":\"test\",\"version\":\"1.0\"}").unwrap();
+            zip_writer
+                .write_all(b"{\"name\":\"test\",\"version\":\"1.0\"}")
+                .unwrap();
             zip_writer.finish().unwrap();
         }
         // The md5 should be computed from the raw bytes, not from metadata
@@ -4117,11 +4182,7 @@ mod tests {
 
             // metadata.json (minimal, conda v2 always has this)
             writer.start_file("metadata.json", options).unwrap();
-            std::io::Write::write_all(
-                &mut writer,
-                br#"{"conda_pkg_format_version":2}"#,
-            )
-            .unwrap();
+            std::io::Write::write_all(&mut writer, br#"{"conda_pkg_format_version":2}"#).unwrap();
 
             // info-pkg-1.0-build.tar.zst
             writer
@@ -4174,7 +4235,11 @@ mod tests {
         });
         let package = build_test_conda_v2_package(&index);
         let result = validate_conda_package(&package, "test-pkg-1.0.0-py312_0.conda");
-        assert!(result.is_ok(), "Valid .conda package should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Valid .conda package should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4210,7 +4275,11 @@ mod tests {
         });
         let package = build_test_conda_v1_package(&index);
         let result = validate_conda_package(&package, "test-pkg-2.0.0-0.tar.bz2");
-        assert!(result.is_ok(), "Valid .tar.bz2 package should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Valid .tar.bz2 package should pass: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4489,10 +4558,21 @@ mod tests {
     fn test_repodata_entry_includes_constrains() {
         let constrains = serde_json::json!(["numpy-base <0a0"]);
         let entry = build_repodata_entry_full(
-            "numpy", "1.26.4", "py312h02b7e37_0", 0,
+            "numpy",
+            "1.26.4",
+            "py312h02b7e37_0",
+            0,
             &serde_json::json!(["python >=3.12"]),
-            &constrains, "BSD-3-Clause", "md5", "sha256", 8192, "linux-64",
-            None, "", "", "",
+            &constrains,
+            "BSD-3-Clause",
+            "md5",
+            "sha256",
+            8192,
+            "linux-64",
+            None,
+            "",
+            "",
+            "",
         );
         assert_eq!(entry["constrains"].as_array().unwrap().len(), 1);
         assert_eq!(entry["constrains"][0], "numpy-base <0a0");
@@ -4501,10 +4581,21 @@ mod tests {
     #[test]
     fn test_repodata_entry_includes_license() {
         let entry = build_repodata_entry_full(
-            "openssl", "3.2.0", "h0d3ecfb_1", 1,
+            "openssl",
+            "3.2.0",
+            "h0d3ecfb_1",
+            1,
             &serde_json::json!(["ca-certificates"]),
-            &serde_json::json!([]), "Apache-2.0", "", "", 0, "linux-64",
-            None, "", "", "Apache",
+            &serde_json::json!([]),
+            "Apache-2.0",
+            "",
+            "",
+            0,
+            "linux-64",
+            None,
+            "",
+            "",
+            "Apache",
         );
         assert_eq!(entry["license"], "Apache-2.0");
         assert_eq!(entry["license_family"], "Apache");
@@ -4513,10 +4604,21 @@ mod tests {
     #[test]
     fn test_repodata_entry_includes_timestamp() {
         let entry = build_repodata_entry_full(
-            "pkg", "1.0", "0", 0,
+            "pkg",
+            "1.0",
+            "0",
+            0,
             &serde_json::json!([]),
-            &serde_json::json!([]), "MIT", "", "", 0, "noarch",
-            Some(1709000000000), "", "", "",
+            &serde_json::json!([]),
+            "MIT",
+            "",
+            "",
+            0,
+            "noarch",
+            Some(1709000000000),
+            "",
+            "",
+            "",
         );
         assert_eq!(entry["timestamp"], 1709000000000_u64);
     }
@@ -4524,10 +4626,21 @@ mod tests {
     #[test]
     fn test_repodata_entry_includes_features() {
         let entry = build_repodata_entry_full(
-            "mkl", "2024.0", "h5e30980_0", 0,
+            "mkl",
+            "2024.0",
+            "h5e30980_0",
+            0,
             &serde_json::json!([]),
-            &serde_json::json!([]), "Intel License", "", "", 0, "linux-64",
-            None, "mkl", "mkl", "",
+            &serde_json::json!([]),
+            "Intel License",
+            "",
+            "",
+            0,
+            "linux-64",
+            None,
+            "mkl",
+            "mkl",
+            "",
         );
         assert_eq!(entry["features"], "mkl");
         assert_eq!(entry["track_features"], "mkl");
@@ -4536,10 +4649,21 @@ mod tests {
     #[test]
     fn test_repodata_entry_omits_empty_optional_fields() {
         let entry = build_repodata_entry_full(
-            "simple", "1.0", "0", 0,
+            "simple",
+            "1.0",
+            "0",
+            0,
             &serde_json::json!([]),
-            &serde_json::json!([]), "MIT", "", "", 0, "noarch",
-            None, "", "", "",
+            &serde_json::json!([]),
+            "MIT",
+            "",
+            "",
+            0,
+            "noarch",
+            None,
+            "",
+            "",
+            "",
         );
         // Optional fields should be absent, not empty strings
         assert!(entry.get("timestamp").is_none());
@@ -4551,10 +4675,21 @@ mod tests {
     #[test]
     fn test_repodata_entry_preserves_empty_depends() {
         let entry = build_repodata_entry_full(
-            "pkg", "1.0", "0", 0,
+            "pkg",
+            "1.0",
+            "0",
+            0,
             &serde_json::json!([]),
-            &serde_json::json!([]), "", "", "", 0, "noarch",
-            None, "", "", "",
+            &serde_json::json!([]),
+            "",
+            "",
+            "",
+            0,
+            "noarch",
+            None,
+            "",
+            "",
+            "",
         );
         assert!(entry["depends"].as_array().unwrap().is_empty());
         assert!(entry["constrains"].as_array().unwrap().is_empty());
@@ -4569,14 +4704,23 @@ mod tests {
             "pandas >=1.3",
             "libgcc-ng >=12"
         ]);
-        let constrains = serde_json::json!([
-            "scikit-learn-intelex >=2024.0",
-            "daal4py >=2024.0"
-        ]);
+        let constrains = serde_json::json!(["scikit-learn-intelex >=2024.0", "daal4py >=2024.0"]);
         let entry = build_repodata_entry_full(
-            "scikit-learn", "1.4.0", "py312h7e6f82a_0", 0,
-            &depends, &constrains, "BSD-3-Clause", "", "", 0, "linux-64",
-            Some(1706000000000), "", "", "BSD",
+            "scikit-learn",
+            "1.4.0",
+            "py312h7e6f82a_0",
+            0,
+            &depends,
+            &constrains,
+            "BSD-3-Clause",
+            "",
+            "",
+            0,
+            "linux-64",
+            Some(1706000000000),
+            "",
+            "",
+            "BSD",
         );
         assert_eq!(entry["depends"].as_array().unwrap().len(), 5);
         assert_eq!(entry["constrains"].as_array().unwrap().len(), 2);
@@ -4772,8 +4916,7 @@ mod tests {
         });
 
         let package = build_test_conda_v1_package(&index);
-        let extracted =
-            extract_conda_metadata(&package, "requests-2.31.0-pyhd8ed1ab_0.tar.bz2");
+        let extracted = extract_conda_metadata(&package, "requests-2.31.0-pyhd8ed1ab_0.tar.bz2");
         assert!(extracted.is_some());
         assert_eq!(extracted.unwrap()["build_number"], 3);
     }
@@ -4830,8 +4973,7 @@ mod tests {
         });
 
         let package = build_test_conda_v1_package(&index);
-        let extracted =
-            extract_conda_metadata(&package, "urllib3-2.2.0-pyhd8ed1ab_0.tar.bz2");
+        let extracted = extract_conda_metadata(&package, "urllib3-2.2.0-pyhd8ed1ab_0.tar.bz2");
         let extracted = extracted.unwrap();
 
         let deps = extracted["depends"].as_array().unwrap();
@@ -4924,8 +5066,7 @@ mod tests {
         });
 
         let package = build_test_conda_v1_package(&index);
-        let extracted =
-            extract_conda_metadata(&package, "noarch-pkg-1.0-0.tar.bz2").unwrap();
+        let extracted = extract_conda_metadata(&package, "noarch-pkg-1.0-0.tar.bz2").unwrap();
         assert!(extracted["depends"].as_array().unwrap().is_empty());
     }
 
@@ -5047,8 +5188,7 @@ mod tests {
         // Common pattern: use API token as the password with a dummy username
         // token: "ak_myapitoken123"
         // "token:ak_myapitoken123" -> base64
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode("token:ak_myapitoken123");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("token:ak_myapitoken123");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -5065,8 +5205,7 @@ mod tests {
     fn test_basic_auth_conda_condarc_style() {
         // .condarc uses: channel_alias with user:token@ in URL, which gets
         // converted to Basic auth by conda client
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode("myuser:mypassword");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("myuser:mypassword");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -5082,8 +5221,7 @@ mod tests {
     #[test]
     fn test_basic_auth_password_with_colon() {
         // Passwords containing colons should work (split only on first colon)
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode("user:pass:with:colons");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass:with:colons");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -5099,8 +5237,7 @@ mod tests {
     #[test]
     fn test_basic_auth_special_characters() {
         // Passwords with special chars should be handled
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode("admin:P@$$w0rd!#%");
+        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:P@$$w0rd!#%");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
@@ -5168,18 +5305,14 @@ mod tests {
     #[test]
     fn test_basic_auth_empty_username() {
         // Token-only auth: empty username with token as password
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(":ak_token_value");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(":ak_token_value");
         let mut headers = HeaderMap::new();
         headers.insert(
             axum::http::header::AUTHORIZATION,
             format!("Basic {}", encoded).parse().unwrap(),
         );
         let result = extract_basic_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("".to_string(), "ak_token_value".to_string()))
-        );
+        assert_eq!(result, Some(("".to_string(), "ak_token_value".to_string())));
     }
 
     // -----------------------------------------------------------------------
@@ -5207,7 +5340,10 @@ mod tests {
         );
         // extract_basic_credentials should return the Basic auth creds
         let result = extract_basic_credentials(&headers);
-        assert!(result.is_some(), "Basic auth should be extracted even with token in URL");
+        assert!(
+            result.is_some(),
+            "Basic auth should be extracted even with token in URL"
+        );
     }
 
     #[test]
@@ -5215,7 +5351,10 @@ mod tests {
         // When no Basic auth header is present, token from URL should be used
         let headers = HeaderMap::new();
         let result = extract_basic_credentials(&headers);
-        assert!(result.is_none(), "No Basic auth means fallback to URL token");
+        assert!(
+            result.is_none(),
+            "No Basic auth means fallback to URL token"
+        );
     }
 
     #[test]
@@ -5301,7 +5440,10 @@ mod tests {
                 "0",
                 0,
                 &serde_json::json!(["python >=3.8"]),
-                "", "sha", 100, "linux-64",
+                "",
+                "sha",
+                100,
+                "linux-64",
             );
             packages_conda.insert(filename.to_string(), entry);
         }
@@ -5344,7 +5486,10 @@ mod tests {
                 "0",
                 0,
                 &serde_json::json!(["python >=3.8"]),
-                "", "sha", 100, "linux-64",
+                "",
+                "sha",
+                100,
+                "linux-64",
             );
             packages_conda.insert(filename.to_string(), entry);
         }
@@ -5365,12 +5510,32 @@ mod tests {
         let mut packages = serde_json::Map::new();
         packages.insert(
             "test-1.0-0.tar.bz2".to_string(),
-            build_repodata_entry("test", "1.0", "0", 0, &serde_json::json!([]), "", "sha", 100, "linux-64"),
+            build_repodata_entry(
+                "test",
+                "1.0",
+                "0",
+                0,
+                &serde_json::json!([]),
+                "",
+                "sha",
+                100,
+                "linux-64",
+            ),
         );
         let mut packages_conda = serde_json::Map::new();
         packages_conda.insert(
             "test2-2.0-0.conda".to_string(),
-            build_repodata_entry("test2", "2.0", "0", 0, &serde_json::json!([]), "", "sha", 200, "linux-64"),
+            build_repodata_entry(
+                "test2",
+                "2.0",
+                "0",
+                0,
+                &serde_json::json!([]),
+                "",
+                "sha",
+                200,
+                "linux-64",
+            ),
         );
 
         let rd = build_repodata_json("linux-64", &packages, &packages_conda);
@@ -5379,7 +5544,11 @@ mod tests {
         // Content-Length should be deterministic and correct
         assert!(body.len() > 0);
         let body2 = serde_json::to_string_pretty(&rd).unwrap();
-        assert_eq!(body.len(), body2.len(), "Serialized size should be deterministic");
+        assert_eq!(
+            body.len(),
+            body2.len(),
+            "Serialized size should be deterministic"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5391,23 +5560,37 @@ mod tests {
         let body = b"some repodata content";
         let etag1 = compute_etag(body);
         let etag2 = compute_etag(body);
-        assert_eq!(etag1, etag2, "ETag should be deterministic for same content");
+        assert_eq!(
+            etag1, etag2,
+            "ETag should be deterministic for same content"
+        );
     }
 
     #[test]
     fn test_compute_etag_format() {
         let etag = compute_etag(b"test");
-        assert!(etag.starts_with("W/\""), "ETag should be a weak ETag: {}", etag);
+        assert!(
+            etag.starts_with("W/\""),
+            "ETag should be a weak ETag: {}",
+            etag
+        );
         assert!(etag.ends_with('"'), "ETag should end with quote: {}", etag);
         // W/"<16 hex chars>"
-        assert_eq!(etag.len(), 3 + 16 + 1, "ETag should be W/ + quote + 16 hex + quote");
+        assert_eq!(
+            etag.len(),
+            3 + 16 + 1,
+            "ETag should be W/ + quote + 16 hex + quote"
+        );
     }
 
     #[test]
     fn test_compute_etag_changes_with_content() {
         let etag1 = compute_etag(b"content A");
         let etag2 = compute_etag(b"content B");
-        assert_ne!(etag1, etag2, "Different content should produce different ETags");
+        assert_ne!(
+            etag1, etag2,
+            "Different content should produce different ETags"
+        );
     }
 
     #[test]
@@ -5448,7 +5631,10 @@ mod tests {
         let headers = HeaderMap::new();
 
         let result = check_conditional_request(&headers, &etag);
-        assert!(result.is_none(), "No If-None-Match header should return None");
+        assert!(
+            result.is_none(),
+            "No If-None-Match header should return None"
+        );
     }
 
     #[test]
@@ -5458,8 +5644,14 @@ mod tests {
         let resp = cacheable_response(body.clone(), "application/json", &headers);
 
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(resp.headers().get(ETAG).is_some(), "Response should have ETag");
-        assert!(resp.headers().get(CACHE_CONTROL).is_some(), "Response should have Cache-Control");
+        assert!(
+            resp.headers().get(ETAG).is_some(),
+            "Response should have ETag"
+        );
+        assert!(
+            resp.headers().get(CACHE_CONTROL).is_some(),
+            "Response should have Cache-Control"
+        );
         assert_eq!(
             resp.headers().get(CACHE_CONTROL).unwrap().to_str().unwrap(),
             "public, max-age=60"
@@ -5495,7 +5687,10 @@ mod tests {
         headers.insert(IF_NONE_MATCH, header_val.parse().unwrap());
 
         let result = check_conditional_request(&headers, &etag);
-        assert!(result.is_some(), "ETag in comma-separated list should match");
+        assert!(
+            result.is_some(),
+            "ETag in comma-separated list should match"
+        );
     }
 
     #[test]
@@ -5641,7 +5836,9 @@ mod tests {
         // Simulate latest_only filtering (what current_repodata.json does)
         let mut latest: BTreeMap<String, &CondaArtifact> = BTreeMap::new();
         for a in &filtered {
-            let name = a.metadata.as_ref()
+            let name = a
+                .metadata
+                .as_ref()
                 .and_then(|m| m.get("name").and_then(|v| v.as_str()))
                 .unwrap_or(&a.name)
                 .to_string();
@@ -5938,7 +6135,10 @@ mod tests {
         assert_eq!(pkg["license"], "BSD-3-Clause");
         assert_eq!(pkg["license_family"], "BSD");
         assert_eq!(pkg["home"], "https://numpy.org");
-        assert_eq!(pkg["summary"], "Fundamental package for scientific computing");
+        assert_eq!(
+            pkg["summary"],
+            "Fundamental package for scientific computing"
+        );
     }
 
     #[test]
@@ -5979,9 +6179,8 @@ mod tests {
     #[test]
     fn test_conda_client_channeldata_path() {
         // conda requests: /{channel}/channeldata.json
-        let info =
-            crate::formats::conda_native::CondaNativeHandler::parse_path("channeldata.json")
-                .unwrap();
+        let info = crate::formats::conda_native::CondaNativeHandler::parse_path("channeldata.json")
+            .unwrap();
         assert!(info.is_index);
         assert!(info.subdir.is_none());
     }
@@ -6028,8 +6227,7 @@ mod tests {
         // Every known subdir should parse correctly as part of a conda path
         for subdir in KNOWN_SUBDIRS {
             let path = format!("{}/test-1.0-0.conda", subdir);
-            let info =
-                crate::formats::conda_native::CondaNativeHandler::parse_path(&path).unwrap();
+            let info = crate::formats::conda_native::CondaNativeHandler::parse_path(&path).unwrap();
             assert_eq!(info.subdir.as_deref(), Some(*subdir));
         }
     }
@@ -6049,7 +6247,11 @@ mod tests {
 
         for path in paths {
             let result = crate::formats::conda_native::CondaNativeHandler::parse_path(path);
-            assert!(result.is_ok(), "Failed to parse conda client path: {}", path);
+            assert!(
+                result.is_ok(),
+                "Failed to parse conda client path: {}",
+                path
+            );
         }
     }
 
@@ -6115,7 +6317,10 @@ mod tests {
         let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &packages);
         let bytes1 = serde_json::to_vec(&rd).unwrap();
         let bytes2 = serde_json::to_vec(&rd).unwrap();
-        assert_eq!(bytes1, bytes2, "Repodata serialization must be deterministic");
+        assert_eq!(
+            bytes1, bytes2,
+            "Repodata serialization must be deterministic"
+        );
     }
 
     #[test]
@@ -6137,16 +6342,25 @@ mod tests {
 
         let bytes1 = serde_json::to_vec(&rd1).unwrap();
         let bytes2 = serde_json::to_vec(&rd2).unwrap();
-        assert_ne!(bytes1, bytes2, "Different content should produce different bytes");
+        assert_ne!(
+            bytes1, bytes2,
+            "Different content should produce different bytes"
+        );
     }
 
     #[test]
     fn test_repodata_sha256_for_download_verification() {
         // Each package entry should have a sha256 field for download verification
         let entry = build_repodata_entry(
-            "numpy", "1.26.4", "py312_0", 0,
+            "numpy",
+            "1.26.4",
+            "py312_0",
+            0,
             &serde_json::json!([]),
-            "md5hash", "abc123def456", 8192, "linux-64",
+            "md5hash",
+            "abc123def456",
+            8192,
+            "linux-64",
         );
         assert_eq!(entry["sha256"], "abc123def456");
         assert!(!entry["sha256"].as_str().unwrap().is_empty());
@@ -6170,10 +6384,7 @@ mod tests {
         let subdir = "noarch";
         let filename = "requests-2.31.0-pyhd8ed1ab_0.tar.bz2";
         let upstream_path = format!("{}/{}", subdir, filename);
-        assert_eq!(
-            upstream_path,
-            "noarch/requests-2.31.0-pyhd8ed1ab_0.tar.bz2"
-        );
+        assert_eq!(upstream_path, "noarch/requests-2.31.0-pyhd8ed1ab_0.tar.bz2");
     }
 
     #[test]
@@ -6187,7 +6398,10 @@ mod tests {
     #[test]
     fn test_proxy_content_type_for_formats() {
         // Proxy should use correct content type for each format
-        assert_eq!(conda_content_type("numpy.conda"), "application/octet-stream");
+        assert_eq!(
+            conda_content_type("numpy.conda"),
+            "application/octet-stream"
+        );
         assert_eq!(conda_content_type("requests.tar.bz2"), "application/x-tar");
     }
 
@@ -6275,7 +6489,10 @@ mod tests {
         }
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged["numpy-1.26.4-py312_0.conda"]["sha256"], "local_sha_wins");
+        assert_eq!(
+            merged["numpy-1.26.4-py312_0.conda"]["sha256"],
+            "local_sha_wins"
+        );
     }
 
     #[test]
@@ -6346,9 +6563,8 @@ mod tests {
 
     #[test]
     fn test_build_shard_single_v2_package() {
-        let artifact = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192,
-        );
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
         let refs = vec![&artifact];
         let shard = build_shard("linux-64", &refs);
 
@@ -6365,7 +6581,12 @@ mod tests {
     #[test]
     fn test_build_shard_single_v1_package() {
         let artifact = make_full_conda_artifact(
-            "requests", "2.31.0", "pyhd8ed1ab_0", "noarch", "tar.bz2", 4096,
+            "requests",
+            "2.31.0",
+            "pyhd8ed1ab_0",
+            "noarch",
+            "tar.bz2",
+            4096,
         );
         let refs = vec![&artifact];
         let shard = build_shard("noarch", &refs);
@@ -6382,15 +6603,9 @@ mod tests {
     #[test]
     fn test_build_shard_multiple_versions() {
         // One package name with multiple versions/builds
-        let a1 = make_full_conda_artifact(
-            "numpy", "1.24.0", "py312_0", "linux-64", "conda", 8000,
-        );
-        let a2 = make_full_conda_artifact(
-            "numpy", "1.25.0", "py312_0", "linux-64", "conda", 8500,
-        );
-        let a3 = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 9000,
-        );
+        let a1 = make_full_conda_artifact("numpy", "1.24.0", "py312_0", "linux-64", "conda", 8000);
+        let a2 = make_full_conda_artifact("numpy", "1.25.0", "py312_0", "linux-64", "conda", 8500);
+        let a3 = make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 9000);
         let refs = vec![&a1, &a2, &a3];
         let shard = build_shard("linux-64", &refs);
 
@@ -6403,18 +6618,15 @@ mod tests {
 
     #[test]
     fn test_build_shard_has_removed_field() {
-        let artifact = make_full_conda_artifact(
-            "pkg", "1.0", "0", "linux-64", "conda", 100,
-        );
+        let artifact = make_full_conda_artifact("pkg", "1.0", "0", "linux-64", "conda", 100);
         let shard = build_shard("linux-64", &[&artifact]);
         assert!(shard["removed"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn test_build_shard_preserves_metadata() {
-        let artifact = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192,
-        );
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
         let shard = build_shard("linux-64", &[&artifact]);
 
         let entry = &shard["packages.conda"]["numpy-1.26.4-py312_0.conda"];
@@ -6462,9 +6674,8 @@ mod tests {
 
     #[test]
     fn test_shard_content_hash_deterministic() {
-        let artifact = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192,
-        );
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
         let shard = build_shard("linux-64", &[&artifact]);
 
         let bytes1 = rmp_serde::to_vec(&shard).unwrap();
@@ -6494,14 +6705,10 @@ mod tests {
 
     #[test]
     fn test_shard_content_hash_changes_with_content() {
-        let a1 = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192,
-        );
+        let a1 = make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
         let shard1 = build_shard("linux-64", &[&a1]);
 
-        let a2 = make_full_conda_artifact(
-            "numpy", "1.27.0", "py312_0", "linux-64", "conda", 9000,
-        );
+        let a2 = make_full_conda_artifact("numpy", "1.27.0", "py312_0", "linux-64", "conda", 9000);
         let shard2 = build_shard("linux-64", &[&a2]);
 
         let bytes1 = zstd_compress(&rmp_serde::to_vec(&shard1).unwrap()).unwrap();
@@ -6515,14 +6722,16 @@ mod tests {
         h2.update(&bytes2);
         let hash2 = format!("{:x}", h2.finalize());
 
-        assert_ne!(hash1, hash2, "Different content must produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different content must produce different hashes"
+        );
     }
 
     #[test]
     fn test_shard_msgpack_roundtrip() {
-        let artifact = make_full_conda_artifact(
-            "numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192,
-        );
+        let artifact =
+            make_full_conda_artifact("numpy", "1.26.4", "py312_0", "linux-64", "conda", 8192);
         let shard = build_shard("linux-64", &[&artifact]);
 
         // Serialize to msgpack
@@ -6539,7 +6748,10 @@ mod tests {
 
         // Deserialize from msgpack
         let decoded: serde_json::Value = rmp_serde::from_slice(&decompressed).unwrap();
-        assert_eq!(decoded["packages.conda"]["numpy-1.26.4-py312_0.conda"]["name"], "numpy");
+        assert_eq!(
+            decoded["packages.conda"]["numpy-1.26.4-py312_0.conda"]["name"],
+            "numpy"
+        );
     }
 
     #[test]
@@ -6679,7 +6891,11 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get(CONTENT_ENCODING).unwrap().to_str().unwrap(),
+            resp.headers()
+                .get(CONTENT_ENCODING)
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "gzip"
         );
         assert_eq!(
@@ -6716,11 +6932,7 @@ mod tests {
         // The build_repodata function adds base_url to the info section.
         // Since we can't call the async function directly in unit tests,
         // verify the test helper output matches expected structure.
-        let rd = build_repodata_json(
-            "linux-64",
-            &serde_json::Map::new(),
-            &serde_json::Map::new(),
-        );
+        let rd = build_repodata_json("linux-64", &serde_json::Map::new(), &serde_json::Map::new());
 
         // The test helper doesn't include base_url (it's a simplified version),
         // but the actual build_repodata does. Test the format of base_url
@@ -6827,7 +7039,10 @@ mod tests {
         });
         let compact = sorted_compact_json(&value);
         // Keys should be alphabetically sorted, no spaces
-        assert_eq!(compact, r#"{"alpha":2,"middle":{"a":false,"z":true},"zebra":1}"#);
+        assert_eq!(
+            compact,
+            r#"{"alpha":2,"middle":{"a":false,"z":true},"zebra":1}"#
+        );
     }
 
     #[test]
@@ -6864,7 +7079,10 @@ mod tests {
         assert_eq!(lines.len(), 3, "bootstrap JLAP should have exactly 3 lines");
 
         // Line 0: IV (all zeros)
-        assert_eq!(lines[0], "0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(
+            lines[0],
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
         assert_eq!(lines[0].len(), 64);
 
         // Line 1: metadata with "latest" hash and "url"
@@ -6933,9 +7151,7 @@ mod tests {
         let lines: Vec<&str> = text.split('\n').collect();
         let corrupted = format!(
             "{}\n{}\n{}",
-            lines[0],
-            lines[1],
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            lines[0], lines[1], "0000000000000000000000000000000000000000000000000000000000000000"
         );
         jlap = corrupted.into_bytes();
 
@@ -7099,8 +7315,16 @@ mod tests {
         let h3 = [0x33u8; 32];
 
         let patches = vec![
-            (h1, vec![serde_json::json!({"op": "add", "path": "/p/a", "value": 1})], h2),
-            (h2, vec![serde_json::json!({"op": "add", "path": "/p/b", "value": 2})], h3),
+            (
+                h1,
+                vec![serde_json::json!({"op": "add", "path": "/p/a", "value": 1})],
+                h2,
+            ),
+            (
+                h2,
+                vec![serde_json::json!({"op": "add", "path": "/p/b", "value": 2})],
+                h3,
+            ),
         ];
 
         let jlap = build_jlap_file(&patches, &h3);
@@ -7146,8 +7370,14 @@ mod tests {
         let metadata: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
 
         // Required fields per JLAP spec
-        assert!(metadata.get("latest").is_some(), "metadata must have 'latest' field");
-        assert!(metadata.get("url").is_some(), "metadata must have 'url' field");
+        assert!(
+            metadata.get("latest").is_some(),
+            "metadata must have 'latest' field"
+        );
+        assert!(
+            metadata.get("url").is_some(),
+            "metadata must have 'url' field"
+        );
         assert_eq!(metadata["url"], "repodata.json");
     }
 
@@ -7283,25 +7513,49 @@ mod tests {
     fn test_cep26_naming_integration() {
         // Valid full set
         assert!(validate_cep26_naming(
-            "numpy", "1.26.4", "py312_0", "numpy-1.26.4-py312_0.conda", "linux-64"
-        ).is_ok());
+            "numpy",
+            "1.26.4",
+            "py312_0",
+            "numpy-1.26.4-py312_0.conda",
+            "linux-64"
+        )
+        .is_ok());
 
         // Invalid name bubbles up
         let err = validate_cep26_naming(
-            "NumPy", "1.26.4", "py312_0", "NumPy-1.26.4-py312_0.conda", "linux-64"
-        ).unwrap_err();
-        assert!(err.contains("lowercase"), "error should mention lowercase: {}", err);
+            "NumPy",
+            "1.26.4",
+            "py312_0",
+            "NumPy-1.26.4-py312_0.conda",
+            "linux-64",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("lowercase"),
+            "error should mention lowercase: {}",
+            err
+        );
 
         // Invalid version bubbles up
         let err = validate_cep26_naming(
-            "numpy", "1.26 4", "py312_0", "numpy-1.26 4-py312_0.conda", "linux-64"
-        ).unwrap_err();
+            "numpy",
+            "1.26 4",
+            "py312_0",
+            "numpy-1.26 4-py312_0.conda",
+            "linux-64",
+        )
+        .unwrap_err();
         assert!(err.contains("invalid character"), "error: {}", err);
 
         // Invalid build bubbles up
         let err = validate_cep26_naming(
-            "numpy", "1.26.4", "py312-0", "numpy-1.26.4-py312-0.conda", "linux-64"
-        ).unwrap_err();
+            "numpy",
+            "1.26.4",
+            "py312-0",
+            "numpy-1.26.4-py312-0.conda",
+            "linux-64",
+        )
+        .unwrap_err();
         assert!(err.contains("invalid character"), "error: {}", err);
     }
 
@@ -7437,18 +7691,24 @@ mod tests {
     fn test_cep27_missing_fields() {
         // Missing _type
         let att = serde_json::json!({"subject": [], "predicateType": "x"});
-        assert!(validate_cep27_attestation(&att, "", "").unwrap_err().contains("_type"));
+        assert!(validate_cep27_attestation(&att, "", "")
+            .unwrap_err()
+            .contains("_type"));
 
         // Missing predicateType
         let att = serde_json::json!({"_type": INTOTO_STATEMENT_V1, "subject": []});
-        assert!(validate_cep27_attestation(&att, "", "").unwrap_err().contains("predicateType"));
+        assert!(validate_cep27_attestation(&att, "", "")
+            .unwrap_err()
+            .contains("predicateType"));
 
         // Missing subject
         let att = serde_json::json!({
             "_type": INTOTO_STATEMENT_V1,
             "predicateType": CEP27_PREDICATE_TYPE,
         });
-        assert!(validate_cep27_attestation(&att, "", "").unwrap_err().contains("subject"));
+        assert!(validate_cep27_attestation(&att, "", "")
+            .unwrap_err()
+            .contains("subject"));
     }
 
     #[test]
