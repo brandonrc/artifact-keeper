@@ -20,6 +20,15 @@ use crate::error::{AppError, Result};
 use crate::services::search_service::{SearchQuery, SearchService};
 
 // ---------------------------------------------------------------------------
+// Admin Router
+// ---------------------------------------------------------------------------
+
+/// Create admin search routes (mounted under /api/v1/admin/search).
+pub fn admin_router() -> Router<SharedState> {
+    Router::new().route("/reindex", axum::routing::post(trigger_reindex))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -587,6 +596,52 @@ pub async fn recent(
     Ok(Json(items))
 }
 
+// ---------------------------------------------------------------------------
+// POST /admin/search/reindex
+// ---------------------------------------------------------------------------
+
+/// Response returned when a reindex is triggered.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReindexResponse {
+    pub status: String,
+    pub message: String,
+}
+
+/// Trigger a full reindex of all artifacts and repositories in Meilisearch.
+///
+/// The reindex runs asynchronously in the background. The endpoint returns
+/// immediately with a confirmation that the task was started.
+#[utoipa::path(
+    post,
+    path = "/reindex",
+    context_path = "/api/v1/admin/search",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Reindex started in background", body = ReindexResponse),
+        (status = 500, description = "Meilisearch is not configured"),
+    ),
+)]
+pub async fn trigger_reindex(
+    State(state): State<SharedState>,
+) -> Result<Json<ReindexResponse>> {
+    let meili = state.meili_service.as_ref().ok_or_else(|| {
+        AppError::Config("Meilisearch is not configured".to_string())
+    })?;
+
+    let db = state.db.clone();
+    let meili = meili.clone();
+    tokio::spawn(async move {
+        if let Err(e) = meili.full_reindex(&db).await {
+            tracing::error!("Search reindex failed: {}", e);
+        }
+    });
+
+    Ok(Json(ReindexResponse {
+        status: "started".to_string(),
+        message: "Full reindex of artifacts and repositories triggered in background".to_string(),
+    }))
+}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -596,6 +651,7 @@ pub async fn recent(
         suggest,
         trending,
         recent,
+        trigger_reindex,
     ),
     components(schemas(
         SearchResultItem,
@@ -607,6 +663,7 @@ pub async fn recent(
         ChecksumArtifact,
         ChecksumSearchResponse,
         SuggestResponse,
+        ReindexResponse,
     ))
 )]
 pub struct SearchApiDoc;
@@ -1036,5 +1093,20 @@ mod tests {
     fn test_empty_query_text_logic() {
         let query_text = String::new();
         assert!(query_text.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ReindexResponse serialization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reindex_response_serialization() {
+        let resp = ReindexResponse {
+            status: "started".to_string(),
+            message: "Full reindex triggered".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["status"], "started");
+        assert_eq!(json["message"], "Full reindex triggered");
     }
 }
