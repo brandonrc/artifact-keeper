@@ -75,6 +75,14 @@ pub(crate) fn should_reject_disabled_format(format_enabled: Option<bool>) -> boo
     format_enabled == Some(false)
 }
 
+/// Calculate quota usage as a fraction (0.0 to 1.0+).
+pub(crate) fn quota_usage_percentage(used_bytes: i64, quota_bytes: i64) -> f64 {
+    if quota_bytes <= 0 {
+        return 0.0;
+    }
+    used_bytes as f64 / quota_bytes as f64
+}
+
 /// Repository service
 pub struct RepositoryService {
     db: PgPool,
@@ -935,5 +943,29 @@ mod tests {
         for (format, expected) in cases {
             assert_eq!(derive_format_key(&format), expected, "Format {:?}", format);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // quota_usage_percentage (extracted pure function)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_quota_usage_percentage() {
+        assert!((quota_usage_percentage(80, 100) - 0.8).abs() < f64::EPSILON);
+        assert!((quota_usage_percentage(100, 100) - 1.0).abs() < f64::EPSILON);
+        assert!((quota_usage_percentage(0, 100) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_quota_usage_percentage_zero_quota() {
+        assert!((quota_usage_percentage(50, 0) - 0.0).abs() < f64::EPSILON);
+        assert!((quota_usage_percentage(50, -1) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_quota_warning_threshold_check() {
+        let threshold = 0.8;
+        assert!(quota_usage_percentage(85, 100) > threshold);
+        assert!(!(quota_usage_percentage(70, 100) > threshold));
     }
 }

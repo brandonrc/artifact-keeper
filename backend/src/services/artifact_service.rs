@@ -251,6 +251,29 @@ impl ArtifactService {
         .await
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // Check quota warning threshold after successful upload
+        if let Ok(repo) = self.repo_service.get_by_id(repository_id).await {
+            if let Some(quota) = repo.quota_bytes {
+                if let Ok(current_usage) = self.repo_service.get_storage_usage(repository_id).await
+                {
+                    let usage_pct =
+                        crate::services::repository_service::quota_usage_percentage(
+                            current_usage,
+                            quota,
+                        );
+                    if usage_pct > 0.8 {
+                        tracing::warn!(
+                            repository_key = %repo.key,
+                            usage_percent = format!("{:.1}", usage_pct * 100.0),
+                            current_bytes = current_usage,
+                            quota_bytes = quota,
+                            "Repository quota warning: usage exceeds 80%"
+                        );
+                    }
+                }
+            }
+        }
+
         // Populate packages / package_versions tables (non-blocking)
         if let Some(ref ver) = artifact.version {
             let pkg_svc = crate::services::package_service::PackageService::new(self.db.clone());
