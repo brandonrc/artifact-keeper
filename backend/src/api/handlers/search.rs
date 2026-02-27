@@ -621,12 +621,11 @@ pub struct ReindexResponse {
         (status = 500, description = "Meilisearch is not configured"),
     ),
 )]
-pub async fn trigger_reindex(
-    State(state): State<SharedState>,
-) -> Result<Json<ReindexResponse>> {
-    let meili = state.meili_service.as_ref().ok_or_else(|| {
-        AppError::Config("Meilisearch is not configured".to_string())
-    })?;
+pub async fn trigger_reindex(State(state): State<SharedState>) -> Result<Json<ReindexResponse>> {
+    let meili = state
+        .meili_service
+        .as_ref()
+        .ok_or_else(|| AppError::Config("Meilisearch is not configured".to_string()))?;
 
     let db = state.db.clone();
     let meili = meili.clone();

@@ -514,7 +514,10 @@ pub(crate) fn compute_available_slots(
 /// `exclude_patterns` arrays.  When `include_patterns` is non-empty, at least
 /// one pattern must match.  Any matching `exclude_patterns` entry rejects the
 /// artifact.  A `None` filter (or null JSON) means replicate everything.
-fn matches_replication_filter(artifact_identifier: &str, filter: Option<&serde_json::Value>) -> bool {
+fn matches_replication_filter(
+    artifact_identifier: &str,
+    filter: Option<&serde_json::Value>,
+) -> bool {
     let filter = match filter {
         Some(f) => f,
         None => return true, // No filter = replicate everything
@@ -988,7 +991,10 @@ mod tests {
             "exclude_patterns": [".*-SNAPSHOT$"]
         });
         assert!(matches_replication_filter("v1.0.0", Some(&filter)));
-        assert!(!matches_replication_filter("v1.0.0-SNAPSHOT", Some(&filter)));
+        assert!(!matches_replication_filter(
+            "v1.0.0-SNAPSHOT",
+            Some(&filter)
+        ));
     }
 
     #[test]
@@ -998,7 +1004,10 @@ mod tests {
             "exclude_patterns": [".*-SNAPSHOT$"]
         });
         assert!(matches_replication_filter("v1.0.0", Some(&filter)));
-        assert!(!matches_replication_filter("v1.0.0-SNAPSHOT", Some(&filter)));
+        assert!(!matches_replication_filter(
+            "v1.0.0-SNAPSHOT",
+            Some(&filter)
+        ));
         assert!(!matches_replication_filter("snapshot-1.0", Some(&filter)));
     }
 

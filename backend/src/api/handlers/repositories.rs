@@ -84,10 +84,7 @@ pub fn router() -> Router<SharedState> {
                 .delete(delete_repository),
         )
         // Cache TTL configuration for proxy/remote repositories
-        .route(
-            "/:key/cache-ttl",
-            put(set_cache_ttl).get(get_cache_ttl),
-        )
+        .route("/:key/cache-ttl", put(set_cache_ttl).get(get_cache_ttl))
         // Virtual repository member management
         .route(
             "/:key/members",

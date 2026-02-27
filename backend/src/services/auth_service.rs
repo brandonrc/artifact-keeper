@@ -282,9 +282,7 @@ impl AuthService {
 
         // Check revocation before spending time on hash verification
         if stored_token.revoked_at.is_some() {
-            return Err(AppError::Unauthorized(
-                "Token has been revoked".to_string(),
-            ));
+            return Err(AppError::Unauthorized("Token has been revoked".to_string()));
         }
 
         // Verify full token hash
@@ -310,12 +308,10 @@ impl AuthService {
             let token_id = stored_token.id;
             let db = self.db.clone();
             tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1",
-                )
-                .bind(token_id)
-                .execute(&db)
-                .await;
+                let _ = sqlx::query("UPDATE api_tokens SET last_used_at = NOW() WHERE id = $1")
+                    .bind(token_id)
+                    .execute(&db)
+                    .await;
             });
         }
 

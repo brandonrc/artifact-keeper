@@ -2065,7 +2065,10 @@ mod tests {
             .take_while(|t| *t <= now)
             .next()
             .is_some();
-        assert!(has_occurrence, "Should find a scheduled time in the last 2 minutes for every-minute cron");
+        assert!(
+            has_occurrence,
+            "Should find a scheduled time in the last 2 minutes for every-minute cron"
+        );
     }
 
     #[test]

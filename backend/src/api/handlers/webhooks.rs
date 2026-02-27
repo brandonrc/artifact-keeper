@@ -783,12 +783,11 @@ pub async fn process_webhook_retries(db: &sqlx::PgPool) -> std::result::Result<(
             Some(w) => w,
             None => {
                 // Webhook deleted or disabled: mark delivery as dead letter
-                let _ = sqlx::query(
-                    "UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1",
-                )
-                .bind(delivery.id)
-                .execute(db)
-                .await;
+                let _ =
+                    sqlx::query("UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1")
+                        .bind(delivery.id)
+                        .execute(db)
+                        .await;
                 continue;
             }
         };
@@ -799,12 +798,10 @@ pub async fn process_webhook_retries(db: &sqlx::PgPool) -> std::result::Result<(
 
         // Validate URL before delivery (SSRF prevention)
         if validate_webhook_url(&url).is_err() {
-            let _ = sqlx::query(
-                "UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1",
-            )
-            .bind(delivery.id)
-            .execute(db)
-            .await;
+            let _ = sqlx::query("UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1")
+                .bind(delivery.id)
+                .execute(db)
+                .await;
             tracing::warn!(
                 "Webhook URL failed validation during retry, delivery {} dead-lettered",
                 delivery.id

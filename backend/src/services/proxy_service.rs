@@ -117,8 +117,9 @@ impl ProxyService {
             }
             Err(upstream_err) => {
                 // Upstream failed. Try serving stale cached content as a fallback.
-                if let Ok(Some((stale_content, stale_content_type))) =
-                    self.get_stale_cached_artifact(&cache_key, &metadata_key).await
+                if let Ok(Some((stale_content, stale_content_type))) = self
+                    .get_stale_cached_artifact(&cache_key, &metadata_key)
+                    .await
                 {
                     tracing::warn!(
                         "Upstream fetch failed for {}; serving stale cached copy: {}",
@@ -477,6 +478,8 @@ impl ProxyService {
 
 /// Build response headers indicating the content was served from a stale cache.
 /// Returns headers with `X-Cache: STALE` and an RFC 7234 Warning 110 header.
+/// Currently used by tests; HTTP handlers will integrate this in a follow-up.
+#[allow(dead_code)]
 pub(crate) fn build_stale_cache_headers() -> HashMap<String, String> {
     let mut headers = HashMap::new();
     headers.insert("X-Cache".to_string(), "STALE".to_string());
