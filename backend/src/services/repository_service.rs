@@ -966,6 +966,6 @@ mod tests {
     fn test_quota_warning_threshold_check() {
         let threshold = 0.8;
         assert!(quota_usage_percentage(85, 100) > threshold);
-        assert!(!(quota_usage_percentage(70, 100) > threshold));
+        assert!(quota_usage_percentage(70, 100) <= threshold);
     }
 }
