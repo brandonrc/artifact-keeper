@@ -342,6 +342,24 @@ pub struct RepoVisibilityState {
     pub db: sqlx::PgPool,
 }
 
+/// Extract the repository key from a request path.
+///
+/// Returns the first non-empty path segment, which for format handler routes
+/// is always the repository key (e.g. `/my-repo/npm/package` -> `"my-repo"`).
+pub(crate) fn extract_repo_key(path: &str) -> &str {
+    let trimmed = path.trim_start_matches('/');
+    trimmed.split('/').next().unwrap_or("")
+}
+
+/// Decide whether a request to a repository should be allowed.
+///
+/// Returns `true` when the request should proceed (public repo, or private
+/// repo with authentication).  Returns `false` when access should be denied
+/// (private repo, no auth).
+pub(crate) fn should_allow_repo_access(is_public: bool, has_auth: bool) -> bool {
+    is_public || has_auth
+}
+
 /// Middleware that enforces repository visibility on format handler routes.
 ///
 /// For routes whose first path segment is a repository key, this middleware
@@ -359,7 +377,7 @@ pub async fn repo_visibility_middleware(
 ) -> Response {
     // Extract the first path segment as a potential repo key.
     let path = request.uri().path().to_string();
-    let repo_key = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    let repo_key = extract_repo_key(&path);
 
     if repo_key.is_empty() {
         return next.run(request).await;
@@ -386,16 +404,12 @@ pub async fn repo_visibility_middleware(
     // Insert auth extension for downstream handlers.
     request.extensions_mut().insert(auth_ext.clone());
 
-    // If the repo is public, allow access unconditionally.
-    if is_public {
+    // Check visibility: public repos are open, private repos need auth.
+    if should_allow_repo_access(is_public, auth_ext.is_some()) {
         return next.run(request).await;
     }
 
-    // Private repo: require authentication.
-    match auth_ext {
-        Some(_) => next.run(request).await,
-        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
-    }
+    (StatusCode::NOT_FOUND, "Not found").into_response()
 }
 
 #[cfg(test)]
@@ -679,5 +693,71 @@ mod tests {
 
         let debug_str = format!("{:?}", ext);
         assert!(debug_str.contains("user"));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_repo_key
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_repo_key_simple() {
+        assert_eq!(extract_repo_key("/my-repo/npm/package"), "my-repo");
+    }
+
+    #[test]
+    fn test_extract_repo_key_deep_path() {
+        assert_eq!(
+            extract_repo_key("/my-repo/pypi/simple/my-package/"),
+            "my-repo"
+        );
+    }
+
+    #[test]
+    fn test_extract_repo_key_root() {
+        assert_eq!(extract_repo_key("/"), "");
+    }
+
+    #[test]
+    fn test_extract_repo_key_empty() {
+        assert_eq!(extract_repo_key(""), "");
+    }
+
+    #[test]
+    fn test_extract_repo_key_no_leading_slash() {
+        assert_eq!(extract_repo_key("my-repo/foo"), "my-repo");
+    }
+
+    #[test]
+    fn test_extract_repo_key_single_segment() {
+        assert_eq!(extract_repo_key("/my-repo"), "my-repo");
+    }
+
+    #[test]
+    fn test_extract_repo_key_multiple_slashes() {
+        assert_eq!(extract_repo_key("///my-repo"), "my-repo");
+    }
+
+    // -----------------------------------------------------------------------
+    // should_allow_repo_access
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_allow_public_no_auth() {
+        assert!(should_allow_repo_access(true, false));
+    }
+
+    #[test]
+    fn test_allow_public_with_auth() {
+        assert!(should_allow_repo_access(true, true));
+    }
+
+    #[test]
+    fn test_deny_private_no_auth() {
+        assert!(!should_allow_repo_access(false, false));
+    }
+
+    #[test]
+    fn test_allow_private_with_auth() {
+        assert!(should_allow_repo_access(false, true));
     }
 }

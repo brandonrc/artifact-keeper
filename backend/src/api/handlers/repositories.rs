@@ -2380,4 +2380,151 @@ mod tests {
         assert_eq!(response.storage_used_bytes, 42);
         assert_eq!(response.quota_bytes, Some(5_000_000_000));
     }
+
+    // -----------------------------------------------------------------------
+    // require_auth
+    // -----------------------------------------------------------------------
+
+    fn make_auth_ext(repo_ids: Option<Vec<Uuid>>) -> AuthExtension {
+        AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "tester".to_string(),
+            email: "test@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: repo_ids,
+        }
+    }
+
+    #[test]
+    fn test_require_auth_with_some() {
+        let ext = make_auth_ext(None);
+        let result = require_auth(Some(ext));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().username, "tester");
+    }
+
+    #[test]
+    fn test_require_auth_with_none() {
+        let result = require_auth(None);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Authentication(msg) => assert!(msg.contains("Authentication required")),
+            other => panic!("Expected Authentication error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // require_repo_access
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_repo_access_unrestricted() {
+        let ext = make_auth_ext(None);
+        let repo_id = Uuid::new_v4();
+        assert!(require_repo_access(&ext, repo_id).is_ok());
+    }
+
+    #[test]
+    fn test_require_repo_access_allowed() {
+        let repo_id = Uuid::new_v4();
+        let ext = make_auth_ext(Some(vec![repo_id]));
+        assert!(require_repo_access(&ext, repo_id).is_ok());
+    }
+
+    #[test]
+    fn test_require_repo_access_denied() {
+        let allowed = Uuid::new_v4();
+        let denied = Uuid::new_v4();
+        let ext = make_auth_ext(Some(vec![allowed]));
+        let result = require_repo_access(&ext, denied);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::Authorization(msg) => {
+                assert!(msg.contains("does not have access"))
+            }
+            other => panic!("Expected Authorization error, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // require_visible
+    // -----------------------------------------------------------------------
+
+    fn make_repo(is_public: bool) -> crate::models::repository::Repository {
+        use crate::models::repository::{ReplicationPriority, Repository};
+
+        let now = chrono::Utc::now();
+        Repository {
+            id: Uuid::new_v4(),
+            key: "test-repo".to_string(),
+            name: "Test Repo".to_string(),
+            description: None,
+            format: RepositoryFormat::Pypi,
+            repo_type: RepositoryType::Local,
+            storage_backend: "filesystem".to_string(),
+            storage_path: "/data/test-repo".to_string(),
+            upstream_url: None,
+            is_public,
+            quota_bytes: None,
+            replication_priority: ReplicationPriority::Scheduled,
+            promotion_target_id: None,
+            promotion_policy_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn test_require_visible_public_no_auth() {
+        let repo = make_repo(true);
+        assert!(require_visible(&repo, &None).is_ok());
+    }
+
+    #[test]
+    fn test_require_visible_public_with_auth() {
+        let repo = make_repo(true);
+        let auth = Some(make_auth_ext(None));
+        assert!(require_visible(&repo, &auth).is_ok());
+    }
+
+    #[test]
+    fn test_require_visible_private_no_auth() {
+        let repo = make_repo(false);
+        let result = require_visible(&repo, &None);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::NotFound(msg) => assert!(msg.contains("test-repo")),
+            other => panic!("Expected NotFound error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_require_visible_private_with_unrestricted_auth() {
+        let repo = make_repo(false);
+        let auth = Some(make_auth_ext(None));
+        assert!(require_visible(&repo, &auth).is_ok());
+    }
+
+    #[test]
+    fn test_require_visible_private_with_allowed_repo() {
+        let repo = make_repo(false);
+        let auth = Some(make_auth_ext(Some(vec![repo.id])));
+        assert!(require_visible(&repo, &auth).is_ok());
+    }
+
+    #[test]
+    fn test_require_visible_private_with_different_repo_restriction() {
+        let repo = make_repo(false);
+        let other_repo_id = Uuid::new_v4();
+        let auth = Some(make_auth_ext(Some(vec![other_repo_id])));
+        let result = require_visible(&repo, &auth);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AppError::NotFound(msg) => assert!(msg.contains("test-repo")),
+            other => panic!("Expected NotFound error, got: {:?}", other),
+        }
+    }
 }
