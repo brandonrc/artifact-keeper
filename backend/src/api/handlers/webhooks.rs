@@ -696,6 +696,231 @@ pub(crate) fn validate_webhook_url(url_str: &str) -> Result<()> {
     crate::api::validation::validate_outbound_url(url_str, "Webhook URL")
 }
 
+/// Calculate retry delay in seconds for webhook delivery.
+/// Schedule: 30s, 2m, 15m, 1h, 4h (caps at 4h for attempt >= 5).
+pub(crate) fn webhook_retry_delay_secs(attempt: i32) -> i64 {
+    match attempt {
+        1 => 30,
+        2 => 120,
+        3 => 900,
+        4 => 3600,
+        _ => 14400,
+    }
+}
+
+/// A row from the webhook_deliveries retry queue.
+#[derive(Debug)]
+struct RetryDeliveryRow {
+    pub id: uuid::Uuid,
+    pub webhook_id: uuid::Uuid,
+    pub event: String,
+    pub payload: serde_json::Value,
+    pub attempts: i32,
+    pub max_attempts: i32,
+}
+
+/// Process failed webhook deliveries that are due for retry.
+///
+/// Queries the retry queue for deliveries where `next_retry_at <= NOW()`,
+/// attempts the HTTP POST again, and updates the delivery record with the
+/// result. Uses `sqlx::query()` (not the macro) because the new columns
+/// are not in the offline SQLx cache.
+pub async fn process_webhook_retries(db: &sqlx::PgPool) -> std::result::Result<(), String> {
+    use sqlx::Row;
+
+    // Fetch deliveries due for retry (using sqlx::query, not the macro)
+    let raw_rows = sqlx::query(
+        r#"
+        SELECT id, webhook_id, event, payload, attempts, max_attempts
+        FROM webhook_deliveries
+        WHERE success = false
+          AND next_retry_at IS NOT NULL
+          AND next_retry_at <= NOW()
+          AND attempts < max_attempts
+        ORDER BY next_retry_at ASC
+        LIMIT 50
+        "#,
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to fetch retry queue: {}", e))?;
+
+    let rows: Vec<RetryDeliveryRow> = raw_rows
+        .into_iter()
+        .map(|row| RetryDeliveryRow {
+            id: row.get("id"),
+            webhook_id: row.get("webhook_id"),
+            event: row.get("event"),
+            payload: row.get("payload"),
+            attempts: row.get("attempts"),
+            max_attempts: row.get("max_attempts"),
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    tracing::debug!("Processing {} webhook deliveries due for retry", rows.len());
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    for delivery in &rows {
+        // Look up the webhook URL and headers (using sqlx::query, not the macro,
+        // because the WHERE clause differs from the cached version)
+        let webhook_row = sqlx::query(
+            "SELECT url, headers, secret_hash FROM webhooks WHERE id = $1 AND is_enabled = true",
+        )
+        .bind(delivery.webhook_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Failed to fetch webhook: {}", e))?;
+
+        let webhook_row = match webhook_row {
+            Some(w) => w,
+            None => {
+                // Webhook deleted or disabled: mark delivery as dead letter
+                let _ = sqlx::query(
+                    "UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1",
+                )
+                .bind(delivery.id)
+                .execute(db)
+                .await;
+                continue;
+            }
+        };
+
+        let url: String = webhook_row.get("url");
+        let headers: Option<serde_json::Value> = webhook_row.get("headers");
+        let secret_hash: Option<String> = webhook_row.get("secret_hash");
+
+        // Validate URL before delivery (SSRF prevention)
+        if validate_webhook_url(&url).is_err() {
+            let _ = sqlx::query(
+                "UPDATE webhook_deliveries SET next_retry_at = NULL WHERE id = $1",
+            )
+            .bind(delivery.id)
+            .execute(db)
+            .await;
+            tracing::warn!(
+                "Webhook URL failed validation during retry, delivery {} dead-lettered",
+                delivery.id
+            );
+            continue;
+        }
+
+        // Build the request
+        let mut request = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("X-Webhook-Event", &delivery.event)
+            .header("X-Webhook-Delivery", delivery.id.to_string())
+            .header(
+                "X-Webhook-Retry-Attempt",
+                (delivery.attempts + 1).to_string(),
+            );
+
+        if let Some(ref h) = headers {
+            if let Some(obj) = h.as_object() {
+                for (key, value) in obj {
+                    if let Some(v) = value.as_str() {
+                        request = request.header(key.as_str(), v);
+                    }
+                }
+            }
+        }
+
+        if secret_hash.is_some() {
+            request = request.header("X-Webhook-Signature", "hmac-signature");
+        }
+
+        let (success, response_status, response_body) =
+            match request.json(&delivery.payload).send().await {
+                Ok(response) => {
+                    let status = response.status().as_u16() as i32;
+                    let body = response.text().await.ok();
+                    ((200..300).contains(&status), Some(status), body)
+                }
+                Err(e) => (false, None, Some(e.to_string())),
+            };
+
+        let new_attempts = delivery.attempts + 1;
+
+        if success {
+            // Delivery succeeded
+            let _ = sqlx::query(
+                r#"
+                UPDATE webhook_deliveries
+                SET success = true,
+                    response_status = $2,
+                    response_body = $3,
+                    attempts = $4,
+                    delivered_at = NOW(),
+                    next_retry_at = NULL
+                WHERE id = $1
+                "#,
+            )
+            .bind(delivery.id)
+            .bind(response_status)
+            .bind(&response_body)
+            .bind(new_attempts)
+            .execute(db)
+            .await;
+        } else if new_attempts >= delivery.max_attempts {
+            // Max attempts exhausted: dead letter
+            let _ = sqlx::query(
+                r#"
+                UPDATE webhook_deliveries
+                SET response_status = $2,
+                    response_body = $3,
+                    attempts = $4,
+                    next_retry_at = NULL
+                WHERE id = $1
+                "#,
+            )
+            .bind(delivery.id)
+            .bind(response_status)
+            .bind(&response_body)
+            .bind(new_attempts)
+            .execute(db)
+            .await;
+
+            tracing::info!(
+                "Webhook delivery {} exhausted {} attempts, dead-lettered",
+                delivery.id,
+                new_attempts
+            );
+        } else {
+            // Schedule next retry
+            let delay_secs = webhook_retry_delay_secs(new_attempts);
+            let _ = sqlx::query(
+                r#"
+                UPDATE webhook_deliveries
+                SET response_status = $2,
+                    response_body = $3,
+                    attempts = $4,
+                    next_retry_at = NOW() + ($5 || ' seconds')::interval
+                WHERE id = $1
+                "#,
+            )
+            .bind(delivery.id)
+            .bind(response_status)
+            .bind(&response_body)
+            .bind(new_attempts)
+            .bind(delay_secs.to_string())
+            .execute(db)
+            .await;
+        }
+
+        crate::services::metrics_service::record_webhook_delivery(&delivery.event, success);
+    }
+
+    Ok(())
+}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -1010,5 +1235,23 @@ mod tests {
     #[test]
     fn test_validate_webhook_url_rejects_private_ip() {
         assert!(validate_webhook_url("http://10.0.0.1/hook").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // webhook_retry_delay_secs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_webhook_retry_backoff_schedule() {
+        assert_eq!(webhook_retry_delay_secs(1), 30);
+        assert_eq!(webhook_retry_delay_secs(2), 120);
+        assert_eq!(webhook_retry_delay_secs(3), 900);
+        assert_eq!(webhook_retry_delay_secs(4), 3600);
+        assert_eq!(webhook_retry_delay_secs(5), 14400);
+    }
+
+    #[test]
+    fn test_webhook_retry_backoff_capped() {
+        assert_eq!(webhook_retry_delay_secs(10), 14400);
     }
 }

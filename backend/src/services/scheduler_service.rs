@@ -243,8 +243,23 @@ pub fn spawn_all(
         });
     }
 
+    // Webhook delivery retry processor (every 30 seconds)
+    {
+        let db = db.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if let Err(e) = crate::api::handlers::webhooks::process_webhook_retries(&db).await {
+                    tracing::warn!("Webhook retry processing failed: {}", e);
+                }
+            }
+        });
+    }
+
     tracing::info!(
-        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules, sync policies"
+        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules, sync policies, webhook retries"
     );
 }
 
