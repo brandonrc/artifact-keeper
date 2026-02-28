@@ -342,13 +342,15 @@ pub struct RepoVisibilityState {
     pub db: sqlx::PgPool,
 }
 
-/// Extract the repository key from a request path.
+/// Extract the repository key from a format handler request path.
 ///
-/// Returns the first non-empty path segment, which for format handler routes
-/// is always the repository key (e.g. `/my-repo/npm/package` -> `"my-repo"`).
+/// Format routes are nested as `/{format}/{repo_key}/...`, so the repo key
+/// is the second path segment (e.g. `/pypi/my-repo/simple/` -> `"my-repo"`).
 pub(crate) fn extract_repo_key(path: &str) -> &str {
     let trimmed = path.trim_start_matches('/');
-    trimmed.split('/').next().unwrap_or("")
+    let mut segments = trimmed.split('/');
+    segments.next(); // skip format prefix (pypi, npm, maven, etc.)
+    segments.next().unwrap_or("")
 }
 
 /// Decide whether a request to a repository should be allowed.
@@ -700,14 +702,19 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_extract_repo_key_simple() {
-        assert_eq!(extract_repo_key("/my-repo/npm/package"), "my-repo");
+    fn test_extract_repo_key_pypi() {
+        assert_eq!(extract_repo_key("/pypi/my-repo/simple/"), "my-repo");
+    }
+
+    #[test]
+    fn test_extract_repo_key_npm() {
+        assert_eq!(extract_repo_key("/npm/my-repo/package"), "my-repo");
     }
 
     #[test]
     fn test_extract_repo_key_deep_path() {
         assert_eq!(
-            extract_repo_key("/my-repo/pypi/simple/my-package/"),
+            extract_repo_key("/maven/my-repo/com/example/artifact"),
             "my-repo"
         );
     }
@@ -723,18 +730,13 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_repo_key_format_only() {
+        assert_eq!(extract_repo_key("/pypi"), "");
+    }
+
+    #[test]
     fn test_extract_repo_key_no_leading_slash() {
-        assert_eq!(extract_repo_key("my-repo/foo"), "my-repo");
-    }
-
-    #[test]
-    fn test_extract_repo_key_single_segment() {
-        assert_eq!(extract_repo_key("/my-repo"), "my-repo");
-    }
-
-    #[test]
-    fn test_extract_repo_key_multiple_slashes() {
-        assert_eq!(extract_repo_key("///my-repo"), "my-repo");
+        assert_eq!(extract_repo_key("pypi/my-repo/simple"), "my-repo");
     }
 
     // -----------------------------------------------------------------------
