@@ -50,10 +50,11 @@ jobs:
 
       - name: Configure ArgoCD core access
         run: |
-          # argocd login --core creates a kubeconfig context from
-          # in-cluster credentials. Then set namespace to argocd so
-          # the CLI can find argocd-cm configmap.
+          # argocd login --core creates a kubeconfig context named
+          # 'kubernetes' but does not set it as current. Explicitly
+          # use it and set namespace to argocd for configmap lookups.
           argocd login --core
+          kubectl config use-context kubernetes
           kubectl config set-context --current --namespace=argocd
 
       - name: Sync mesh applications
