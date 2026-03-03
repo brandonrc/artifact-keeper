@@ -6,7 +6,9 @@ body:
     attributes:
       value: |
         Thanks for taking the time to report this issue! Please provide as much detail as possible to help us diagnose and fix the problem.
-        
+
+        **Filing in the right place:** This repo covers the backend API and server. For web UI bugs, please file in [artifact-keeper-web](https://github.com/artifact-keeper/artifact-keeper-web/issues/new). If you're unsure, file here and we'll move it if needed.
+
         **Note:** For security vulnerabilities, please do NOT open a public issue. Instead, use GitHub's private vulnerability reporting or email the maintainers directly.
   
   - type: textarea

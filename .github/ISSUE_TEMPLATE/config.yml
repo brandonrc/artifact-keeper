@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Web UI Issues
+    url: https://github.com/artifact-keeper/artifact-keeper-web/issues/new
+    about: Report bugs or request features for the web frontend
   - name: Security Vulnerability
     url: https://github.com/artifact-keeper/artifact-keeper/security/advisories/new
     about: Please report security vulnerabilities privately through GitHub Security Advisories
