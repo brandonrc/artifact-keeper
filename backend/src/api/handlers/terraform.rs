@@ -36,6 +36,7 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
+use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -260,7 +261,7 @@ async fn download_module(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -287,7 +288,7 @@ async fn download_module(
                 }
             }
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let upstream_path = format!(
                     "v1/modules/{}/{}/{}/{}/download",
@@ -812,7 +813,7 @@ async fn download_provider(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -839,7 +840,7 @@ async fn download_provider(
                 }
             }
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let upstream_path = format!(
                     "v1/providers/{}/{}/{}/download/{}/{}",

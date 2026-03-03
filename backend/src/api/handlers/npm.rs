@@ -170,7 +170,7 @@ async fn get_package_metadata(
 
     if artifacts.is_empty() {
         // For remote repos, proxy the metadata from upstream
-        if repo.repo_type == "remote" {
+        if repo.repo_type == RepositoryType::Remote {
             if let Some(ref upstream_url) = repo.upstream_url {
                 if let Some(ref proxy) = state.proxy_service {
                     let (content, content_type) = proxy_helpers::proxy_fetch(
@@ -206,7 +206,7 @@ async fn get_package_metadata(
             }
         }
         // For virtual repos, iterate through members and try proxy for remote members
-        if repo.repo_type == "virtual" {
+        if repo.repo_type == RepositoryType::Virtual {
             if let Some(ref proxy) = state.proxy_service {
                 let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
 
@@ -400,7 +400,7 @@ async fn serve_tarball(
     let artifact = match artifact {
         Some(a) => a,
         None => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -428,7 +428,7 @@ async fn serve_tarball(
                 }
             }
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let fname = filename.to_string();
                 let upstream_path = format!("{}/-/{}", package_name, filename);
@@ -1138,37 +1138,6 @@ mod tests {
         };
         assert_eq!(info.repo_type, "hosted");
         assert!(info.upstream_url.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // Virtual member proxy filtering
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_virtual_proxy_only_targets_remote_members() {
-        // get_package_metadata skips non-Remote virtual members.
-        // Verify the RepositoryType enum comparison used in that branch.
-        let remote = RepositoryType::Remote;
-        assert_eq!(remote, RepositoryType::Remote);
-        assert_ne!(remote, RepositoryType::Local);
-        assert_ne!(remote, RepositoryType::Virtual);
-        assert_ne!(remote, RepositoryType::Staging);
-    }
-
-    #[test]
-    fn test_virtual_member_filter_selects_remote_only() {
-        use crate::models::repository::RepositoryType;
-        let types = [
-            RepositoryType::Local,
-            RepositoryType::Remote,
-            RepositoryType::Virtual,
-            RepositoryType::Staging,
-        ];
-        let remote_count = types
-            .iter()
-            .filter(|t| **t == RepositoryType::Remote)
-            .count();
-        assert_eq!(remote_count, 1);
     }
 
     // -----------------------------------------------------------------------

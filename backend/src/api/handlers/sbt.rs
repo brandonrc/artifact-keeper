@@ -27,6 +27,7 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::sbt::SbtHandler;
+use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -132,7 +133,7 @@ async fn download_by_path(
     let artifact = match artifact {
         Some(a) => a,
         None => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -156,7 +157,7 @@ async fn download_by_path(
             }
 
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let path_clone = artifact_path.to_string();
                 let (content, content_type) = proxy_helpers::resolve_virtual_download(

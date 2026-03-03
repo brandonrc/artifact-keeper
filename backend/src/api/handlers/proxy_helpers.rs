@@ -17,18 +17,20 @@ use crate::services::proxy_service::ProxyService;
 /// Returns 405 Method Not Allowed for remote repos, 400 for virtual repos.
 #[allow(clippy::result_large_err)]
 pub fn reject_write_if_not_hosted(repo_type: &str) -> Result<(), Response> {
-    match repo_type {
-        "remote" => Err((
+    if repo_type == RepositoryType::Remote {
+        Err((
             StatusCode::METHOD_NOT_ALLOWED,
             "Cannot publish to a remote (proxy) repository",
         )
-            .into_response()),
-        "virtual" => Err((
+            .into_response())
+    } else if repo_type == RepositoryType::Virtual {
+        Err((
             StatusCode::BAD_REQUEST,
             "Cannot publish to a virtual repository",
         )
-            .into_response()),
-        _ => Ok(()),
+            .into_response())
+    } else {
+        Ok(())
     }
 }
 

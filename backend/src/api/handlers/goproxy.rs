@@ -27,6 +27,7 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
+use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -411,7 +412,7 @@ async fn get_mod_file(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -437,7 +438,7 @@ async fn get_mod_file(
             }
 
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let encoded = encode_module_path(module);
                 let upstream_path = format!("{}/@v/{}.mod", encoded, version);
@@ -553,7 +554,7 @@ async fn download_zip(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -579,7 +580,7 @@ async fn download_zip(
             }
 
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let encoded = encode_module_path(module);
                 let upstream_path = format!("{}/@v/{}.zip", encoded, version);

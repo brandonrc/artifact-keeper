@@ -131,7 +131,7 @@ async fn package_info(
 
     if artifacts.is_empty() {
         // Remote: fetch package metadata from the upstream hex registry.
-        if repo.repo_type == "remote" {
+        if repo.repo_type == RepositoryType::Remote {
             if let (Some(ref upstream_url), Some(ref proxy)) =
                 (&repo.upstream_url, &state.proxy_service)
             {
@@ -156,7 +156,7 @@ async fn package_info(
         }
 
         // Virtual: iterate members in priority order, proxy from first remote that has it.
-        if repo.repo_type == "virtual" {
+        if repo.repo_type == RepositoryType::Virtual {
             let upstream_path = format!("packages/{}", name);
             if let Some(ref proxy) = state.proxy_service {
                 let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
@@ -269,7 +269,7 @@ async fn download_tarball(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -294,7 +294,7 @@ async fn download_tarball(
             }
 
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let upstream_path = format!("tarballs/{}", filename);
                 let filename_clone = filename.to_string();
@@ -574,7 +574,7 @@ async fn list_names(
 
     // Remote with no local artifacts: proxy the names list from upstream.
     // hex.pm's /names endpoint returns a signed protobuf payload; pass it through as-is.
-    if names.is_empty() && repo.repo_type == "remote" {
+    if names.is_empty() && repo.repo_type == RepositoryType::Remote {
         if let (Some(ref upstream_url), Some(ref proxy)) =
             (&repo.upstream_url, &state.proxy_service)
         {
@@ -645,7 +645,7 @@ async fn list_versions(
 
     // Remote with no local artifacts: proxy the versions list from upstream.
     // hex.pm's /versions endpoint returns a signed protobuf payload; pass it through as-is.
-    if artifacts.is_empty() && repo.repo_type == "remote" {
+    if artifacts.is_empty() && repo.repo_type == RepositoryType::Remote {
         if let (Some(ref upstream_url), Some(ref proxy)) =
             (&repo.upstream_url, &state.proxy_service)
         {
@@ -1189,8 +1189,8 @@ mod tests {
     // -----------------------------------------------------------------------
     //
     // The handler uses two conditions for the proxy fallback:
-    //   1. repo.repo_type == "remote" && repo.upstream_url.is_some()
-    //   2. repo.repo_type == "virtual" (iterates members)
+    //   1. repo.repo_type == RepositoryType::Remote && repo.upstream_url.is_some()
+    //   2. repo.repo_type == RepositoryType::Virtual (iterates members)
     // These tests document which RepoInfo configurations satisfy each branch.
 
     #[test]

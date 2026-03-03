@@ -38,6 +38,7 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
+use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -1300,7 +1301,7 @@ async fn download(
             Some(row) => row,
             None => {
                 // Try proxy for remote repos
-                if repo.repo_type == "remote" {
+                if repo.repo_type == RepositoryType::Remote {
                     if let (Some(upstream_url), Some(proxy)) =
                         (&repo.upstream_url, &state.proxy_service)
                     {
@@ -1332,7 +1333,7 @@ async fn download(
                 }
 
                 // Virtual repo: try each member in priority order
-                if repo.repo_type == "virtual" {
+                if repo.repo_type == RepositoryType::Virtual {
                     let db = state.db.clone();
                     let digest = commit_digest.as_deref().unwrap_or("latest").to_string();
                     let upstream_path = format!("modules/{}/commits/{}", module_name, digest);

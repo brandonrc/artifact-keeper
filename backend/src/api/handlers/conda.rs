@@ -46,6 +46,7 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::conda_native::CondaNativeHandler;
+use crate::models::repository::RepositoryType;
 use crate::services::auth_service::AuthService;
 use crate::services::signing_service::SigningService;
 
@@ -1106,7 +1107,7 @@ async fn channeldata_json(
     check_read_access(&state.db, auth.clone(), &repo).await?;
 
     // Virtual repos: merge channeldata from all members
-    if repo.repo_type == "virtual" {
+    if repo.repo_type == RepositoryType::Virtual {
         let channeldata =
             build_virtual_channeldata(&state.db, state.proxy_service.as_deref(), repo.id).await?;
         let body = serde_json::to_string_pretty(&channeldata)
@@ -1116,7 +1117,7 @@ async fn channeldata_json(
     }
 
     // For remote repos, proxy channeldata from upstream
-    if repo.repo_type == "remote" {
+    if repo.repo_type == RepositoryType::Remote {
         if let Some(ref upstream_url) = repo.upstream_url {
             if let Some(ref proxy) = state.proxy_service {
                 if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
@@ -1477,7 +1478,7 @@ async fn serve_repodata(
     let ct = encoding.content_type();
 
     // Virtual repos: merge repodata from all members
-    if repo.repo_type == "virtual" {
+    if repo.repo_type == RepositoryType::Virtual {
         let repodata = build_virtual_repodata(
             &state.db,
             state.proxy_service.as_deref(),
@@ -1491,7 +1492,7 @@ async fn serve_repodata(
     }
 
     // For remote repos, proxy repodata from upstream
-    if repo.repo_type == "remote" {
+    if repo.repo_type == RepositoryType::Remote {
         if let Some(ref upstream_url) = repo.upstream_url {
             if let Some(ref proxy) = state.proxy_service {
                 let upstream_path = format!("{}/{}", subdir, encoding.upstream_filename());
@@ -2224,9 +2225,7 @@ async fn build_virtual_repodata(
     let mut merged_packages_conda = serde_json::Map::new();
 
     for member in &members {
-        let member_type = format!("{:?}", member.repo_type).to_lowercase();
-
-        if member_type == "remote" {
+        if member.repo_type == RepositoryType::Remote {
             // Remote member: fetch upstream repodata and parse it
             if let (Some(proxy), Some(upstream_url)) =
                 (proxy_service, member.upstream_url.as_deref())
@@ -2294,9 +2293,7 @@ async fn build_virtual_channeldata(
     let mut merged_packages = serde_json::Map::new();
 
     for member in &members {
-        let member_type = format!("{:?}", member.repo_type).to_lowercase();
-
-        if member_type == "remote" {
+        if member.repo_type == RepositoryType::Remote {
             if let (Some(proxy), Some(upstream_url)) =
                 (proxy_service, member.upstream_url.as_deref())
             {
@@ -2380,7 +2377,7 @@ async fn download_package(
     let artifact = match artifact {
         Ok(a) => a,
         Err(not_found) => {
-            if repo.repo_type == "remote" {
+            if repo.repo_type == RepositoryType::Remote {
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
@@ -2405,7 +2402,7 @@ async fn download_package(
             }
 
             // Virtual repo: try each member in priority order
-            if repo.repo_type == "virtual" {
+            if repo.repo_type == RepositoryType::Virtual {
                 let db = state.db.clone();
                 let upstream_path = format!("{}/{}", subdir, filename);
                 let artifact_path_clone = artifact_path.clone();

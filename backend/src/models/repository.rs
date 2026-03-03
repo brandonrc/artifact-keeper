@@ -90,6 +90,16 @@ pub enum RepositoryType {
 }
 
 impl RepositoryType {
+    /// Return the lowercase string representation matching the database enum.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+            Self::Virtual => "virtual",
+            Self::Staging => "staging",
+        }
+    }
+
     /// Check if this is a staging repository (requires promotion to release)
     pub fn is_staging(&self) -> bool {
         matches!(self, RepositoryType::Staging)
@@ -98,6 +108,42 @@ impl RepositoryType {
     /// Check if this is a hosted repository (Local or Staging)
     pub fn is_hosted(&self) -> bool {
         matches!(self, RepositoryType::Local | RepositoryType::Staging)
+    }
+}
+
+impl PartialEq<RepositoryType> for str {
+    fn eq(&self, other: &RepositoryType) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<RepositoryType> for &str {
+    fn eq(&self, other: &RepositoryType) -> bool {
+        *self == other.as_str()
+    }
+}
+
+impl PartialEq<RepositoryType> for String {
+    fn eq(&self, other: &RepositoryType) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl PartialEq<str> for RepositoryType {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for RepositoryType {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for RepositoryType {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
     }
 }
 
@@ -162,5 +208,30 @@ mod tests {
         assert!(RepositoryType::Staging.is_hosted());
         assert!(!RepositoryType::Remote.is_hosted());
         assert!(!RepositoryType::Virtual.is_hosted());
+    }
+
+    #[test]
+    fn test_repository_type_as_str() {
+        assert_eq!(RepositoryType::Local.as_str(), "local");
+        assert_eq!(RepositoryType::Remote.as_str(), "remote");
+        assert_eq!(RepositoryType::Virtual.as_str(), "virtual");
+        assert_eq!(RepositoryType::Staging.as_str(), "staging");
+    }
+
+    #[test]
+    fn test_repository_type_string_eq() {
+        let s = String::from("remote");
+        assert!(s == RepositoryType::Remote);
+        assert!(RepositoryType::Remote == s);
+        assert!(s != RepositoryType::Local);
+    }
+
+    #[test]
+    fn test_repository_type_str_eq() {
+        assert!("remote" == RepositoryType::Remote);
+        assert!("virtual" == RepositoryType::Virtual);
+        assert!(RepositoryType::Local == "local");
+        assert!(RepositoryType::Staging == "staging");
+        assert!("remote" != RepositoryType::Local);
     }
 }
