@@ -433,13 +433,6 @@ impl GcsBackend {
         })
     }
 
-    /// Override the API base URL (for testing with wiremock).
-    #[cfg(test)]
-    fn with_base_url(mut self, url: String) -> Self {
-        self.base_url = url;
-        self
-    }
-
     /// Return the bucket name this backend is configured to use.
     #[allow(dead_code)] // Used in tests across modules
     pub(crate) fn bucket(&self) -> &str {
