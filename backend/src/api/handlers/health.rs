@@ -341,6 +341,19 @@ async fn check_storage_health(config: &crate::config::Config) -> CheckStatus {
                 }
             }
         }
+        "gcs" => {
+            if config.gcs_bucket.is_some() {
+                CheckStatus {
+                    status: "healthy".to_string(),
+                    message: Some("GCS config present (no probe)".to_string()),
+                }
+            } else {
+                CheckStatus {
+                    status: "unhealthy".to_string(),
+                    message: Some("GCS bucket not configured".to_string()),
+                }
+            }
+        }
         _ => CheckStatus {
             status: "unknown".to_string(),
             message: Some(format!("Unknown backend: {}", config.storage_backend)),
@@ -556,6 +569,51 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"not_ready\""));
         assert!(json.contains("Admin password change required"));
+    }
+
+    #[tokio::test]
+    async fn test_check_storage_health_gcs_with_bucket() {
+        let mut config = crate::config::Config {
+            database_url: "postgresql://test/test".to_string(),
+            bind_address: "0.0.0.0:8080".to_string(),
+            log_level: "info".to_string(),
+            storage_backend: "gcs".to_string(),
+            storage_path: "/tmp".to_string(),
+            s3_bucket: None,
+            gcs_bucket: Some("my-bucket".to_string()),
+            s3_region: None,
+            s3_endpoint: None,
+            jwt_secret: "test".to_string(),
+            jwt_expiration_secs: 86400,
+            jwt_access_token_expiry_minutes: 30,
+            jwt_refresh_token_expiry_days: 7,
+            oidc_issuer: None,
+            oidc_client_id: None,
+            oidc_client_secret: None,
+            ldap_url: None,
+            ldap_base_dn: None,
+            trivy_url: None,
+            openscap_url: None,
+            openscap_profile: "standard".to_string(),
+            meilisearch_url: None,
+            meilisearch_api_key: None,
+            scan_workspace_path: "/scan-workspace".to_string(),
+            demo_mode: false,
+            peer_instance_name: "test".to_string(),
+            peer_public_endpoint: "http://localhost:8080".to_string(),
+            peer_api_key: "test-key".to_string(),
+            dependency_track_url: None,
+            otel_exporter_otlp_endpoint: None,
+            otel_service_name: "artifact-keeper".to_string(),
+            gc_schedule: "0 0 * * * *".to_string(),
+            lifecycle_check_interval_secs: 60,
+        };
+        let status = check_storage_health(&config).await;
+        assert_eq!(status.status, "healthy");
+
+        config.gcs_bucket = None;
+        let status = check_storage_health(&config).await;
+        assert_eq!(status.status, "unhealthy");
     }
 
     #[test]

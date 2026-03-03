@@ -81,6 +81,7 @@ mod tests {
             storage_backend: "filesystem".into(),
             storage_path: "/tmp".into(),
             s3_bucket: None,
+            gcs_bucket: None,
             s3_region: None,
             s3_endpoint: None,
             jwt_secret: "test-secret".into(),

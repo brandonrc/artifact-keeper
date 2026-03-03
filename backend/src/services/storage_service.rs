@@ -878,6 +878,7 @@ mod tests {
             storage_backend: storage_backend.to_string(),
             storage_path: "/tmp/test-storage".to_string(),
             s3_bucket: None,
+            gcs_bucket: None,
             s3_region: None,
             s3_endpoint: None,
             jwt_secret: "test-secret".to_string(),

@@ -32,6 +32,9 @@ pub struct Config {
     /// S3 bucket name (when storage_backend = "s3")
     pub s3_bucket: Option<String>,
 
+    /// GCS bucket name (when storage_backend = "gcs")
+    pub gcs_bucket: Option<String>,
+
     /// S3 region
     pub s3_region: Option<String>,
 
@@ -123,6 +126,7 @@ impl Config {
             storage_path: env::var("STORAGE_PATH")
                 .unwrap_or_else(|_| "/var/lib/artifact-keeper/artifacts".into()),
             s3_bucket: env::var("S3_BUCKET").ok(),
+            gcs_bucket: env::var("GCS_BUCKET").ok(),
             s3_region: env::var("S3_REGION").ok(),
             s3_endpoint: env::var("S3_ENDPOINT").ok(),
             jwt_secret: env::var("JWT_SECRET")

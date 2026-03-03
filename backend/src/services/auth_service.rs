@@ -1032,6 +1032,7 @@ mod tests {
             storage_backend: "filesystem".to_string(),
             storage_path: "/tmp/test".to_string(),
             s3_bucket: None,
+            gcs_bucket: None,
             s3_region: None,
             s3_endpoint: None,
             jwt_secret: "super-secret-test-key-for-unit-tests-minimum-length".to_string(),
