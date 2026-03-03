@@ -134,6 +134,11 @@ struct RepoInfo {
     storage_path: String,
     repo_type: String,
     upstream_url: Option<String>,
+    /// Separate index host for registries like crates.io that split index
+    /// (`https://index.crates.io`) and download (`https://crates.io`) across
+    /// two hosts. Loaded from the `repository_config` table on the key
+    /// `index_upstream_url`. Falls back to `upstream_url` when absent.
+    index_upstream_url: Option<String>,
 }
 
 async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
@@ -165,11 +170,27 @@ async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
             .into_response());
     }
 
+    let index_upstream_url: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT value FROM repository_config WHERE repository_id = $1 AND key = 'index_upstream_url'"
+    )
+    .bind(repo.id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response()
+    })?
+    .and_then(|(v,)| v);
+
     Ok(RepoInfo {
         id: repo.id,
         storage_path: repo.storage_path,
         repo_type: repo.repo_type,
         upstream_url: repo.upstream_url,
+        index_upstream_url,
     })
 }
 
@@ -853,87 +874,120 @@ async fn try_remote_index(
         _ => return None,
     };
 
-    let index_path = cargo_sparse_index_path(name_lower);
+    let base_url = repo.index_upstream_url.as_deref().unwrap_or(upstream_url);
+    let index_path = cargo_sparse_index_path_upstream(name_lower);
     let result =
-        proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, upstream_url, &index_path).await;
+        proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, base_url, &index_path).await;
 
     Some(result.map(|(content, content_type)| index_response(content, content_type)))
 }
 
 /// Try to resolve a crate index from a virtual repo's member repositories.
+///
+/// Iterates members in priority order: local index entries first, then upstream
+/// proxy for remote members. Honours each member's `index_upstream_url` from
+/// `repository_config` (falls back to `upstream_url` when absent).
 async fn try_virtual_index(
     state: &SharedState,
     repo: &RepoInfo,
     name_lower: &str,
 ) -> Option<Result<Response, Response>> {
+    use crate::models::repository::RepositoryType;
+    use sqlx::Row;
+
     if repo.repo_type != "virtual" {
         return None;
     }
 
-    let index_path = cargo_sparse_index_path(name_lower);
-    let db = state.db.clone();
-    let vname = name_lower.to_string();
+    let members = match proxy_helpers::fetch_virtual_members(&state.db, repo.id).await {
+        Ok(m) => m,
+        Err(e) => return Some(Err(e)),
+    };
 
-    let result = proxy_helpers::resolve_virtual_download(
-        &state.db,
-        state.proxy_service.as_deref(),
-        repo.id,
-        &index_path,
-        |member_id, _storage_path| {
-            let db = db.clone();
-            let vname = vname.clone();
-            async move {
-                use sqlx::Row;
-                let rows = sqlx::query(
-                    r#"
-                    SELECT a.name, a.version, a.checksum_sha256,
-                           am.metadata
-                    FROM artifacts a
-                    LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
-                    WHERE a.repository_id = $1
-                      AND a.name = $2
-                      AND a.is_deleted = false
-                    ORDER BY a.created_at ASC
-                    "#,
+    if members.is_empty() {
+        return Some(Err(
+            (StatusCode::NOT_FOUND, "Virtual repository has no members").into_response()
+        ));
+    }
+
+    let index_path = cargo_sparse_index_path_upstream(name_lower);
+
+    for member in &members {
+        // Try building the index from local artifacts first.
+        let rows = sqlx::query(
+            r#"
+            SELECT a.name, a.version, a.checksum_sha256,
+                   am.metadata
+            FROM artifacts a
+            LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
+            WHERE a.repository_id = $1
+              AND a.name = $2
+              AND a.is_deleted = false
+            ORDER BY a.created_at ASC
+            "#,
+        )
+        .bind(member.id)
+        .bind(name_lower)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        if !rows.is_empty() {
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    let vers: Option<String> = row.get("version");
+                    let vers = vers.as_deref().unwrap_or("0.0.0");
+                    let cksum: String = row.get("checksum_sha256");
+                    let meta: Option<serde_json::Value> = row.get("metadata");
+                    build_index_entry(name_lower, vers, &cksum, meta.as_ref())
+                })
+                .collect();
+            let body = lines.join("\n");
+            return Some(Ok(index_response(
+                bytes::Bytes::from(body),
+                Some("application/json".to_string()),
+            )));
+        }
+
+        // For remote members, try the upstream proxy.
+        if member.repo_type == RepositoryType::Remote {
+            if let (Some(proxy), Some(upstream_url)) =
+                (&state.proxy_service, &member.upstream_url)
+            {
+                // Check for a per-member index_upstream_url override.
+                let base_url = sqlx::query_as::<_, (Option<String>,)>(
+                    "SELECT value FROM repository_config \
+                     WHERE repository_id = $1 AND key = 'index_upstream_url'",
                 )
-                .bind(member_id)
-                .bind(&vname)
-                .fetch_all(&db)
+                .bind(member.id)
+                .fetch_optional(&state.db)
                 .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Database error: {}", e),
-                    )
-                        .into_response()
-                })?;
+                .ok()
+                .flatten()
+                .and_then(|(v,)| v)
+                .unwrap_or_else(|| upstream_url.clone());
 
-                if rows.is_empty() {
-                    return Err((StatusCode::NOT_FOUND, "Crate not found").into_response());
+                if let Ok((content, content_type)) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    member.id,
+                    &member.key,
+                    &base_url,
+                    &index_path,
+                )
+                .await
+                {
+                    return Some(Ok(index_response(content, content_type)));
                 }
-
-                let lines: Vec<String> = rows
-                    .iter()
-                    .map(|row| {
-                        let vers: Option<String> = row.get("version");
-                        let vers = vers.as_deref().unwrap_or("0.0.0");
-                        let cksum: String = row.get("checksum_sha256");
-                        let meta: Option<serde_json::Value> = row.get("metadata");
-                        build_index_entry(&vname, vers, &cksum, meta.as_ref())
-                    })
-                    .collect();
-
-                let body = lines.join("\n");
-                Ok((
-                    bytes::Bytes::from(body),
-                    Some("application/json".to_string()),
-                ))
             }
-        },
-    )
-    .await;
+        }
+    }
 
-    Some(result.map(|(content, content_type)| index_response(content, content_type)))
+    Some(Err((
+        StatusCode::NOT_FOUND,
+        "Artifact not found in any member repository",
+    )
+    .into_response()))
 }
 
 /// Serve the sparse index file for a crate (one JSON object per version, per line).
@@ -995,12 +1049,30 @@ async fn serve_index(
 }
 
 /// Build the sparse index path for a crate name following the Cargo registry layout.
+/// Includes the `index/` prefix used by artifact-keeper's own routing.
+/// Kept for reference and test coverage — upstream proxy calls use
+/// [`cargo_sparse_index_path_upstream`] instead.
+#[cfg_attr(not(test), allow(dead_code))]
 fn cargo_sparse_index_path(name: &str) -> String {
     match name.len() {
         1 => format!("index/1/{}", name),
         2 => format!("index/2/{}", name),
         3 => format!("index/3/{}/{}", &name[..1], name),
         _ => format!("index/{}/{}/{}", &name[..2], &name[2..4], name),
+    }
+}
+
+/// Build the upstream sparse index path for proxying to an external registry.
+///
+/// The Cargo sparse registry protocol stores index files at the path root
+/// (e.g. `https://index.crates.io/se/rd/serde`), so no `index/` prefix is
+/// used when constructing the proxy request path.
+fn cargo_sparse_index_path_upstream(name: &str) -> String {
+    match name.len() {
+        1 => format!("1/{}", name),
+        2 => format!("2/{}", name),
+        3 => format!("3/{}/{}", &name[..1], name),
+        _ => format!("{}/{}/{}", &name[..2], &name[2..4], name),
     }
 }
 
@@ -1094,6 +1166,30 @@ mod tests {
             cargo_sparse_index_path("tokio_util"),
             "index/to/ki/tokio_util"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // cargo_sparse_index_path_upstream
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cargo_sparse_index_path_upstream_1char() {
+        assert_eq!(cargo_sparse_index_path_upstream("a"), "1/a");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_upstream_2char() {
+        assert_eq!(cargo_sparse_index_path_upstream("ab"), "2/ab");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_upstream_3char() {
+        assert_eq!(cargo_sparse_index_path_upstream("abc"), "3/a/abc");
+    }
+
+    #[test]
+    fn test_cargo_sparse_index_path_upstream_serde() {
+        assert_eq!(cargo_sparse_index_path_upstream("serde"), "se/rd/serde");
     }
 
     // -----------------------------------------------------------------------
@@ -1762,6 +1858,7 @@ mod tests {
             storage_path: "/data/cargo".to_string(),
             repo_type: "hosted".to_string(),
             upstream_url: None,
+            index_upstream_url: None,
         };
         assert_eq!(info.repo_type, "hosted");
         assert!(info.upstream_url.is_none());
@@ -1774,9 +1871,26 @@ mod tests {
             storage_path: "/data/cargo-remote".to_string(),
             repo_type: "remote".to_string(),
             upstream_url: Some("https://crates.io".to_string()),
+            index_upstream_url: None,
         };
         assert_eq!(info.repo_type, "remote");
         assert_eq!(info.upstream_url.as_deref(), Some("https://crates.io"));
+    }
+
+    #[test]
+    fn test_repo_info_remote_with_index_upstream_url() {
+        let info = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/data/cargo-remote".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://crates.io".to_string()),
+            index_upstream_url: Some("https://index.crates.io".to_string()),
+        };
+        assert_eq!(info.upstream_url.as_deref(), Some("https://crates.io"));
+        assert_eq!(
+            info.index_upstream_url.as_deref(),
+            Some("https://index.crates.io")
+        );
     }
 
     #[test]
@@ -1786,6 +1900,7 @@ mod tests {
             storage_path: "/data/cargo-virtual".to_string(),
             repo_type: "virtual".to_string(),
             upstream_url: None,
+            index_upstream_url: None,
         };
         assert_eq!(info.repo_type, "virtual");
     }
