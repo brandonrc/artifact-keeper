@@ -1163,14 +1163,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proxy fallback: upstream path constants
+    // Proxy fallback: upstream paths
     // -----------------------------------------------------------------------
     //
-    // The handler constructs these paths inline via format!(). These tests
-    // document the expected values per the Hex repository specification.
-    // package_info -> "packages/{name}" (not "api/packages/{name}")
-    // list_names   -> "names"
-    // list_versions -> "versions"
+    // The handler builds these paths when proxying to the upstream registry.
+    // package_info constructs "packages/{name}" via format!().
+    // list_names and list_versions use bare literals: "names", "versions".
 
     #[test]
     fn test_proxy_upstream_paths() {
