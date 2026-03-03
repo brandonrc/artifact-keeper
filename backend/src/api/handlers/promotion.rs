@@ -323,6 +323,8 @@ pub async fn promote_artifact(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to write promoted artifact: {}", e)))?;
 
+    super::cleanup_soft_deleted_artifact(&state.db, target_repo.id, &artifact.path).await;
+
     sqlx::query!(
         r#"
         INSERT INTO artifacts (
@@ -498,6 +500,7 @@ pub async fn promote_artifacts_bulk(
         }
 
         let new_artifact_id = Uuid::new_v4();
+        super::cleanup_soft_deleted_artifact(&state.db, target_repo.id, &artifact.path).await;
         let insert_result: std::result::Result<_, sqlx::Error> = sqlx::query!(
             r#"
             INSERT INTO artifacts (

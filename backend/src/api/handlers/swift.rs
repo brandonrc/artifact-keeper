@@ -564,6 +564,8 @@ async fn publish_release(
         ));
     }
 
+    super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
+
     // Compute SHA256
     let mut hasher = Sha256::new();
     hasher.update(&body);

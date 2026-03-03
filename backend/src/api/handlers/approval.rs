@@ -559,6 +559,8 @@ pub async fn approve_promotion(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to write promoted artifact: {}", e)))?;
 
+    super::cleanup_soft_deleted_artifact(&state.db, target_repo.id, &artifact.path).await;
+
     // Insert artifact in target repo
     let new_artifact_id = Uuid::new_v4();
     sqlx::query(

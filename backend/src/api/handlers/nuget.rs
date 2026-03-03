@@ -731,6 +731,8 @@ async fn push_package(
     let artifact_path = format!("{}/{}/{}", package_id, version, filename);
     let storage_key = format!("nuget/{}/{}/{}", package_id, version, filename);
 
+    super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
+
     // Store the file.
     let storage = state.storage_for_repo(&repo.storage_path);
     storage.put(&storage_key, nupkg_bytes).await.map_err(|e| {

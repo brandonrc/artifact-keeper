@@ -398,6 +398,8 @@ async fn store_crate_artifact(
     let artifact_path = format!("{}/{}/{}", name_lower, crate_version, filename);
     let size_bytes = crate_bytes.len() as i64;
 
+    super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
+
     let artifact_id = sqlx::query_scalar!(
         r#"
         INSERT INTO artifacts (

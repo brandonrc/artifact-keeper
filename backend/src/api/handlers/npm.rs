@@ -704,6 +704,8 @@ async fn store_npm_version(
             .into_response());
     }
 
+    super::cleanup_soft_deleted_artifact(&state.db, repo_id, &artifact_path).await;
+
     // Store the tarball
     let storage_key = format!(
         "npm/{}/{}/{}",

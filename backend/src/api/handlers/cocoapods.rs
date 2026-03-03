@@ -382,6 +382,8 @@ async fn push_pod(
         return Err((StatusCode::CONFLICT, "Pod version already exists").into_response());
     }
 
+    super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
+
     // Store the pod archive
     let storage_key = format!("cocoapods/{}/{}/{}", pod_name, pod_version, filename);
     let storage = state.storage_for_repo(&repo.storage_path);
