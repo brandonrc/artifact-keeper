@@ -148,3 +148,4 @@ tonic-build.workspace = true
 [dev-dependencies]
 tokio-test = "0.4"
 axum-test = "16"
+wiremock = "0.6"

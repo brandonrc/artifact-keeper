@@ -161,6 +161,39 @@ impl StorageBackend for FilesystemBackend {
     }
 }
 
+/// Generate a StorageBackend wrapper that delegates to an inner backend.
+///
+/// Both the `crate::storage::StorageBackend` trait (put/get/exists/delete) and
+/// the extended methods (list/copy/size) are forwarded to the inner type.
+macro_rules! impl_storage_wrapper {
+    ($wrapper:ident, $inner_ty:ty) => {
+        #[async_trait]
+        impl StorageBackend for $wrapper {
+            async fn put(&self, key: &str, content: Bytes) -> Result<()> {
+                crate::storage::StorageBackend::put(&self.inner, key, content).await
+            }
+            async fn get(&self, key: &str) -> Result<Bytes> {
+                crate::storage::StorageBackend::get(&self.inner, key).await
+            }
+            async fn exists(&self, key: &str) -> Result<bool> {
+                crate::storage::StorageBackend::exists(&self.inner, key).await
+            }
+            async fn delete(&self, key: &str) -> Result<()> {
+                crate::storage::StorageBackend::delete(&self.inner, key).await
+            }
+            async fn list(&self, prefix: Option<&str>) -> Result<Vec<String>> {
+                self.inner.list(prefix).await
+            }
+            async fn copy(&self, source: &str, dest: &str) -> Result<()> {
+                self.inner.copy(source, dest).await
+            }
+            async fn size(&self, key: &str) -> Result<u64> {
+                self.inner.size(key).await
+            }
+        }
+    };
+}
+
 /// S3 storage backend (wrapper for integration with StorageService)
 pub struct S3BackendWrapper {
     inner: crate::storage::s3::S3Backend,
@@ -182,36 +215,7 @@ impl S3BackendWrapper {
     }
 }
 
-#[async_trait]
-impl StorageBackend for S3BackendWrapper {
-    async fn put(&self, key: &str, content: Bytes) -> Result<()> {
-        crate::storage::StorageBackend::put(&self.inner, key, content).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Bytes> {
-        crate::storage::StorageBackend::get(&self.inner, key).await
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool> {
-        crate::storage::StorageBackend::exists(&self.inner, key).await
-    }
-
-    async fn delete(&self, key: &str) -> Result<()> {
-        crate::storage::StorageBackend::delete(&self.inner, key).await
-    }
-
-    async fn list(&self, prefix: Option<&str>) -> Result<Vec<String>> {
-        self.inner.list(prefix).await
-    }
-
-    async fn copy(&self, source: &str, dest: &str) -> Result<()> {
-        self.inner.copy(source, dest).await
-    }
-
-    async fn size(&self, key: &str) -> Result<u64> {
-        self.inner.size(key).await
-    }
-}
+impl_storage_wrapper!(S3BackendWrapper, crate::storage::s3::S3Backend);
 
 /// GCS storage backend (wrapper for integration with StorageService).
 ///
@@ -230,36 +234,7 @@ impl GcsBackendWrapper {
     }
 }
 
-#[async_trait]
-impl StorageBackend for GcsBackendWrapper {
-    async fn put(&self, key: &str, content: Bytes) -> Result<()> {
-        crate::storage::StorageBackend::put(&self.inner, key, content).await
-    }
-
-    async fn get(&self, key: &str) -> Result<Bytes> {
-        crate::storage::StorageBackend::get(&self.inner, key).await
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool> {
-        crate::storage::StorageBackend::exists(&self.inner, key).await
-    }
-
-    async fn delete(&self, key: &str) -> Result<()> {
-        crate::storage::StorageBackend::delete(&self.inner, key).await
-    }
-
-    async fn list(&self, prefix: Option<&str>) -> Result<Vec<String>> {
-        self.inner.list(prefix).await
-    }
-
-    async fn copy(&self, source: &str, dest: &str) -> Result<()> {
-        self.inner.copy(source, dest).await
-    }
-
-    async fn size(&self, key: &str) -> Result<u64> {
-        self.inner.size(key).await
-    }
-}
+impl_storage_wrapper!(GcsBackendWrapper, crate::storage::gcs::GcsBackend);
 
 /// Storage service facade
 pub struct StorageService {

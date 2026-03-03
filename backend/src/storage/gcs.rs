@@ -66,6 +66,32 @@ const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// OAuth2 scope for full GCS access.
 const GCS_SCOPE: &str = "https://www.googleapis.com/auth/devstorage.full_control";
 
+/// Default GCS JSON API base URL.
+const GCS_BASE_URL: &str = "https://storage.googleapis.com";
+
+/// OAuth2 token response from Google token endpoint or GCE metadata server.
+#[derive(serde::Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    expires_in: u64,
+}
+
+/// Check that an HTTP response indicates success; return an error with context otherwise.
+async fn require_success(
+    response: reqwest::Response,
+    context: &str,
+) -> std::result::Result<reqwest::Response, AppError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(AppError::Storage(format!(
+        "{} (status {}): {}",
+        context, status, body
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // Token caching
 // ---------------------------------------------------------------------------
@@ -168,12 +194,6 @@ impl GcsTokenProvider {
         let signature = signer.sign(unsigned.as_bytes());
         let jwt = format!("{}.{}", unsigned, BASE64_URL.encode(signature.to_bytes()));
 
-        #[derive(serde::Deserialize)]
-        struct TokenResponse {
-            access_token: String,
-            expires_in: u64,
-        }
-
         let response = self
             .client
             .post(GOOGLE_TOKEN_URL)
@@ -187,15 +207,7 @@ impl GcsTokenProvider {
                 AppError::Storage(format!("Failed to exchange JWT for access token: {}", e))
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "Google token endpoint returned {}: {}",
-                status, body
-            )));
-        }
-
+        let response = require_success(response, "Google token endpoint error").await?;
         let token_resp: TokenResponse = response
             .json()
             .await
@@ -206,12 +218,6 @@ impl GcsTokenProvider {
 
     /// Fetch a token from the GCE metadata server.
     async fn fetch_metadata_token(&self) -> Result<(String, u64)> {
-        #[derive(serde::Deserialize)]
-        struct TokenResponse {
-            access_token: String,
-            expires_in: u64,
-        }
-
         let response = self
             .client
             .get(GCP_METADATA_TOKEN_URL)
@@ -220,15 +226,7 @@ impl GcsTokenProvider {
             .await
             .map_err(|e| AppError::Storage(format!("Failed to fetch GCP access token: {}", e)))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "GCP metadata server returned {}: {}",
-                status, body
-            )));
-        }
-
+        let response = require_success(response, "GCP metadata server error").await?;
         let token_resp: TokenResponse = response
             .json()
             .await
@@ -378,6 +376,8 @@ pub struct GcsBackend {
     client: reqwest::Client,
     auth: GcsAuthMode,
     path_format: StoragePathFormat,
+    /// API base URL (overridable in tests via `with_base_url`).
+    base_url: String,
 }
 
 impl GcsBackend {
@@ -429,7 +429,15 @@ impl GcsBackend {
             client,
             auth,
             path_format,
+            base_url: GCS_BASE_URL.to_string(),
         })
+    }
+
+    /// Override the API base URL (for testing with wiremock).
+    #[cfg(test)]
+    fn with_base_url(mut self, url: String) -> Self {
+        self.base_url = url;
+        self
     }
 
     /// Return the bucket name this backend is configured to use.
@@ -453,7 +461,8 @@ impl GcsBackend {
     /// JSON API URL for downloading object data (`?alt=media`).
     fn object_download_url(&self, key: &str) -> String {
         format!(
-            "https://storage.googleapis.com/storage/v1/b/{}/o/{}?alt=media",
+            "{}/storage/v1/b/{}/o/{}?alt=media",
+            self.base_url,
             urlencoding::encode(&self.config.bucket),
             urlencoding::encode(key),
         )
@@ -462,7 +471,8 @@ impl GcsBackend {
     /// JSON API URL for object metadata (also used for DELETE).
     fn object_metadata_url(&self, key: &str) -> String {
         format!(
-            "https://storage.googleapis.com/storage/v1/b/{}/o/{}",
+            "{}/storage/v1/b/{}/o/{}",
+            self.base_url,
             urlencoding::encode(&self.config.bucket),
             urlencoding::encode(key),
         )
@@ -471,7 +481,8 @@ impl GcsBackend {
     /// JSON API simple upload URL.
     fn upload_url(&self, key: &str) -> String {
         format!(
-            "https://storage.googleapis.com/upload/storage/v1/b/{}/o?uploadType=media&name={}",
+            "{}/upload/storage/v1/b/{}/o?uploadType=media&name={}",
+            self.base_url,
             urlencoding::encode(&self.config.bucket),
             urlencoding::encode(key),
         )
@@ -615,7 +626,8 @@ impl GcsBackend {
         loop {
             let token = self.get_bearer_token().await?;
             let base = format!(
-                "https://storage.googleapis.com/storage/v1/b/{}/o",
+                "{}/storage/v1/b/{}/o",
+                self.base_url,
                 urlencoding::encode(&self.config.bucket)
             );
 
@@ -641,15 +653,7 @@ impl GcsBackend {
                 .await
                 .map_err(|e| AppError::Storage(format!("GCS list failed: {}", e)))?;
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(AppError::Storage(format!(
-                    "GCS list failed with status {}: {}",
-                    status, body
-                )));
-            }
-
+            let response = require_success(response, "GCS list failed").await?;
             let list_response: GcsListResponse = response.json().await.map_err(|e| {
                 AppError::Storage(format!("Failed to parse GCS list response: {}", e))
             })?;
@@ -670,7 +674,8 @@ impl GcsBackend {
         let token = self.get_bearer_token().await?;
         let bucket_enc = urlencoding::encode(&self.config.bucket);
         let url = format!(
-            "https://storage.googleapis.com/storage/v1/b/{}/o/{}/copyTo/b/{}/o/{}",
+            "{}/storage/v1/b/{}/o/{}/copyTo/b/{}/o/{}",
+            self.base_url,
             bucket_enc,
             urlencoding::encode(source),
             bucket_enc,
@@ -686,15 +691,7 @@ impl GcsBackend {
             .await
             .map_err(|e| AppError::Storage(format!("GCS copy failed: {}", e)))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "GCS copy failed with status {}: {}",
-                status, body
-            )));
-        }
-
+        require_success(response, "GCS copy failed").await?;
         Ok(())
     }
 
@@ -711,14 +708,7 @@ impl GcsBackend {
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(AppError::NotFound(format!("Object not found: {}", key)));
         }
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "GCS size request failed with status {}: {}",
-                status, body
-            )));
-        }
+        let response = require_success(response, "GCS size request failed").await?;
 
         let metadata: GcsObjectMetadata = response.json().await.map_err(|e| {
             AppError::Storage(format!("Failed to parse GCS object metadata: {}", e))
@@ -833,16 +823,7 @@ impl GcsBackend {
 impl StorageBackend for GcsBackend {
     async fn put(&self, key: &str, content: Bytes) -> Result<()> {
         let response = self.authorized_put(key, content).await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "GCS upload failed with status {}: {}",
-                status, body
-            )));
-        }
-
+        require_success(response, "GCS upload failed").await?;
         Ok(())
     }
 
@@ -864,12 +845,9 @@ impl StorageBackend for GcsBackend {
             return Err(AppError::NotFound(format!("Object not found: {}", key)));
         }
 
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        Err(AppError::Storage(format!(
-            "GCS download failed with status {}: {}",
-            status, body
-        )))
+        // Propagate the error via require_success (always fails for non-2xx)
+        require_success(response, "GCS download failed").await?;
+        unreachable!()
     }
 
     async fn exists(&self, key: &str) -> Result<bool> {
@@ -884,26 +862,18 @@ impl StorageBackend for GcsBackend {
             return self.try_fallback_exists(key).await;
         }
 
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        Err(AppError::Storage(format!(
-            "GCS exists check failed with status {}: {}",
-            status, body
-        )))
+        require_success(response, "GCS exists check failed").await?;
+        unreachable!()
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
         let response = self.authorized_delete(key).await?;
 
-        if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Storage(format!(
-                "GCS delete failed with status {}: {}",
-                status, body
-            )));
+        // 404 is acceptable (already deleted)
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
         }
-
+        require_success(response, "GCS delete failed").await?;
         Ok(())
     }
 
@@ -1465,5 +1435,381 @@ mod tests {
             result.is_err(),
             "Mode A should fail without GCS_SERVICE_ACCOUNT_EMAIL"
         );
+    }
+
+    // ---- require_success helper (tested via wiremock) ----
+
+    #[tokio::test]
+    async fn test_require_success_passes_2xx() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::get(&server.uri()).await.unwrap();
+        assert!(require_success(resp, "test").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_require_success_rejects_4xx() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::get(&server.uri()).await.unwrap();
+        let err = require_success(resp, "auth check").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("auth check"), "error: {}", msg);
+        assert!(msg.contains("403"), "error: {}", msg);
+    }
+
+    #[tokio::test]
+    async fn test_require_success_rejects_5xx() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::get(&server.uri()).await.unwrap();
+        let err = require_success(resp, "server op").await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("500"), "error: {}", msg);
+    }
+
+    // ---- Wiremock-based StorageBackend tests ----
+
+    /// Create an ADC-mode GcsBackend pointed at the given base URL with a
+    /// pre-seeded token cache so it never contacts the metadata server.
+    async fn mock_backend(base_url: &str) -> GcsBackend {
+        let config = GcsConfig {
+            bucket: "test-bucket".to_string(),
+            project_id: None,
+            service_account_email: None,
+            private_key: None,
+            redirect_downloads: false,
+            signed_url_expiry: Duration::from_secs(3600),
+            path_format: StoragePathFormat::Native,
+        };
+        let client = reqwest::Client::new();
+        let provider = GcsTokenProvider::new(TokenSource::MetadataServer, client.clone());
+
+        // Seed the token cache so get_token() never hits the metadata server
+        {
+            let mut cache = provider.cache.write().await;
+            *cache = Some(CachedToken {
+                token: "mock-token".to_string(),
+                expires_at: Instant::now() + Duration::from_secs(3600),
+            });
+        }
+
+        GcsBackend {
+            config,
+            client,
+            auth: GcsAuthMode::Adc { provider },
+            path_format: StoragePathFormat::Native,
+            base_url: base_url.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_put_success() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/upload/storage/v1/b/.*/o"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.put("test/file.txt", Bytes::from("hello")).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_put_server_error() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/upload/storage/v1/b/.*/o"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.put("test/file.txt", Bytes::from("hello")).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn test_get_success() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"file content".to_vec()))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let data = backend.get("test/file.txt").await.unwrap();
+        assert_eq!(data.as_ref(), b"file content");
+    }
+
+    #[tokio::test]
+    async fn test_get_not_found() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.get("missing.txt").await;
+        assert!(result.is_err());
+        assert!(
+            matches!(result.unwrap_err(), AppError::NotFound(_)),
+            "Expected NotFound error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_server_error() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.get("test.txt").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("503"));
+    }
+
+    #[tokio::test]
+    async fn test_exists_true() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"name": "test.txt", "size": "42"})),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(backend.exists("test.txt").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_exists_false() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(!backend.exists("missing.txt").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_delete_success() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(backend.delete("test.txt").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_not_found_is_ok() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(
+            backend.delete("already-gone.txt").await.is_ok(),
+            "Deleting a non-existent object should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_forbidden() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("access denied"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.delete("protected.txt").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("403"));
+    }
+
+    #[tokio::test]
+    async fn test_list_single_page() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"name": "a.txt"},
+                    {"name": "b.txt"},
+                    {"name": "c.txt"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let keys = backend.list(None).await.unwrap();
+        assert_eq!(keys, vec!["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_empty() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let keys = backend.list(None).await.unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_copy_success() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/storage/v1/b/.*/o/.*/copyTo/b/.*/o/.*"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"name": "dest.txt"})),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(backend.copy("src.txt", "dest.txt").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_copy_not_found() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex("/storage/v1/b/.*/o/.*/copyTo/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("source not found"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        assert!(backend.copy("missing.txt", "dest.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_size_success() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"size": "1048576"})),
+            )
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let sz = backend.size("large.bin").await.unwrap();
+        assert_eq!(sz, 1_048_576);
+    }
+
+    #[tokio::test]
+    async fn test_size_not_found() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex("/storage/v1/b/.*/o/.*"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let backend = mock_backend(&server.uri()).await;
+        let result = backend.size("missing.bin").await;
+        assert!(matches!(result.unwrap_err(), AppError::NotFound(_)));
     }
 }
