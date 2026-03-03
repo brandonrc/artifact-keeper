@@ -124,6 +124,7 @@ jobs:
           path: lcov.info
 
       - name: SonarCloud Scan
+        if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -205,11 +206,32 @@ jobs:
 
       - name: Install Docker Compose
         run: |
+          # Skip install if docker compose is already available
+          if docker compose version >/dev/null 2>&1; then
+            echo "Docker Compose already available:"
+            docker compose version
+            exit 0
+          fi
+
           DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+          COMPOSE_VERSION="v2.32.4"
+          COMPOSE_BINARY="$DOCKER_CONFIG/cli-plugins/docker-compose"
           mkdir -p "$DOCKER_CONFIG/cli-plugins"
-          curl -SL "https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64" \
-            -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
-          chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+
+          echo "Downloading Docker Compose ${COMPOSE_VERSION}..."
+          curl -fSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+            -o "$COMPOSE_BINARY"
+
+          # Verify download succeeded (curl -f returns non-zero on HTTP errors,
+          # but also check file size as a safeguard)
+          FILESIZE=$(stat -c%s "$COMPOSE_BINARY" 2>/dev/null || stat -f%z "$COMPOSE_BINARY" 2>/dev/null || echo "0")
+          if [ "$FILESIZE" -lt 1000000 ]; then
+            echo "ERROR: Downloaded file is ${FILESIZE} bytes (expected >60MB). Download likely failed."
+            rm -f "$COMPOSE_BINARY"
+            exit 1
+          fi
+
+          chmod +x "$COMPOSE_BINARY"
           docker compose version
 
       - name: Login to Docker Hub
