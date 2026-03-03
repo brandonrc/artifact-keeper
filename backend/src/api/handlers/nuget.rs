@@ -20,14 +20,15 @@ use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::services::auth_service::AuthService;
 
@@ -61,74 +62,7 @@ pub fn router() -> Router<SharedState> {
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
 
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via X-NuGet-ApiKey header (preferred) or Basic auth.
-/// Returns user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    // Try X-NuGet-ApiKey first
-    if let Some(api_key) = headers.get("X-NuGet-ApiKey").and_then(|v| v.to_str().ok()) {
-        // The API key may be in "user:password" format or just a token.
-        // Try splitting on ':' first for user:password style keys.
-        let (username, password) = if let Some((u, p)) = api_key.split_once(':') {
-            (u.to_string(), p.to_string())
-        } else {
-            ("apikey".to_string(), api_key.to_string())
-        };
-
-        let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-        let (user, _tokens) = auth_service
-            .authenticate(&username, &password)
-            .await
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid API key").into_response())?;
-
-        return Ok(user.id);
-    }
-
-    // Fall back to Basic auth
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"nuget\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"nuget\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
-}
 
 // ---------------------------------------------------------------------------
 // Repository resolution
@@ -704,12 +638,34 @@ async fn flatcontainer_download(
 
 async fn push_package(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    // Authenticate.
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = match auth {
+        Some(ext) => ext.user_id,
+        None => {
+            // NuGet fallback: X-NuGet-ApiKey with user:password or just token format
+            let api_key = headers.get("X-NuGet-ApiKey")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(Body::from("Authentication required"))
+                        .unwrap()
+                })?;
+            let (username, password) = if let Some((u, p)) = api_key.split_once(':') {
+                (u.to_string(), p.to_string())
+            } else {
+                ("apikey".to_string(), api_key.to_string())
+            };
+            let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
+            let (user, _) = auth_service.authenticate(&username, &password).await
+                .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid API key").into_response())?;
+            user.id
+        }
+    };
     let repo = resolve_nuget_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -1120,64 +1076,6 @@ mod tests {
     /// Build the search pattern for NuGet package queries.
     fn build_nuget_search_pattern(query_term: &str) -> String {
         format!("%{}%", query_term.to_lowercase())
-    }
-
-    // -----------------------------------------------------------------------
-    // extract_basic_credentials
-    // -----------------------------------------------------------------------
-
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let headers = make_basic_header("admin", "secret");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("admin".to_string(), "secret".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_missing() {
-        let headers = HeaderMap::new();
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_colon_in_password() {
-        let headers = make_basic_header("user", "p:a:s:s");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "p:a:s:s".to_string())));
     }
 
     // -----------------------------------------------------------------------
