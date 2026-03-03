@@ -114,8 +114,8 @@ async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
             .into_response());
     }
 
-    let index_upstream_url: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
-        "SELECT value FROM repository_config WHERE repository_id = $1 AND key = 'index_upstream_url'"
+    let index_upstream_url: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM repository_config WHERE repository_id = $1 AND key = 'index_upstream_url'",
     )
     .bind(repo.id)
     .fetch_optional(db)
@@ -127,7 +127,7 @@ async fn resolve_cargo_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
         )
             .into_response()
     })?
-    .and_then(|(v,)| v);
+    .flatten();
 
     Ok(RepoInfo {
         id: repo.id,
@@ -897,7 +897,10 @@ async fn try_virtual_index(
         .bind(name_lower)
         .fetch_all(&state.db)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to query artifacts for member {}: {}", member.id, e);
+            Vec::new()
+        });
 
         if !rows.is_empty() {
             let lines: Vec<String> = rows
@@ -1008,16 +1011,9 @@ async fn serve_index(
 
 /// Build the sparse index path for a crate name following the Cargo registry layout.
 /// Includes the `index/` prefix used by artifact-keeper's own routing.
-/// Kept for reference and test coverage — upstream proxy calls use
-/// [`cargo_sparse_index_path_upstream`] instead.
 #[cfg_attr(not(test), allow(dead_code))]
 fn cargo_sparse_index_path(name: &str) -> String {
-    match name.len() {
-        1 => format!("index/1/{}", name),
-        2 => format!("index/2/{}", name),
-        3 => format!("index/3/{}/{}", &name[..1], name),
-        _ => format!("index/{}/{}/{}", &name[..2], &name[2..4], name),
-    }
+    format!("index/{}", cargo_sparse_index_path_upstream(name))
 }
 
 /// Build the upstream sparse index path for proxying to an external registry.
