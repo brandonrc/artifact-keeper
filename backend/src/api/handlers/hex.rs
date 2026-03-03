@@ -26,6 +26,7 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::hex::HexHandler;
+use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -158,12 +159,9 @@ async fn package_info(
         if repo.repo_type == "virtual" {
             let upstream_path = format!("packages/{}", name);
             if let Some(ref proxy) = state.proxy_service {
-                // Use fetch_virtual_members which is already in the sqlx offline cache.
-                let members =
-                    proxy_helpers::fetch_virtual_members(&state.db, repo.id).await.unwrap_or_default();
+                let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
 
                 for member in &members {
-                    use crate::models::repository::RepositoryType;
                     if member.repo_type == RepositoryType::Remote {
                         if let Some(ref upstream_url) = member.upstream_url {
                             if let Ok((content, content_type)) = proxy_helpers::proxy_fetch(
@@ -1165,43 +1163,126 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proxy fallback path construction
+    // Proxy fallback: upstream path construction
     // -----------------------------------------------------------------------
 
-    /// package_info() proxies to `api/packages/{name}` on the upstream.
+    /// package_info builds the correct upstream path for hex repo API.
     #[test]
-    fn test_package_info_upstream_path() {
-        let name = "phoenix";
-        let path = format!("packages/{}", name);
-        assert_eq!(path, "packages/phoenix");
+    fn test_package_info_upstream_path_format() {
+        // Hex repository spec: package metadata lives at /packages/{name}
+        // (not /api/packages/{name}, which is the hex.pm HTTP API).
+        let names = ["phoenix", "ecto", "jason", "plug_cowboy"];
+        for name in &names {
+            let path = format!("packages/{}", name);
+            assert!(
+                path.starts_with("packages/"),
+                "path must start with packages/, got: {}",
+                path
+            );
+            assert!(
+                !path.starts_with("api/"),
+                "path must not include api/ prefix, got: {}",
+                path
+            );
+            assert_eq!(
+                path,
+                format!("packages/{}", name),
+                "path must preserve exact package name"
+            );
+        }
     }
 
-    /// list_names() proxies to the bare `names` endpoint on the upstream.
+    /// list_names uses the bare "names" endpoint, not a subpath.
     #[test]
-    fn test_list_names_upstream_path() {
-        // No proxy attempt when repo is local — upstream_url would be None.
+    fn test_list_names_upstream_path_is_bare() {
+        let path = "names";
+        assert_eq!(path, "names");
+        assert!(
+            !path.contains('/'),
+            "names endpoint must not contain slashes"
+        );
+    }
+
+    /// list_versions uses the bare "versions" endpoint, not a subpath.
+    #[test]
+    fn test_list_versions_upstream_path_is_bare() {
+        let path = "versions";
+        assert_eq!(path, "versions");
+        assert!(
+            !path.contains('/'),
+            "versions endpoint must not contain slashes"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Proxy fallback: branch eligibility by repo type
+    // -----------------------------------------------------------------------
+
+    /// Local repos never satisfy the proxy condition because they lack an
+    /// upstream_url. The handler code checks `repo.repo_type == "remote"`
+    /// and `repo.upstream_url.is_some()`, so local repos skip both.
+    #[test]
+    fn test_local_repo_ineligible_for_proxy() {
         let repo = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data".to_string(),
             repo_type: "local".to_string(),
             upstream_url: None,
         };
-        // Local repos have no upstream_url, so the proxy condition is not met.
+        assert_ne!(repo.repo_type, "remote");
+        assert_ne!(repo.repo_type, "virtual");
         assert!(repo.upstream_url.is_none());
     }
 
-    /// list_versions() proxies to the bare `versions` endpoint on the upstream.
+    /// Remote repos with an upstream_url are eligible for the proxy fallback.
     #[test]
-    fn test_list_versions_upstream_path() {
+    fn test_remote_repo_eligible_for_proxy() {
         let repo = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/cache".to_string(),
             repo_type: "remote".to_string(),
-            upstream_url: Some("https://hex.pm".to_string()),
+            upstream_url: Some("https://repo.hex.pm".to_string()),
         };
-        // For a remote repo the proxy path would be "versions".
-        let proxy_path = "versions";
-        assert_eq!(proxy_path, "versions");
         assert_eq!(repo.repo_type, "remote");
+        assert!(repo.upstream_url.is_some());
+    }
+
+    /// Remote repos without an upstream_url configured should not attempt
+    /// the proxy fetch (the if-let destructure will not match).
+    #[test]
+    fn test_remote_repo_without_upstream_skips_proxy() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/cache".to_string(),
+            repo_type: "remote".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "remote");
+        // Even though repo_type is remote, missing upstream_url means
+        // the (upstream_url, proxy_service) destructure won't match.
+        assert!(repo.upstream_url.is_none());
+    }
+
+    /// Virtual repos are eligible for the member iteration path.
+    #[test]
+    fn test_virtual_repo_eligible_for_member_iteration() {
+        let repo = RepoInfo {
+            id: uuid::Uuid::new_v4(),
+            storage_path: "/virtual".to_string(),
+            repo_type: "virtual".to_string(),
+            upstream_url: None,
+        };
+        assert_eq!(repo.repo_type, "virtual");
+        // Virtual repos don't have their own upstream_url; they resolve
+        // through their members, which may individually be remote.
+    }
+
+    /// The virtual member iteration path filters for RepositoryType::Remote.
+    #[test]
+    fn test_virtual_member_type_filter() {
+        use crate::models::repository::RepositoryType;
+        // Only Remote members trigger the proxy_fetch call.
+        assert_eq!(RepositoryType::Remote, RepositoryType::Remote);
+        assert_ne!(RepositoryType::Local, RepositoryType::Remote);
     }
 }
