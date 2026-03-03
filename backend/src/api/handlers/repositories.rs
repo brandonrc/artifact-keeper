@@ -70,6 +70,25 @@ fn require_visible(
     }
 }
 
+/// Upsert the `index_upstream_url` key in `repository_config` for a given repository.
+async fn upsert_index_upstream_url(
+    db: &sqlx::PgPool,
+    repo_id: Uuid,
+    index_url: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO repository_config (repository_id, key, value) \
+         VALUES ($1, 'index_upstream_url', $2) \
+         ON CONFLICT (repository_id, key) DO UPDATE SET value = $2, updated_at = NOW()",
+    )
+    .bind(repo_id)
+    .bind(index_url)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    Ok(())
+}
+
 /// Create repository routes
 pub fn router() -> Router<SharedState> {
     use axum::extract::DefaultBodyLimit;
@@ -539,16 +558,7 @@ pub async fn create_repository(
         .await?;
 
     if let Some(ref index_url) = payload.index_upstream_url {
-        sqlx::query(
-            "INSERT INTO repository_config (repository_id, key, value) \
-             VALUES ($1, 'index_upstream_url', $2) \
-             ON CONFLICT (repository_id, key) DO UPDATE SET value = $2, updated_at = NOW()",
-        )
-        .bind(repo.id)
-        .bind(index_url)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        upsert_index_upstream_url(&state.db, repo.id, index_url).await?;
     }
 
     state
@@ -647,16 +657,7 @@ pub async fn update_repository(
         .await?;
 
     if let Some(ref index_url) = payload.index_upstream_url {
-        sqlx::query(
-            "INSERT INTO repository_config (repository_id, key, value) \
-             VALUES ($1, 'index_upstream_url', $2) \
-             ON CONFLICT (repository_id, key) DO UPDATE SET value = $2, updated_at = NOW()",
-        )
-        .bind(repo.id)
-        .bind(index_url)
-        .execute(&state.db)
-        .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
+        upsert_index_upstream_url(&state.db, repo.id, index_url).await?;
     }
 
     let storage_used = service.get_storage_usage(repo.id).await?;

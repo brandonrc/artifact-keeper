@@ -825,8 +825,7 @@ async fn try_remote_index(
 
     let base_url = repo.index_upstream_url.as_deref().unwrap_or(upstream_url);
     let index_path = cargo_sparse_index_path_upstream(name_lower);
-    let result =
-        proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, base_url, &index_path).await;
+    let result = proxy_helpers::proxy_fetch(proxy, repo.id, repo_key, base_url, &index_path).await;
 
     Some(result.map(|(content, content_type)| index_response(content, content_type)))
 }
@@ -854,10 +853,29 @@ async fn try_virtual_index(
     };
 
     if members.is_empty() {
-        return Some(Err(
-            (StatusCode::NOT_FOUND, "Virtual repository has no members").into_response()
-        ));
+        return Some(Err((
+            StatusCode::NOT_FOUND,
+            "Virtual repository has no members",
+        )
+            .into_response()));
     }
+
+    // Batch-fetch index_upstream_url overrides for all members in one query.
+    let member_ids: Vec<uuid::Uuid> = members.iter().map(|m| m.id).collect();
+    let index_url_overrides: HashMap<uuid::Uuid, String> =
+        sqlx::query_as::<_, (uuid::Uuid, String)>(
+            "SELECT repository_id, value FROM repository_config \
+             WHERE repository_id = ANY($1) AND key = 'index_upstream_url' AND value IS NOT NULL",
+        )
+        .bind(&member_ids)
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to fetch index_upstream_url overrides: {}", e);
+            Vec::new()
+        })
+        .into_iter()
+        .collect();
 
     let index_path = cargo_sparse_index_path_upstream(name_lower);
 
@@ -901,21 +919,12 @@ async fn try_virtual_index(
 
         // For remote members, try the upstream proxy.
         if member.repo_type == RepositoryType::Remote {
-            if let (Some(proxy), Some(upstream_url)) =
-                (&state.proxy_service, &member.upstream_url)
+            if let (Some(proxy), Some(upstream_url)) = (&state.proxy_service, &member.upstream_url)
             {
-                // Check for a per-member index_upstream_url override.
-                let base_url = sqlx::query_as::<_, (Option<String>,)>(
-                    "SELECT value FROM repository_config \
-                     WHERE repository_id = $1 AND key = 'index_upstream_url'",
-                )
-                .bind(member.id)
-                .fetch_optional(&state.db)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|(v,)| v)
-                .unwrap_or_else(|| upstream_url.clone());
+                let base_url = index_url_overrides
+                    .get(&member.id)
+                    .cloned()
+                    .unwrap_or_else(|| upstream_url.clone());
 
                 if let Ok((content, content_type)) = proxy_helpers::proxy_fetch(
                     proxy,
@@ -936,7 +945,7 @@ async fn try_virtual_index(
         StatusCode::NOT_FOUND,
         "Artifact not found in any member repository",
     )
-    .into_response()))
+        .into_response()))
 }
 
 /// Serve the sparse index file for a crate (one JSON object per version, per line).
