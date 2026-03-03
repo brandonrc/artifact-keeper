@@ -3,7 +3,7 @@
 use axum::{
     extract::{Path, Query, State},
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -11,6 +11,7 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::api::dto::Pagination;
+use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
 
@@ -102,8 +103,10 @@ pub struct PackageListResponse {
 )]
 pub async fn list_packages(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Query(query): Query<ListPackagesQuery>,
 ) -> Result<Json<PackageListResponse>> {
+    let public_only = auth.is_none();
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(24).min(100);
     let offset = ((page - 1) * per_page) as i64;
@@ -140,6 +143,7 @@ pub async fn list_packages(
         WHERE ($1::text IS NULL OR r.key = $1)
           AND ($2::text IS NULL OR r.format::text = $2)
           AND ($3::text IS NULL OR p.name ILIKE $3)
+          AND ($6::bool = false OR r.is_public = true)
         ORDER BY p.updated_at DESC
         OFFSET $4
         LIMIT $5
@@ -150,6 +154,7 @@ pub async fn list_packages(
     .bind(&search_pattern)
     .bind(offset)
     .bind(per_page as i64)
+    .bind(public_only)
     .fetch_all(&state.db)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?;
@@ -162,11 +167,13 @@ pub async fn list_packages(
         WHERE ($1::text IS NULL OR r.key = $1)
           AND ($2::text IS NULL OR r.format::text = $2)
           AND ($3::text IS NULL OR p.name ILIKE $3)
+          AND ($4::bool = false OR r.is_public = true)
         "#,
     )
     .bind(&query.repository_key)
     .bind(&query.format)
     .bind(&search_pattern)
+    .bind(public_only)
     .fetch_one(&state.db)
     .await
     .unwrap_or(0);
@@ -202,8 +209,11 @@ pub async fn list_packages(
 )]
 pub async fn get_package(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<PackageResponse>> {
+    let public_only = auth.is_none();
+
     // Check if packages table exists first
     let table_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
@@ -224,9 +234,11 @@ pub async fn get_package(
         FROM packages p
         JOIN repositories r ON r.id = p.repository_id
         WHERE p.id = $1
+          AND ($2::bool = false OR r.is_public = true)
         "#,
     )
     .bind(id)
+    .bind(public_only)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| AppError::Database(e.to_string()))?
@@ -288,8 +300,11 @@ pub struct PackageVersionsResponse {
 )]
 pub async fn get_package_versions(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<PackageVersionsResponse>> {
+    let public_only = auth.is_none();
+
     // Check if packages table exists first
     let table_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
@@ -302,13 +317,22 @@ pub async fn get_package_versions(
         return Err(AppError::NotFound("Package not found".to_string()));
     }
 
-    // First verify the package exists
-    let package_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM packages WHERE id = $1)")
-            .bind(id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or(false);
+    // Verify the package exists and belongs to a visible repository
+    let package_exists: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM packages p
+            JOIN repositories r ON r.id = p.repository_id
+            WHERE p.id = $1
+              AND ($2::bool = false OR r.is_public = true)
+        )
+        "#,
+    )
+    .bind(id)
+    .bind(public_only)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false);
 
     if !package_exists {
         return Err(AppError::NotFound("Package not found".to_string()));
