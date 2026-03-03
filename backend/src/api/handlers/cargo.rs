@@ -485,19 +485,20 @@ async fn publish(
         Some(ext) => ext.user_id,
         None => {
             // Fallback: cargo may send Bearer with base64-encoded user:pass
-            let (username, password) = extract_bearer_credentials(&headers)
-                .ok_or_else(|| {
-                    Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .header("WWW-Authenticate", "Basic realm=\"cargo\"")
-                        .body(Body::from(
-                            serde_json::json!({"errors": [{"detail": "Authentication required"}]})
-                                .to_string(),
-                        ))
-                        .unwrap()
-                })?;
+            let (username, password) = extract_bearer_credentials(&headers).ok_or_else(|| {
+                Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header("WWW-Authenticate", "Basic realm=\"cargo\"")
+                    .body(Body::from(
+                        serde_json::json!({"errors": [{"detail": "Authentication required"}]})
+                            .to_string(),
+                    ))
+                    .unwrap()
+            })?;
             let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
-            let (user, _) = auth_service.authenticate(&username, &password).await
+            let (user, _) = auth_service
+                .authenticate(&username, &password)
+                .await
                 .map_err(|_| {
                     Response::builder()
                         .status(StatusCode::UNAUTHORIZED)

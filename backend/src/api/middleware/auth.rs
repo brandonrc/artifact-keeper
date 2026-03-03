@@ -267,9 +267,7 @@ pub async fn auth_middleware(
                     request.extensions_mut().insert(auth_ext);
                     next.run(request).await
                 }
-                Err(_) => {
-                    (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response()
-                }
+                Err(_) => (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response(),
             }
         }
         ExtractedToken::None => {

@@ -835,16 +835,17 @@ async fn publish_package(
         Some(ext) => ext.user_id,
         None => {
             // Fallback: npm may send Bearer with base64-encoded user:pass
-            let (username, password) = extract_bearer_credentials(headers)
-                .ok_or_else(|| {
-                    Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .header("WWW-Authenticate", "Basic realm=\"npm\"")
-                        .body(Body::from("Authentication required"))
-                        .unwrap()
-                })?;
+            let (username, password) = extract_bearer_credentials(headers).ok_or_else(|| {
+                Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header("WWW-Authenticate", "Basic realm=\"npm\"")
+                    .body(Body::from("Authentication required"))
+                    .unwrap()
+            })?;
             let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
-            let (user, _) = auth_service.authenticate(&username, &password).await
+            let (user, _) = auth_service
+                .authenticate(&username, &password)
+                .await
                 .map_err(|_| {
                     Response::builder()
                         .status(StatusCode::UNAUTHORIZED)

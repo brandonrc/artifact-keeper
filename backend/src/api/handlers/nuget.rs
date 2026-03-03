@@ -62,8 +62,6 @@ pub fn router() -> Router<SharedState> {
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Repository resolution
 // ---------------------------------------------------------------------------
@@ -647,7 +645,8 @@ async fn push_package(
         Some(ext) => ext.user_id,
         None => {
             // NuGet fallback: X-NuGet-ApiKey with user:password or just token format
-            let api_key = headers.get("X-NuGet-ApiKey")
+            let api_key = headers
+                .get("X-NuGet-ApiKey")
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| {
                     Response::builder()
@@ -661,7 +660,9 @@ async fn push_package(
                 ("apikey".to_string(), api_key.to_string())
             };
             let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
-            let (user, _) = auth_service.authenticate(&username, &password).await
+            let (user, _) = auth_service
+                .authenticate(&username, &password)
+                .await
                 .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid API key").into_response())?;
             user.id
         }

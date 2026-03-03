@@ -11,7 +11,6 @@
 //!   GET  /gems/{repo_key}/latest_specs.4.8.gz               - Latest spec index
 //!   GET  /gems/{repo_key}/api/v1/dependencies?gems={names}  - Dependency info
 
-use std::io::Write as IoWrite;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
@@ -25,6 +24,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use std::io::Write as IoWrite;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;

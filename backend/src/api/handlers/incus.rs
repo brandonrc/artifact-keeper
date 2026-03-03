@@ -19,9 +19,6 @@
 //!   DELETE /uploads/{uuid}                     - Cancel chunked upload
 //!   GET    /uploads/{uuid}                     - Check upload progress
 
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
@@ -33,6 +30,9 @@ use axum::Router;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -1112,7 +1112,6 @@ async fn finalize_temp_file(temp_path: &Path, final_path: &Path) -> Result<(), R
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials

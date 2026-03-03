@@ -1003,8 +1003,7 @@ mod tests {
             .unwrap();
 
         // Upload with Basic auth should succeed
-        let basic_creds =
-            base64::engine::general_purpose::STANDARD.encode("admin:admin123");
+        let basic_creds = base64::engine::general_purpose::STANDARD.encode("admin:admin123");
         let resp = client
             .put(format!(
                 "{}/maven/integ-private-maven/com/example/test/1.0/test-1.0.jar",

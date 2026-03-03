@@ -501,7 +501,10 @@ async fn publish_release_from_wildcard(
 ) -> Result<Response, Response> {
     let version = version_path.trim_start_matches('/').to_string();
     let user_id = require_auth_basic(auth, "swift")?.user_id;
-    publish_release(state, repo_key, scope, name, version, user_id, headers, body).await
+    publish_release(
+        state, repo_key, scope, name, version, user_id, headers, body,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
