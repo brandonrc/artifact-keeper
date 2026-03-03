@@ -17,6 +17,7 @@
 use std::env;
 use std::sync::Once;
 
+use base64::Engine;
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -79,6 +80,35 @@ impl TestServer {
                 "format": format,
                 "repo_type": "local",
                 "is_public": true
+            }))
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            Ok(resp.json().await?)
+        } else {
+            let status = resp.status();
+            let text = resp.text().await?;
+            Err(format!("Failed to create repository: {} - {}", status, text).into())
+        }
+    }
+
+    async fn create_private_repository(
+        &self,
+        key: &str,
+        name: &str,
+        format: &str,
+    ) -> std::result::Result<Value, Box<dyn std::error::Error>> {
+        let client = Client::new();
+        let resp = client
+            .post(format!("{}/api/v1/repositories", self.base_url))
+            .header("Authorization", self.auth_header())
+            .json(&json!({
+                "key": key,
+                "name": name,
+                "format": format,
+                "repo_type": "local",
+                "is_public": false
             }))
             .send()
             .await?;
@@ -906,5 +936,142 @@ mod tests {
         assert!(resp.status().is_success());
         let body: Value = resp.json().await.expect("Failed to parse repos response");
         assert!(body["items"].is_array());
+    }
+
+    // ============= Private Repository Visibility Tests =============
+
+    /// Test that private repos are excluded from the repo list for anonymous users.
+    #[tokio::test]
+    #[ignore = "requires running HTTP server"]
+    async fn test_private_repo_hidden_from_anonymous_list() {
+        let mut server = TestServer::new();
+        server.login().await.unwrap();
+        let client = Client::new();
+
+        // Create a private repo (authenticated)
+        server
+            .create_private_repository("integ-private-repo", "Private Test Repo", "generic")
+            .await
+            .unwrap();
+
+        // List repos without auth - should NOT include the private repo
+        let resp = client
+            .get(format!("{}/api/v1/repositories", server.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let body: Value = resp.json().await.unwrap();
+        let items = body["items"].as_array().unwrap();
+        let keys: Vec<&str> = items.iter().filter_map(|r| r["key"].as_str()).collect();
+        assert!(
+            !keys.contains(&"integ-private-repo"),
+            "Private repo should not appear in anonymous listing, got: {:?}",
+            keys
+        );
+
+        // List repos with auth - SHOULD include the private repo
+        let resp = client
+            .get(format!("{}/api/v1/repositories", server.base_url))
+            .header("Authorization", server.auth_header())
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let body: Value = resp.json().await.unwrap();
+        let items = body["items"].as_array().unwrap();
+        let keys: Vec<&str> = items.iter().filter_map(|r| r["key"].as_str()).collect();
+        assert!(
+            keys.contains(&"integ-private-repo"),
+            "Private repo should appear in authenticated listing, got: {:?}",
+            keys
+        );
+    }
+
+    /// Test that Maven upload to a private repo works with Basic auth.
+    #[tokio::test]
+    #[ignore = "requires running HTTP server"]
+    async fn test_private_repo_maven_upload_with_basic_auth() {
+        let mut server = TestServer::new();
+        server.login().await.unwrap();
+        let client = Client::new();
+
+        // Create a private Maven repo
+        server
+            .create_private_repository("integ-private-maven", "Private Maven", "maven")
+            .await
+            .unwrap();
+
+        // Upload with Basic auth should succeed
+        let basic_creds =
+            base64::engine::general_purpose::STANDARD.encode("admin:admin123");
+        let resp = client
+            .put(format!(
+                "{}/maven/integ-private-maven/com/example/test/1.0/test-1.0.jar",
+                server.base_url
+            ))
+            .header("Authorization", format!("Basic {}", basic_creds))
+            .header("Content-Type", "application/java-archive")
+            .body(b"fake-jar-content".to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "Basic auth upload to private repo should succeed, got {}",
+            resp.status()
+        );
+    }
+
+    /// Test that anonymous download from a private repo returns 404.
+    #[tokio::test]
+    #[ignore = "requires running HTTP server"]
+    async fn test_private_repo_anonymous_download_blocked() {
+        let server = TestServer::new();
+        let client = Client::new();
+
+        // Attempt anonymous download from the private Maven repo created in previous test
+        let resp = client
+            .get(format!(
+                "{}/maven/integ-private-maven/com/example/test/1.0/test-1.0.jar",
+                server.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            404,
+            "Anonymous access to private repo should return 404, got {}",
+            resp.status()
+        );
+    }
+
+    /// Test that packages list filters private repo packages for anonymous users.
+    #[tokio::test]
+    #[ignore = "requires running HTTP server"]
+    async fn test_private_repo_packages_hidden_from_anonymous() {
+        let server = TestServer::new();
+        let client = Client::new();
+
+        // List packages without auth
+        let resp = client
+            .get(format!("{}/api/v1/packages", server.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let body: Value = resp.json().await.unwrap();
+        let empty = vec![];
+        let items = body["items"].as_array().unwrap_or(&empty);
+        // Verify no packages from private repos appear
+        let private_repo_packages: Vec<&Value> = items
+            .iter()
+            .filter(|p| p["repository_key"].as_str() == Some("integ-private-maven"))
+            .collect();
+        assert!(
+            private_repo_packages.is_empty(),
+            "Private repo packages should not appear in anonymous listing"
+        );
     }
 }
