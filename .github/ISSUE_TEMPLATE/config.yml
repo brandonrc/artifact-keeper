@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/artifact-keeper/artifact-keeper/security/advisories/new
+    about: Please report security vulnerabilities privately through GitHub Security Advisories
+  - name: GitHub Discussions
+    url: https://github.com/artifact-keeper/artifact-keeper/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Documentation
+    url: https://artifactkeeper.com/docs
+    about: Browse the official documentation
