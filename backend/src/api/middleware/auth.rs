@@ -100,6 +100,23 @@ impl From<Claims> for AuthExtension {
     }
 }
 
+/// Require that the request is authenticated, returning a 401 with a
+/// `WWW-Authenticate: Basic` challenge if not.
+///
+/// Format handlers call this instead of implementing their own auth.
+pub fn require_auth_basic(
+    auth: Option<AuthExtension>,
+    realm: &str,
+) -> std::result::Result<AuthExtension, Response> {
+    auth.ok_or_else(|| {
+        Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header("WWW-Authenticate", format!("Basic realm=\"{}\"", realm))
+            .body(axum::body::Body::from("Authentication required"))
+            .unwrap()
+    })
+}
+
 /// Token extraction result
 #[derive(Debug)]
 enum ExtractedToken<'a> {
@@ -842,6 +859,33 @@ mod tests {
     fn test_decode_basic_credentials_empty() {
         let result = decode_basic_credentials("");
         assert_eq!(result, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // require_auth_basic
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_require_auth_basic_some() {
+        let ext = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "user".to_string(),
+            email: "user@test.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        };
+        let result = require_auth_basic(Some(ext), "maven");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().username, "user");
+    }
+
+    #[test]
+    fn test_require_auth_basic_none() {
+        let result = require_auth_basic(None, "maven");
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------
