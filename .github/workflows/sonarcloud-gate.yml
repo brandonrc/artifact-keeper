@@ -1,0 +1,204 @@
+name: SonarCloud Gate
+
+# Uses pull_request_target so the workflow definition always comes from main,
+# not from the fork. This is necessary because fork PRs cannot access secrets
+# with regular pull_request events, and GitHub runs the fork's workflow file
+# (which won't have this job) for pull_request events.
+#
+# SECURITY: This workflow does NOT check out the PR's code. It only queries
+# the SonarCloud API and posts a PR comment, so there is no code execution
+# risk from pull_request_target.
+
+on:
+  pull_request_target:
+    branches: [main, master, develop, 'release/**']
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: sonarcloud-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sonarcloud-gate:
+    name: SonarCloud Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI workflow to complete
+        uses: actions/github-script@v7
+        id: wait-ci
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const headSha = context.payload.pull_request.head.sha;
+            const maxWait = 30 * 60 * 1000; // 30 minutes
+            const pollInterval = 30 * 1000;  // 30 seconds
+            const start = Date.now();
+
+            core.info(`Waiting for CI workflow on commit ${headSha}...`);
+
+            while (Date.now() - start < maxWait) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo,
+                head_sha: headSha,
+                event: 'pull_request',
+              });
+
+              const ciRun = runs.workflow_runs.find(r => r.name === 'CI' && r.status === 'completed');
+              if (ciRun) {
+                core.info(`CI workflow completed with conclusion: ${ciRun.conclusion}`);
+                core.setOutput('ci_conclusion', ciRun.conclusion);
+                return;
+              }
+
+              core.info(`CI not finished yet. Waiting ${pollInterval / 1000}s...`);
+              await new Promise(r => setTimeout(r, pollInterval));
+            }
+
+            core.setFailed('Timed out waiting for CI workflow to complete');
+
+      - name: Check quality gate
+        id: gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          CI_RESULT="${{ steps.wait-ci.outputs.ci_conclusion }}"
+          if [[ "$CI_RESULT" != "success" ]]; then
+            echo "CI workflow did not succeed: ${CI_RESULT}"
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          if [[ -z "$SONAR_TOKEN" ]]; then
+            echo "SONAR_TOKEN not available. Skipping quality gate check."
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Wait for SonarCloud to process the analysis
+          sleep 15
+
+          # Fetch quality gate status for the PR branch
+          GATE_JSON=$(curl -s -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=artifact-keeper_artifact-keeper&pullRequest=${{ github.event.pull_request.number }}")
+
+          GATE_STATUS=$(echo "$GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])" 2>/dev/null || echo "UNKNOWN")
+          echo "Quality gate status: $GATE_STATUS"
+
+          # Fetch new code metrics
+          METRICS_JSON=$(curl -s -u "${SONAR_TOKEN}:" \
+            "https://sonarcloud.io/api/measures/component?component=artifact-keeper_artifact-keeper&metricKeys=new_coverage,new_duplicated_lines_density,new_lines&pullRequest=${{ github.event.pull_request.number }}")
+
+          for metric in new_coverage new_duplicated_lines_density new_lines; do
+            val=$(echo "$METRICS_JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for m in data.get('component',{}).get('measures',[]):
+              if m['metric'] == '${metric}':
+                  print(m.get('period',{}).get('value', m.get('value','N/A')))
+                  break
+          else:
+              print('N/A')
+          " 2>/dev/null || echo "N/A")
+
+            case "$metric" in
+              new_coverage)          echo "coverage=${val}" >> "$GITHUB_OUTPUT" ;;
+              new_duplicated_lines_density) echo "duplication=${val}" >> "$GITHUB_OUTPUT" ;;
+              new_lines)             echo "lines=${val}" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done
+
+          echo "status=${GATE_STATUS}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$GATE_STATUS" == "ERROR" ]]; then
+            exit 1
+          fi
+
+      - name: Post PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ steps.gate.outputs.status }}';
+            const coverage = '${{ steps.gate.outputs.coverage }}';
+            const duplication = '${{ steps.gate.outputs.duplication }}';
+            const lines = '${{ steps.gate.outputs.lines }}';
+            const prNumber = context.payload.pull_request.number;
+            const prBranch = context.payload.pull_request.head.ref;
+
+            const marker = '<!-- sonarcloud-gate -->';
+            let body = '';
+
+            if (status === 'skipped') {
+              body = [
+                marker,
+                '### SonarCloud Quality Gate',
+                '',
+                'SonarCloud scan was **skipped** for this PR (token not available for fork PRs).',
+                'Coverage and duplication metrics will be checked after merge.',
+              ].join('\n');
+            } else if (status === 'OK') {
+              body = [
+                marker,
+                '### SonarCloud Quality Gate: Passed',
+                '',
+                '| Metric | Value | Threshold |',
+                '|--------|-------|-----------|',
+                `| Coverage on New Code | ${coverage}% | >= 70% |`,
+                `| Duplication on New Code | ${duplication}% | <= 3% |`,
+                `| New Lines | ${lines} | |`,
+                '',
+                `[View on SonarCloud](https://sonarcloud.io/summary/new_code?id=artifact-keeper_artifact-keeper&pullRequest=${prNumber})`,
+              ].join('\n');
+            } else if (status === 'ERROR') {
+              body = [
+                marker,
+                '### SonarCloud Quality Gate: Failed',
+                '',
+                '| Metric | Value | Threshold |',
+                '|--------|-------|-----------|',
+                `| Coverage on New Code | ${coverage}% | >= 70% |`,
+                `| Duplication on New Code | ${duplication}% | <= 3% |`,
+                `| New Lines | ${lines} | |`,
+                '',
+                `[View details on SonarCloud](https://sonarcloud.io/summary/new_code?id=artifact-keeper_artifact-keeper&pullRequest=${prNumber})`,
+              ].join('\n');
+            } else {
+              body = [
+                marker,
+                '### SonarCloud Quality Gate',
+                '',
+                `Quality gate status: ${status || 'unknown'}`,
+                `CI result: ${{ steps.wait-ci.outputs.ci_conclusion }}`,
+              ].join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
