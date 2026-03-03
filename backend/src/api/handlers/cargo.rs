@@ -47,12 +47,22 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/api/v1/crates/:name/:version/download",
             get(download),
         )
-        // Sparse index — various path layouts
+        // Sparse index — index/ prefixed paths (legacy / internal)
         .route("/:repo_key/index/1/:name", get(sparse_index_1))
         .route("/:repo_key/index/2/:name", get(sparse_index_2))
         .route("/:repo_key/index/3/:prefix/:name", get(sparse_index_3))
         .route(
             "/:repo_key/index/:prefix1/:prefix2/:name",
+            get(sparse_index_4plus),
+        )
+        // Sparse index — root-level paths (Cargo sparse registry protocol)
+        // Cargo clients expect index files at the registry root, not under index/.
+        // Axum prioritises static segments first so api/v1/crates etc. still win.
+        .route("/:repo_key/1/:name", get(sparse_index_1))
+        .route("/:repo_key/2/:name", get(sparse_index_2))
+        .route("/:repo_key/3/:prefix/:name", get(sparse_index_3))
+        .route(
+            "/:repo_key/:prefix1/:prefix2/:name",
             get(sparse_index_4plus),
         )
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
@@ -1190,6 +1200,25 @@ mod tests {
     #[test]
     fn test_cargo_sparse_index_path_upstream_serde() {
         assert_eq!(cargo_sparse_index_path_upstream("serde"), "se/rd/serde");
+    }
+
+    // -----------------------------------------------------------------------
+    // Root-level sparse index route path construction
+    // -----------------------------------------------------------------------
+
+    /// Verify that the root-level route path for a 4+ char crate matches what
+    /// a standard Cargo client would request: `/{repo}/se/rd/serde` (no index/ prefix).
+    #[test]
+    fn test_sparse_index_root_route_4plus() {
+        // A Cargo client with sparse+https://host/cargo/{repo}/ will GET
+        // /cargo/{repo}/se/rd/serde.  cargo_sparse_index_path_upstream("serde")
+        // produces "se/rd/serde", which matches the /:prefix1/:prefix2/:name route.
+        let path = cargo_sparse_index_path_upstream("serde");
+        let parts: Vec<&str> = path.splitn(3, '/').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "se");
+        assert_eq!(parts[1], "rd");
+        assert_eq!(parts[2], "serde");
     }
 
     // -----------------------------------------------------------------------
