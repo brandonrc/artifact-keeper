@@ -23,6 +23,7 @@ use base64::Engine;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::models::user::User;
 use crate::services::auth_service::{AuthService, Claims};
 
 /// Custom header name for API key
@@ -100,10 +101,26 @@ impl From<Claims> for AuthExtension {
     }
 }
 
+impl From<User> for AuthExtension {
+    fn from(user: User) -> Self {
+        Self {
+            user_id: user.id,
+            username: user.username,
+            email: user.email,
+            is_admin: user.is_admin,
+            is_api_token: false,
+            is_service_account: user.is_service_account,
+            scopes: None,
+            allowed_repo_ids: None,
+        }
+    }
+}
+
 /// Require that the request is authenticated, returning a 401 with a
 /// `WWW-Authenticate: Basic` challenge if not.
 ///
 /// Format handlers call this instead of implementing their own auth.
+#[allow(clippy::result_large_err)]
 pub fn require_auth_basic(
     auth: Option<AuthExtension>,
     realm: &str,
@@ -254,17 +271,7 @@ pub async fn auth_middleware(
             };
             match auth_service.authenticate(&username, &password).await {
                 Ok((user, _token_pair)) => {
-                    let auth_ext = AuthExtension {
-                        user_id: user.id,
-                        username: user.username,
-                        email: user.email,
-                        is_admin: user.is_admin,
-                        is_api_token: false,
-                        is_service_account: user.is_service_account,
-                        scopes: None,
-                        allowed_repo_ids: None,
-                    };
-                    request.extensions_mut().insert(auth_ext);
+                    request.extensions_mut().insert(AuthExtension::from(user));
                     next.run(request).await
                 }
                 Err(_) => (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response(),
@@ -329,16 +336,7 @@ async fn try_resolve_auth(
         ExtractedToken::Basic(encoded) => {
             let (username, password) = decode_basic_credentials(encoded)?;
             let (user, _token_pair) = auth_service.authenticate(&username, &password).await.ok()?;
-            Some(AuthExtension {
-                user_id: user.id,
-                username: user.username,
-                email: user.email,
-                is_admin: user.is_admin,
-                is_api_token: false,
-                is_service_account: user.is_service_account,
-                scopes: None,
-                allowed_repo_ids: None,
-            })
+            Some(AuthExtension::from(user))
         }
         ExtractedToken::None | ExtractedToken::Invalid => None,
     }
@@ -396,16 +394,7 @@ pub async fn admin_middleware(
                     .into_response();
             };
             match auth_service.authenticate(&username, &password).await {
-                Ok((user, _token_pair)) => AuthExtension {
-                    user_id: user.id,
-                    username: user.username,
-                    email: user.email,
-                    is_admin: user.is_admin,
-                    is_api_token: false,
-                    is_service_account: user.is_service_account,
-                    scopes: None,
-                    allowed_repo_ids: None,
-                },
+                Ok((user, _token_pair)) => AuthExtension::from(user),
                 Err(_) => {
                     return (StatusCode::UNAUTHORIZED, "Invalid credentials").into_response();
                 }

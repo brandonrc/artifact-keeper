@@ -1216,8 +1216,4 @@ mod tests {
         let result = pgp_clearsign(content, sig);
         assert!(result.contains("Line 1\nLine 2\nLine 3\n"));
     }
-
-    // -----------------------------------------------------------------------
-    // extract_basic_credentials
-    // -----------------------------------------------------------------------
 }

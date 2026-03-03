@@ -1370,8 +1370,4 @@ mod tests {
     fn test_parse_apk_filename_no_apk_extension() {
         assert_eq!(parse_apk_filename("curl-8.5.0-r0.tar.gz"), None);
     }
-
-    // -----------------------------------------------------------------------
-    // extract_basic_credentials
-    // -----------------------------------------------------------------------
 }
