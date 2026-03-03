@@ -15,6 +15,16 @@ use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
 use crate::error::{AppError, Result};
 
+/// Check if the packages table exists in the database.
+async fn packages_table_exists(db: &sqlx::PgPool) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or(false)
+}
+
 /// Create package routes
 pub fn router() -> Router<SharedState> {
     Router::new()
@@ -113,13 +123,7 @@ pub async fn list_packages(
 
     let search_pattern = query.search.as_ref().map(|s| format!("%{}%", s));
 
-    // Check if packages table exists first
-    let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let table_exists = packages_table_exists(&state.db).await;
 
     if !table_exists {
         return Ok(Json(PackageListResponse {
@@ -214,13 +218,7 @@ pub async fn get_package(
 ) -> Result<Json<PackageResponse>> {
     let public_only = auth.is_none();
 
-    // Check if packages table exists first
-    let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let table_exists = packages_table_exists(&state.db).await;
 
     if !table_exists {
         return Err(AppError::NotFound("Package not found".to_string()));
@@ -305,13 +303,7 @@ pub async fn get_package_versions(
 ) -> Result<Json<PackageVersionsResponse>> {
     let public_only = auth.is_none();
 
-    // Check if packages table exists first
-    let table_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'packages')",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
+    let table_exists = packages_table_exists(&state.db).await;
 
     if !table_exists {
         return Err(AppError::NotFound("Package not found".to_string()));

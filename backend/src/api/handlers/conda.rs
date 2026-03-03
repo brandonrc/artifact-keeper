@@ -1418,6 +1418,105 @@ async fn patch_instructions_json(
 }
 
 // ---------------------------------------------------------------------------
+// Repodata encoding helpers
+// ---------------------------------------------------------------------------
+
+enum RepodataEncoding {
+    Json,
+    Bz2,
+    Zst,
+}
+
+impl RepodataEncoding {
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Json => "application/json",
+            Self::Bz2 => "application/x-bzip2",
+            Self::Zst => "application/zstd",
+        }
+    }
+
+    fn upstream_filename(&self) -> &'static str {
+        match self {
+            Self::Json => "repodata.json",
+            Self::Bz2 => "repodata.json.bz2",
+            Self::Zst => "repodata.json.zst",
+        }
+    }
+
+    fn encode(&self, repodata: &serde_json::Value) -> Result<Vec<u8>, Response> {
+        match self {
+            Self::Json => Ok(serde_json::to_string_pretty(repodata)
+                .unwrap()
+                .into_bytes()),
+            Self::Bz2 => {
+                let json_bytes = serde_json::to_vec(repodata).unwrap();
+                Ok(bzip2_compress(&json_bytes))
+            }
+            Self::Zst => {
+                let json_bytes = serde_json::to_vec(repodata).unwrap();
+                zstd_compress(&json_bytes).map_err(|e| {
+                    tracing::error!("zstd compression error for repodata: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
+                })
+            }
+        }
+    }
+}
+
+async fn serve_repodata(
+    state: &SharedState,
+    auth: Option<AuthExtension>,
+    headers: &HeaderMap,
+    repo_key: &str,
+    subdir: &str,
+    encoding: RepodataEncoding,
+) -> Result<Response, Response> {
+    let repo = resolve_conda_repo(&state.db, repo_key).await?;
+    check_read_access(&state.db, auth, &repo).await?;
+
+    let ct = encoding.content_type();
+
+    // Virtual repos: merge repodata from all members
+    if repo.repo_type == "virtual" {
+        let repodata = build_virtual_repodata(
+            &state.db,
+            state.proxy_service.as_deref(),
+            repo.id,
+            repo_key,
+            subdir,
+        )
+        .await?;
+        let body = encoding.encode(&repodata)?;
+        return Ok(cacheable_response(body, ct, headers));
+    }
+
+    // For remote repos, proxy repodata from upstream
+    if repo.repo_type == "remote" {
+        if let Some(ref upstream_url) = repo.upstream_url {
+            if let Some(ref proxy) = state.proxy_service {
+                let upstream_path = format!("{}/{}", subdir, encoding.upstream_filename());
+                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
+                    proxy,
+                    repo.id,
+                    repo_key,
+                    upstream_url,
+                    &upstream_path,
+                )
+                .await
+                {
+                    return Ok(cacheable_response(content.to_vec(), ct, headers));
+                }
+            }
+        }
+    }
+
+    let repodata = build_repodata(&state.db, repo.id, repo_key, subdir, false).await?;
+    let body = encoding.encode(&repodata)?;
+    Ok(cacheable_response(body, ct, headers))
+}
+
+// ---------------------------------------------------------------------------
 // GET /conda/{repo_key}/{subdir}/repodata.json
 // ---------------------------------------------------------------------------
 
@@ -1427,62 +1526,7 @@ async fn repodata_json(
     headers: HeaderMap,
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
-
-    check_read_access(&state.db, auth.clone(), &repo).await?;
-
-    // Virtual repos: merge repodata from all members
-    if repo.repo_type == "virtual" {
-        let repodata = build_virtual_repodata(
-            &state.db,
-            state.proxy_service.as_deref(),
-            repo.id,
-            &repo_key,
-            &subdir,
-        )
-        .await?;
-        let body = serde_json::to_string_pretty(&repodata)
-            .unwrap()
-            .into_bytes();
-        return Ok(cacheable_response(body, "application/json", &headers));
-    }
-
-    // For remote repos, proxy repodata from upstream
-    if repo.repo_type == "remote" {
-        if let Some(ref upstream_url) = repo.upstream_url {
-            if let Some(ref proxy) = state.proxy_service {
-                let upstream_path = format!("{}/repodata.json", subdir);
-                match proxy_helpers::proxy_fetch(
-                    proxy,
-                    repo.id,
-                    &repo_key,
-                    upstream_url,
-                    &upstream_path,
-                )
-                .await
-                {
-                    Ok((content, _ct)) => {
-                        return Ok(cacheable_response(
-                            content.to_vec(),
-                            "application/json",
-                            &headers,
-                        ));
-                    }
-                    Err(_) => {
-                        // Upstream unavailable, fall through to local DB
-                    }
-                }
-            }
-        }
-    }
-
-    let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
-
-    let body = serde_json::to_string_pretty(&repodata)
-        .unwrap()
-        .into_bytes();
-
-    Ok(cacheable_response(body, "application/json", &headers))
+    serve_repodata(&state, auth, &headers, &repo_key, &subdir, RepodataEncoding::Json).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,63 +1539,7 @@ async fn repodata_json_bz2(
     headers: HeaderMap,
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
-
-    check_read_access(&state.db, auth.clone(), &repo).await?;
-
-    // Virtual repos: merge repodata from all members
-    if repo.repo_type == "virtual" {
-        let repodata = build_virtual_repodata(
-            &state.db,
-            state.proxy_service.as_deref(),
-            repo.id,
-            &repo_key,
-            &subdir,
-        )
-        .await?;
-        let json_bytes = serde_json::to_vec(&repodata).unwrap();
-        let compressed = bzip2_compress(&json_bytes);
-        return Ok(cacheable_response(
-            compressed,
-            "application/x-bzip2",
-            &headers,
-        ));
-    }
-
-    // For remote repos, proxy compressed repodata from upstream
-    if repo.repo_type == "remote" {
-        if let Some(ref upstream_url) = repo.upstream_url {
-            if let Some(ref proxy) = state.proxy_service {
-                let upstream_path = format!("{}/repodata.json.bz2", subdir);
-                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
-                    proxy,
-                    repo.id,
-                    &repo_key,
-                    upstream_url,
-                    &upstream_path,
-                )
-                .await
-                {
-                    return Ok(cacheable_response(
-                        content.to_vec(),
-                        "application/x-bzip2",
-                        &headers,
-                    ));
-                }
-            }
-        }
-    }
-
-    let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
-
-    let json_bytes = serde_json::to_vec(&repodata).unwrap();
-    let compressed = bzip2_compress(&json_bytes);
-
-    Ok(cacheable_response(
-        compressed,
-        "application/x-bzip2",
-        &headers,
-    ))
+    serve_repodata(&state, auth, &headers, &repo_key, &subdir, RepodataEncoding::Bz2).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,60 +1603,7 @@ async fn repodata_json_zst(
     headers: HeaderMap,
     Path((repo_key, subdir)): Path<(String, String)>,
 ) -> Result<Response, Response> {
-    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
-
-    check_read_access(&state.db, auth.clone(), &repo).await?;
-
-    // Virtual repos: merge repodata from all members
-    if repo.repo_type == "virtual" {
-        let repodata = build_virtual_repodata(
-            &state.db,
-            state.proxy_service.as_deref(),
-            repo.id,
-            &repo_key,
-            &subdir,
-        )
-        .await?;
-        let json_bytes = serde_json::to_vec(&repodata).unwrap();
-        let compressed = zstd_compress(&json_bytes).map_err(|e| {
-            tracing::error!("zstd compression error for virtual repodata: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
-        })?;
-        return Ok(cacheable_response(compressed, "application/zstd", &headers));
-    }
-
-    // For remote repos, proxy compressed repodata from upstream
-    if repo.repo_type == "remote" {
-        if let Some(ref upstream_url) = repo.upstream_url {
-            if let Some(ref proxy) = state.proxy_service {
-                let upstream_path = format!("{}/repodata.json.zst", subdir);
-                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
-                    proxy,
-                    repo.id,
-                    &repo_key,
-                    upstream_url,
-                    &upstream_path,
-                )
-                .await
-                {
-                    return Ok(cacheable_response(
-                        content.to_vec(),
-                        "application/zstd",
-                        &headers,
-                    ));
-                }
-            }
-        }
-    }
-
-    let repodata = build_repodata(&state.db, repo.id, &repo_key, &subdir, false).await?;
-    let json_bytes = serde_json::to_vec(&repodata).unwrap();
-    let compressed = zstd_compress(&json_bytes).map_err(|e| {
-        tracing::error!("zstd compression error for repodata: {}", e);
-        (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
-    })?;
-
-    Ok(cacheable_response(compressed, "application/zstd", &headers))
+    serve_repodata(&state, auth, &headers, &repo_key, &subdir, RepodataEncoding::Zst).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1839,17 +1774,11 @@ async fn current_repodata_json(
 ///
 /// Clients fetch this to discover which shards they need, then fetch
 /// individual shards only for packages they care about.
-async fn sharded_repodata_index(
-    State(state): State<SharedState>,
-    Path((repo_key, subdir)): Path<(String, String)>,
-) -> Result<Response, Response> {
-    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
-    let all_artifacts = list_conda_artifacts(&state.db, repo.id).await?;
-    let subdir_artifacts = artifacts_for_subdir(&all_artifacts, &subdir);
-
-    // Group artifacts by package name
+fn group_artifacts_by_name<'a>(
+    artifacts: &[&'a CondaArtifact],
+) -> BTreeMap<String, Vec<&'a CondaArtifact>> {
     let mut by_name: BTreeMap<String, Vec<&CondaArtifact>> = BTreeMap::new();
-    for artifact in &subdir_artifacts {
+    for artifact in artifacts {
         let filename = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
         if !is_conda_package(filename) {
             continue;
@@ -1861,6 +1790,17 @@ async fn sharded_repodata_index(
             .unwrap_or(&artifact.name);
         by_name.entry(name.to_string()).or_default().push(artifact);
     }
+    by_name
+}
+
+async fn sharded_repodata_index(
+    State(state): State<SharedState>,
+    Path((repo_key, subdir)): Path<(String, String)>,
+) -> Result<Response, Response> {
+    let repo = resolve_conda_repo(&state.db, &repo_key).await?;
+    let all_artifacts = list_conda_artifacts(&state.db, repo.id).await?;
+    let subdir_artifacts = artifacts_for_subdir(&all_artifacts, &subdir);
+    let by_name = group_artifacts_by_name(&subdir_artifacts);
 
     // Build shard for each package name and compute content hash
     let mut shards_map: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -1911,21 +1851,7 @@ async fn sharded_repodata_shard(
     let repo = resolve_conda_repo(&state.db, &repo_key).await?;
     let all_artifacts = list_conda_artifacts(&state.db, repo.id).await?;
     let subdir_artifacts = artifacts_for_subdir(&all_artifacts, &subdir);
-
-    // Group by package name and find the matching shard by hash
-    let mut by_name: BTreeMap<String, Vec<&CondaArtifact>> = BTreeMap::new();
-    for artifact in &subdir_artifacts {
-        let filename = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
-        if !is_conda_package(filename) {
-            continue;
-        }
-        let name = artifact
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("name").and_then(|v| v.as_str()))
-            .unwrap_or(&artifact.name);
-        by_name.entry(name.to_string()).or_default().push(artifact);
-    }
+    let by_name = group_artifacts_by_name(&subdir_artifacts);
 
     // Find the shard matching the requested hash
     for artifacts in by_name.values() {

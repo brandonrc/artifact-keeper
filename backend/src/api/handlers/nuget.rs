@@ -644,7 +644,6 @@ async fn push_package(
     let user_id = match auth {
         Some(ext) => ext.user_id,
         None => {
-            // NuGet fallback: X-NuGet-ApiKey with user:password or just token format
             let api_key = headers
                 .get("X-NuGet-ApiKey")
                 .and_then(|v| v.to_str().ok())
@@ -659,7 +658,8 @@ async fn push_package(
             } else {
                 ("apikey".to_string(), api_key.to_string())
             };
-            let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
+            let auth_service =
+                AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
             let (user, _) = auth_service
                 .authenticate(&username, &password)
                 .await
