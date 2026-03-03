@@ -1,0 +1,176 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Artifact Keeper
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this issue! Please provide as much detail as possible to help us diagnose and fix the problem.
+
+        **Filing in the right place:** This repo covers the backend API and server. For web UI bugs, please file in [artifact-keeper-web](https://github.com/artifact-keeper/artifact-keeper-web/issues/new). If you're unsure, file here and we'll move it if needed.
+
+        **Note:** For security vulnerabilities, please do NOT open a public issue. Instead, use GitHub's private vulnerability reporting or email the maintainers directly.
+  
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug
+      placeholder: What went wrong?
+    validations:
+      required: true
+  
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment Information
+      description: Provide details about your deployment environment
+      placeholder: |
+        - Deployment type: (Docker, Kubernetes, bare metal, etc.)
+        - Operating System: (Linux, macOS, Windows, etc.)
+        - Architecture: (amd64, arm64, etc.)
+        - Database: (PostgreSQL version)
+        - Reverse Proxy: (if any - Nginx, Caddy, etc.)
+        - Network setup: (behind NAT, public IP, etc.)
+      value: |
+        - Deployment type: 
+        - Operating System: 
+        - Architecture: 
+        - Database: 
+        - Reverse Proxy: 
+        - Network setup: 
+    validations:
+      required: true
+  
+  - type: input
+    id: version-backend
+    attributes:
+      label: Backend Version
+      description: Which version of Artifact Keeper backend are you running?
+      placeholder: e.g., 1.1.0, 1.0.5, latest, dev
+    validations:
+      required: true
+  
+  - type: input
+    id: version-web
+    attributes:
+      label: Web UI Version
+      description: Which version of the web frontend are you running? (if applicable)
+      placeholder: e.g., 1.1.0, 1.0.5, latest, N/A
+    validations:
+      required: false
+
+  - type: dropdown
+    id: package-format
+    attributes:
+      label: Package Format
+      description: Which package format is this related to? (if applicable)
+      options:
+        - N/A / General
+        - Maven / Gradle
+        - npm
+        - PyPI
+        - Docker / OCI
+        - Cargo (Rust)
+        - NuGet (.NET)
+        - Helm
+        - Go Modules
+        - RubyGems
+        - Composer (PHP)
+        - CocoaPods
+        - Swift Package Manager
+        - Debian / APT
+        - RPM
+        - Conda
+        - Hex (Erlang/Elixir)
+        - Pub (Dart/Flutter)
+        - Terraform
+        - Conan (C/C++)
+        - CRAN (R)
+        - SBT (Scala)
+        - Git LFS
+        - Hugging Face
+        - VS Code Extensions
+        - JetBrains Plugins
+        - Puppet
+        - Protobuf
+        - Other / WASM Plugin
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: Describe what you expected to see...
+    validations:
+      required: true
+  
+  - type: textarea
+    id: observed-behavior
+    attributes:
+      label: Observed Behavior
+      description: What actually happened?
+      placeholder: Describe what you actually saw...
+    validations:
+      required: true
+  
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Execute command '...'
+        4. See error
+    validations:
+      required: true
+  
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Please provide relevant logs from the backend or other components.
+        
+        **Tip:** For detailed Rust logs with stack traces, set these environment variables before starting:
+        ```
+        RUST_LOG=debug
+        RUST_BACKTRACE=1
+        ```
+        
+        For Docker deployments, you can add these to your docker-compose.yml under the backend service environment section.
+      placeholder: Paste logs here...
+      render: shell
+    validations:
+      required: false
+  
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here
+      placeholder: |
+        - Screenshots
+        - Configuration files (redact sensitive data!)
+        - Related issues or PRs
+        - Workarounds you've tried
+        - Any other relevant information
+    validations:
+      required: false
+  
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify these items before submitting
+      options:
+        - label: I have searched existing issues to ensure this isn't a duplicate
+          required: true
+        - label: I have redacted any sensitive information (passwords, tokens, private URLs)
+          required: true
+        - label: I am using a supported version (not end-of-life)
+          required: true
