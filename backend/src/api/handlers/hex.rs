@@ -1163,64 +1163,38 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Proxy fallback: upstream path construction
+    // Proxy fallback: upstream path constants
     // -----------------------------------------------------------------------
+    //
+    // The handler constructs these paths inline via format!(). These tests
+    // document the expected values per the Hex repository specification.
+    // package_info -> "packages/{name}" (not "api/packages/{name}")
+    // list_names   -> "names"
+    // list_versions -> "versions"
 
-    /// package_info builds the correct upstream path for hex repo API.
     #[test]
-    fn test_package_info_upstream_path_format() {
-        // Hex repository spec: package metadata lives at /packages/{name}
-        // (not /api/packages/{name}, which is the hex.pm HTTP API).
-        let names = ["phoenix", "ecto", "jason", "plug_cowboy"];
-        for name in &names {
-            let path = format!("packages/{}", name);
-            assert!(
-                path.starts_with("packages/"),
-                "path must start with packages/, got: {}",
-                path
-            );
-            assert!(
-                !path.starts_with("api/"),
-                "path must not include api/ prefix, got: {}",
-                path
-            );
-            assert_eq!(
-                path,
-                format!("packages/{}", name),
-                "path must preserve exact package name"
-            );
-        }
-    }
-
-    /// list_names uses the bare "names" endpoint, not a subpath.
-    #[test]
-    fn test_list_names_upstream_path_is_bare() {
-        let path = "names";
-        assert_eq!(path, "names");
-        assert!(
-            !path.contains('/'),
-            "names endpoint must not contain slashes"
+    fn test_proxy_upstream_paths() {
+        assert_eq!(format!("packages/{}", "phoenix"), "packages/phoenix");
+        assert_eq!(
+            format!("packages/{}", "plug_cowboy"),
+            "packages/plug_cowboy"
         );
-    }
-
-    /// list_versions uses the bare "versions" endpoint, not a subpath.
-    #[test]
-    fn test_list_versions_upstream_path_is_bare() {
-        let path = "versions";
-        assert_eq!(path, "versions");
-        assert!(
-            !path.contains('/'),
-            "versions endpoint must not contain slashes"
-        );
+        // list_names and list_versions use bare endpoint names
+        let names_path = "names";
+        let versions_path = "versions";
+        assert!(!names_path.contains('/'));
+        assert!(!versions_path.contains('/'));
     }
 
     // -----------------------------------------------------------------------
     // Proxy fallback: branch eligibility by repo type
     // -----------------------------------------------------------------------
+    //
+    // The handler uses two conditions for the proxy fallback:
+    //   1. repo.repo_type == "remote" && repo.upstream_url.is_some()
+    //   2. repo.repo_type == "virtual" (iterates members)
+    // These tests document which RepoInfo configurations satisfy each branch.
 
-    /// Local repos never satisfy the proxy condition because they lack an
-    /// upstream_url. The handler code checks `repo.repo_type == "remote"`
-    /// and `repo.upstream_url.is_some()`, so local repos skip both.
     #[test]
     fn test_local_repo_ineligible_for_proxy() {
         let repo = RepoInfo {
@@ -1234,7 +1208,6 @@ mod tests {
         assert!(repo.upstream_url.is_none());
     }
 
-    /// Remote repos with an upstream_url are eligible for the proxy fallback.
     #[test]
     fn test_remote_repo_eligible_for_proxy() {
         let repo = RepoInfo {
@@ -1247,10 +1220,10 @@ mod tests {
         assert!(repo.upstream_url.is_some());
     }
 
-    /// Remote repos without an upstream_url configured should not attempt
-    /// the proxy fetch (the if-let destructure will not match).
     #[test]
     fn test_remote_repo_without_upstream_skips_proxy() {
+        // Even though repo_type is "remote", missing upstream_url means
+        // the (upstream_url, proxy_service) destructure won't match.
         let repo = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/cache".to_string(),
@@ -1258,14 +1231,12 @@ mod tests {
             upstream_url: None,
         };
         assert_eq!(repo.repo_type, "remote");
-        // Even though repo_type is remote, missing upstream_url means
-        // the (upstream_url, proxy_service) destructure won't match.
         assert!(repo.upstream_url.is_none());
     }
 
-    /// Virtual repos are eligible for the member iteration path.
     #[test]
     fn test_virtual_repo_eligible_for_member_iteration() {
+        // Virtual repos resolve through their members, not their own upstream_url.
         let repo = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/virtual".to_string(),
@@ -1273,16 +1244,5 @@ mod tests {
             upstream_url: None,
         };
         assert_eq!(repo.repo_type, "virtual");
-        // Virtual repos don't have their own upstream_url; they resolve
-        // through their members, which may individually be remote.
-    }
-
-    /// The virtual member iteration path filters for RepositoryType::Remote.
-    #[test]
-    fn test_virtual_member_type_filter() {
-        use crate::models::repository::RepositoryType;
-        // Only Remote members trigger the proxy_fetch call.
-        assert_eq!(RepositoryType::Remote, RepositoryType::Remote);
-        assert_ne!(RepositoryType::Local, RepositoryType::Remote);
     }
 }

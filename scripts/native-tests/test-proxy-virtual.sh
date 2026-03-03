@@ -253,11 +253,19 @@ echo "  [2.5] Hex proxy: fetch package metadata for 'phoenix'..."
 HEX_META_CODE=$(curl -s -o "$TMPDIR_TEST/hex-meta.json" -w "%{http_code}" \
     "$REGISTRY_URL/hex/hex-proxy/packages/phoenix")
 if [ "$HEX_META_CODE" = "200" ]; then
-    HEX_META_SIZE=$(wc -c < "$TMPDIR_TEST/hex-meta.json" | tr -d ' ')
-    if [ "$HEX_META_SIZE" -gt 50 ]; then
-        pass "Hex package metadata fetched: phoenix (${HEX_META_SIZE} bytes)"
+    # The response may be JSON (from our API) or protobuf (passthrough from hex.pm).
+    # Try JSON validation first; fall back to size check for binary payloads.
+    HEX_PKG_NAME=$(jq -r '.name // empty' "$TMPDIR_TEST/hex-meta.json" 2>/dev/null || echo "")
+    if [ "$HEX_PKG_NAME" = "phoenix" ]; then
+        HEX_RELEASES=$(jq '.releases | length // 0' "$TMPDIR_TEST/hex-meta.json" 2>/dev/null || echo "0")
+        pass "Hex package metadata fetched: phoenix ($HEX_RELEASES releases)"
     else
-        fail "Hex package metadata too small: ${HEX_META_SIZE} bytes"
+        HEX_META_SIZE=$(wc -c < "$TMPDIR_TEST/hex-meta.json" | tr -d ' ')
+        if [ "$HEX_META_SIZE" -gt 50 ]; then
+            pass "Hex package metadata fetched: phoenix (${HEX_META_SIZE} bytes, binary payload)"
+        else
+            fail "Hex package metadata too small: ${HEX_META_SIZE} bytes"
+        fi
     fi
 else
     fail "Hex package metadata proxy returned HTTP $HEX_META_CODE"

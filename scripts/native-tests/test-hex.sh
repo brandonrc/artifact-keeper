@@ -28,6 +28,7 @@ echo "Package:  $PKG_NAME@$TEST_VERSION"
 # Check prerequisites
 command -v curl >/dev/null || { echo "SKIP: curl not found"; exit 0; }
 command -v tar  >/dev/null || { echo "SKIP: tar not found"; exit 0; }
+command -v jq   >/dev/null || { echo "SKIP: jq not found"; exit 0; }
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -89,11 +90,7 @@ echo "==> [2/6] Verifying package info endpoint..."
 INFO_CODE=$(curl -s -o "$WORK_DIR/info.json" -w "%{http_code}" \
   "$HEX_URL/packages/$PKG_NAME")
 if [ "$INFO_CODE" = "200" ]; then
-    PKG=$(cat "$WORK_DIR/info.json" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data.get('name', ''))
-" 2>/dev/null || echo "")
+    PKG=$(jq -r '.name // ""' "$WORK_DIR/info.json" 2>/dev/null || echo "")
     if [ "$PKG" = "$PKG_NAME" ]; then
         echo "  Package info returned correctly"
     else
@@ -128,8 +125,13 @@ EXTRACTED_DIR="$WORK_DIR/extracted"
 mkdir -p "$EXTRACTED_DIR"
 (cd "$EXTRACTED_DIR" && tar xf "$WORK_DIR/downloaded.tar")
 if [ -f "$EXTRACTED_DIR/metadata.config" ] && [ -f "$EXTRACTED_DIR/VERSION" ]; then
-    EXTRACTED_NAME=$(grep 'name' "$EXTRACTED_DIR/metadata.config" | head -1 | sed 's/.*<<"\([^"]*\)">>.*/\1/' | tail -1)
-    echo "  Tarball contents verified (metadata.config present, name=$EXTRACTED_NAME)"
+    EXTRACTED_NAME=$(grep '<<"name">>' "$EXTRACTED_DIR/metadata.config" | sed 's/.*<<"\([^"]*\)">>.*<<"\([^"]*\)">>.*/\2/')
+    if [ "$EXTRACTED_NAME" = "$PKG_NAME" ]; then
+        echo "  Tarball contents verified (metadata.config present, name=$EXTRACTED_NAME)"
+    else
+        echo "  FAIL: Extracted name '$EXTRACTED_NAME' does not match '$PKG_NAME'"
+        exit 1
+    fi
 else
     echo "  FAIL: Tarball missing expected files"
     ls -la "$EXTRACTED_DIR"
