@@ -248,7 +248,7 @@ jobs:
       - name: Wait for tests to complete
         run: |
           echo "Waiting for test containers to finish..."
-          timeout 480 docker wait e2e-test-pypi e2e-test-npm e2e-test-cargo || {
+          timeout 480 docker wait e2e-test-pypi e2e-test-npm e2e-test-cargo e2e-test-proxy-virtual || {
             echo "ERROR: Tests timed out. Container statuses:"
             docker ps -a --filter "name=e2e-test" --format "table {{.Names}}\t{{.Status}}"
             echo ""
@@ -261,7 +261,7 @@ jobs:
         if: always()
         run: |
           failed=false
-          for test in pypi npm cargo; do
+          for test in pypi npm cargo proxy-virtual; do
             container="e2e-test-${test}"
             exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container" 2>/dev/null || echo "N/A")
             echo ""

@@ -111,41 +111,22 @@ impl RepositoryType {
     }
 }
 
-impl PartialEq<RepositoryType> for str {
-    fn eq(&self, other: &RepositoryType) -> bool {
-        self == other.as_str()
-    }
+macro_rules! impl_repo_type_eq {
+    ($($T:ty),+) => { $(
+        impl PartialEq<RepositoryType> for $T {
+            fn eq(&self, other: &RepositoryType) -> bool {
+                AsRef::<str>::as_ref(self) == other.as_str()
+            }
+        }
+        impl PartialEq<$T> for RepositoryType {
+            fn eq(&self, other: &$T) -> bool {
+                self.as_str() == AsRef::<str>::as_ref(other)
+            }
+        }
+    )+ };
 }
 
-impl PartialEq<RepositoryType> for &str {
-    fn eq(&self, other: &RepositoryType) -> bool {
-        *self == other.as_str()
-    }
-}
-
-impl PartialEq<RepositoryType> for String {
-    fn eq(&self, other: &RepositoryType) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl PartialEq<str> for RepositoryType {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&str> for RepositoryType {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for RepositoryType {
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
+impl_repo_type_eq!(str, &str, String);
 
 /// Replication priority for Borg replication policies.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
