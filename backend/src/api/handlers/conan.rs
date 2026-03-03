@@ -16,24 +16,22 @@
 //!   GET  /conan/{repo_key}/v2/conans/{name}/{version}/{user}/{channel}/revisions/{rev}/packages/{pkg_id}/revisions/{pkg_rev}/files/{path} - Download package file
 //!   PUT  /conan/{repo_key}/v2/conans/{name}/{version}/{user}/{channel}/revisions/{rev}/packages/{pkg_id}/revisions/{pkg_rev}/files/{path} - Upload package file
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -85,54 +83,6 @@ pub fn router() -> Router<SharedState> {
             get(package_file_download).put(package_file_upload),
         )
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Basic auth, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"conan\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"conan\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +272,7 @@ async fn ping() -> Response {
 
 async fn users_authenticate(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
@@ -329,7 +280,7 @@ async fn users_authenticate(
     let _repo = resolve_conan_repo(&state.db, &repo_key).await?;
 
     // Authenticate user via Basic auth
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "conan")?.user_id;
 
     // Return a simple token (the Conan client expects a token string in the body).
     // In a production system this would be a proper JWT; for now we echo back the
@@ -354,11 +305,11 @@ async fn users_authenticate(
 
 async fn check_credentials(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Response, Response> {
     let _repo = resolve_conan_repo(&state.db, &repo_key).await?;
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "conan")?.user_id;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -727,6 +678,7 @@ async fn recipe_file_download(
 
 async fn recipe_file_upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, name, version, user, channel, revision, file_path)): Path<(
         String,
         String,
@@ -736,10 +688,9 @@ async fn recipe_file_upload(
         String,
         String,
     )>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "conan")?.user_id;
     let repo = resolve_conan_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -1186,6 +1137,7 @@ async fn package_file_download(
 #[allow(clippy::type_complexity)]
 async fn package_file_upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, name, version, user, channel, revision, package_id, pkg_revision, file_path)): Path<(
         String,
         String,
@@ -1197,10 +1149,9 @@ async fn package_file_upload(
         String,
         String,
     )>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "conan")?.user_id;
     let repo = resolve_conan_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -1352,7 +1303,6 @@ async fn package_file_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)
@@ -1686,68 +1636,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // extract_basic_credentials
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let mut headers = HeaderMap::new();
-        // "user:pass" in base64 = "dXNlcjpwYXNz"
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("basic dXNlcjpwYXNz"),
-        );
-        assert!(extract_basic_credentials(&headers).is_some());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_header() {
-        let headers = HeaderMap::new();
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!not-base64!!!"),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let mut headers = HeaderMap::new();
-        // "nocolon" in base64 = "bm9jb2xvbg=="
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic bm9jb2xvbg=="),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_password_with_colon() {
-        let mut headers = HeaderMap::new();
-        // "user:pa:ss" base64 = "dXNlcjpwYTpzcw=="
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
-    }
-
     // -----------------------------------------------------------------------
     // SearchQuery deserialization
     // -----------------------------------------------------------------------

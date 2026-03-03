@@ -16,14 +16,14 @@
 //!   POST /:repo_key/buf.registry.module.v1.ResourceService/GetResources
 
 use std::io::{Read, Write};
-use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::CONTENT_TYPE;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::post;
+use axum::Extension;
 use axum::Router;
 use base64::Engine;
 use bytes::Bytes;
@@ -36,8 +36,8 @@ use sqlx::{PgPool, Row};
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -385,77 +385,6 @@ fn connect_error(status: StatusCode, code: &str, message: &str) -> Response {
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap()
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-        .map(|t| t.to_string())
-}
-
-/// Authenticate via Basic auth (username:password) or Bearer token (API key).
-/// Returns user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-
-    // Try Bearer token first (API key)
-    if let Some(token) = extract_bearer_token(headers) {
-        let validation = auth_service.validate_api_token(&token).await.map_err(|_| {
-            connect_error(
-                StatusCode::UNAUTHORIZED,
-                "unauthenticated",
-                "Invalid API token",
-            )
-        })?;
-        return Ok(validation.user.id);
-    }
-
-    // Fall back to Basic auth
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        connect_error(
-            StatusCode::UNAUTHORIZED,
-            "unauthenticated",
-            "Authentication required. Provide Basic or Bearer credentials.",
-        )
-    })?;
-
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            connect_error(
-                StatusCode::UNAUTHORIZED,
-                "unauthenticated",
-                "Invalid credentials",
-            )
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -939,11 +868,11 @@ async fn get_modules(
 
 async fn create_modules(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "protobuf")?.user_id;
     let repo = resolve_protobuf_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -1109,11 +1038,11 @@ async fn list_commits(
 
 async fn upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     axum::Json(body): axum::Json<UploadRequest>,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "protobuf")?.user_id;
     let repo = resolve_protobuf_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -1550,11 +1479,11 @@ async fn get_labels(
 
 async fn create_or_update_labels(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     axum::Json(body): axum::Json<CreateOrUpdateLabelsRequest>,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "protobuf")?.user_id;
     let repo = resolve_protobuf_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -1815,7 +1744,6 @@ async fn get_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)
@@ -1993,123 +1921,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // extract_basic_credentials
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let mut headers = HeaderMap::new();
-        // "user:pass" in base64 = "dXNlcjpwYXNz"
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase_basic() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("basic dXNlcjpwYXNz"),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_auth_header() {
-        let headers = HeaderMap::new();
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_bearer_token() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer some-token"),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!invalid!!!"),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let mut headers = HeaderMap::new();
-        // "useronly" in base64 = "dXNlcm9ubHk="
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcm9ubHk="),
-        );
-        // Without a colon, splitn(2, ':') yields only one part, parts.next() for pass returns None
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_password_with_colon() {
-        let mut headers = HeaderMap::new();
-        // "user:pa:ss" in base64 = "dXNlcjpwYTpzcw=="
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYTpzcw=="),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pa:ss".to_string())));
-    }
-
     // -----------------------------------------------------------------------
     // extract_bearer_token
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_bearer_token_valid() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-token-123"),
-        );
-        assert_eq!(
-            extract_bearer_token(&headers),
-            Some("my-token-123".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_bearer_token_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-token"),
-        );
-        assert_eq!(extract_bearer_token(&headers), Some("my-token".to_string()));
-    }
-
-    #[test]
-    fn test_extract_bearer_token_no_header() {
-        let headers = HeaderMap::new();
-        assert!(extract_bearer_token(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_bearer_token_basic_auth() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
-        assert!(extract_bearer_token(&headers).is_none());
-    }
-
     // -----------------------------------------------------------------------
     // module_name_from_ref
     // -----------------------------------------------------------------------

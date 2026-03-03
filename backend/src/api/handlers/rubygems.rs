@@ -12,16 +12,14 @@
 //!   GET  /gems/{repo_key}/api/v1/dependencies?gems={names}  - Dependency info
 
 use std::io::Write as IoWrite;
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -30,9 +28,9 @@ use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::rubygems::RubygemsHandler;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -54,66 +52,6 @@ pub fn router() -> Router<SharedState> {
         // Download gem - use a wildcard to capture name-version.gem
         .route("/:repo_key/gems/*gem_file", get(download_gem))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    // Try Bearer token first (used by gem push with API key)
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-    {
-        // For Bearer tokens, use the token as both username and password
-        // (the auth service will validate it)
-        return Some(("token".to_string(), bearer.to_string()));
-    }
-
-    // Try Basic auth
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Basic auth or Bearer token, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"rubygems\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"rubygems\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -460,12 +398,12 @@ async fn download_gem(
 
 async fn push_gem(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
     // Authenticate
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "rubygems")?.user_id;
     let repo = resolve_rubygems_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -829,99 +767,10 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // extract_credentials
     // -----------------------------------------------------------------------
-
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-rubygems-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "my-rubygems-token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("token".to_string(), "my-token".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_basic() {
-        let headers = make_basic_header("gem-user", "gem-pass");
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("gem-user".to_string(), "gem-pass".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_lowercase() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        assert_eq!(
-            extract_credentials(&headers),
-            Some(("user".to_string(), "pass".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_none() {
-        assert!(extract_credentials(&HeaderMap::new()).is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_priority() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-api-key"),
-        );
-        // Bearer should be tried first
-        let result = extract_credentials(&headers);
-        assert_eq!(result.unwrap().0, "token");
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        assert!(extract_credentials(&headers).is_none());
-    }
 
     // -----------------------------------------------------------------------
     // gzip_compress

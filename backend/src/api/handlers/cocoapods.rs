@@ -8,25 +8,23 @@
 //!   POST /cocoapods/{repo_key}/pods                                      - Push pod (auth required)
 //!   GET  /cocoapods/{repo_key}/all_specs                                 - List all specs
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::cocoapods::CocoaPodsHandler;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -46,64 +44,6 @@ pub fn router() -> Router<SharedState> {
         // Download pod archive
         .route("/:repo_key/pods/*pod_file", get(download_pod))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    // Try Bearer token first
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-    {
-        return Some(("token".to_string(), bearer.to_string()));
-    }
-
-    // Try Basic auth
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Basic auth or Bearer token, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"cocoapods\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"cocoapods\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -385,11 +325,11 @@ async fn download_pod(
 
 async fn push_pod(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "cocoapods")?.user_id;
     let repo = resolve_cocoapods_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -654,7 +594,6 @@ fn extract_podspec_from_archive(data: &[u8]) -> Result<PodSpec, String> {
 mod tests {
     use super::*;
     use crate::formats::cocoapods::PodSpec;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // Extracted pure functions (moved into test module)
@@ -693,64 +632,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // extract_credentials
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_credentials_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer cocoapods-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "cocoapods-token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-pod-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "my-pod-token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic() {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode("dev:pw");
-        let value = format!("Basic {}", encoded);
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("dev".to_string(), "pw".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_no_header() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
-    #[test]
-    fn test_extract_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!"),
-        );
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
     // -----------------------------------------------------------------------
     // extract_podspec_from_archive
     // -----------------------------------------------------------------------

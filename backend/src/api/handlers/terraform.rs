@@ -20,24 +20,22 @@
 //!   GET  /terraform/{repo_key}/v1/providers/{namespace}/{type}/{version}/download/{os}/{arch}
 //!   PUT  /terraform/{repo_key}/v1/providers/{namespace}/{type}/{version}/{os}/{arch}
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -88,80 +86,6 @@ pub fn router() -> Router<SharedState> {
             put(upload_provider),
         )
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-        .map(|t| t.to_string())
-}
-
-/// Authenticate via Bearer token or Basic auth, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    // Try Bearer token first (Terraform's preferred method)
-    if let Some(token) = extract_bearer_token(headers) {
-        let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-        // Use token as password with a placeholder username
-        let (user, _tokens) = auth_service
-            .authenticate("token", &token)
-            .await
-            .map_err(|_| {
-                Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .header("WWW-Authenticate", "Bearer realm=\"terraform\"")
-                    .body(Body::from("Invalid token"))
-                    .unwrap()
-            })?;
-        return Ok(user.id);
-    }
-
-    // Fall back to Basic auth
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"terraform\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"terraform\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +518,7 @@ async fn search_modules(
 
 async fn upload_module(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, namespace, name, provider, version)): Path<(
         String,
         String,
@@ -601,10 +526,9 @@ async fn upload_module(
         String,
         String,
     )>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "terraform")?.user_id;
     let repo = resolve_terraform_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
     let module_name = format!("{}/{}/{}", namespace, name, provider);
@@ -1002,6 +926,7 @@ async fn download_provider(
 
 async fn upload_provider(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, namespace, type_name, version, os, arch)): Path<(
         String,
         String,
@@ -1010,10 +935,9 @@ async fn upload_provider(
         String,
         String,
     )>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "terraform")?.user_id;
     let repo = resolve_terraform_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
     let provider_name = format!("{}/{}", namespace, type_name);
@@ -1165,7 +1089,6 @@ async fn upload_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     /// Build the service discovery JSON for a Terraform registry.
     fn build_service_discovery_json(repo_key: &str) -> serde_json::Value {
@@ -1365,128 +1288,9 @@ mod tests {
     // extract_basic_credentials
     // -----------------------------------------------------------------------
 
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let headers = make_basic_header("admin", "secret");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("admin".to_string(), "secret".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase_prefix() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_missing_header() {
-        let headers = HeaderMap::new();
-        let result = extract_basic_credentials(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_colon_in_password() {
-        let headers = make_basic_header("admin", "pass:with:colons");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("admin".to_string(), "pass:with:colons".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_empty_password() {
-        let headers = make_basic_header("admin", "");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("admin".to_string(), "".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_bearer_not_accepted() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer some-token"),
-        );
-        let result = extract_basic_credentials(&headers);
-        assert!(result.is_none());
-    }
-
     // -----------------------------------------------------------------------
     // extract_bearer_token
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_bearer_token_valid() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-terraform-token"),
-        );
-        let result = extract_bearer_token(&headers);
-        assert_eq!(result, Some("my-terraform-token".to_string()));
-    }
-
-    #[test]
-    fn test_extract_bearer_token_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-token"),
-        );
-        let result = extract_bearer_token(&headers);
-        assert_eq!(result, Some("my-token".to_string()));
-    }
-
-    #[test]
-    fn test_extract_bearer_token_missing() {
-        let headers = HeaderMap::new();
-        let result = extract_bearer_token(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_bearer_token_basic_not_accepted() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        let result = extract_bearer_token(&headers);
-        assert!(result.is_none());
-    }
-
     // -----------------------------------------------------------------------
     // default_offset / default_limit
     // -----------------------------------------------------------------------

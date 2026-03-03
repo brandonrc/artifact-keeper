@@ -10,14 +10,13 @@
 //!   PUT  /ivy/{repo_key}/*path                                             - Upload artifact
 //!   HEAD /ivy/{repo_key}/*path                                             - Check existence
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::Extension;
 use axum::Router;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -25,9 +24,9 @@ use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::sbt::SbtHandler;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -46,63 +45,6 @@ pub fn router() -> Router<SharedState> {
                 .head(check_exists),
         )
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-    {
-        return Some(("token".to_string(), bearer.to_string()));
-    }
-
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()
-        })
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"sbt\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"sbt\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -298,11 +240,11 @@ async fn download_by_path(
 
 async fn upload_artifact(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, artifact_path)): Path<(String, String)>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "ivy")?.user_id;
     let repo = resolve_sbt_repo(&state.db, &repo_key).await?;
 
     // Reject writes to remote/virtual repos
@@ -501,112 +443,12 @@ mod tests {
     // -----------------------------------------------------------------------
     // extract_credentials — Bearer token
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_credentials_bearer_uppercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, "Bearer mytoken123".parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "mytoken123".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, "bearer mytoken456".parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "mytoken456".to_string()))
-        );
-    }
-
     // -----------------------------------------------------------------------
     // extract_credentials — Basic auth
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_credentials_basic_auth() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("admin:password123");
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("admin".to_string(), "password123".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_auth_lowercase() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("basic {}", encoded).parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_auth_with_colon_in_password() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass:word:extra");
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("user".to_string(), "pass:word:extra".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_auth_empty_password() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:");
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "".to_string())));
-    }
-
     // -----------------------------------------------------------------------
     // extract_credentials — no auth / invalid auth
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_credentials_no_header() {
-        let headers = HeaderMap::new();
-        let result = extract_credentials(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_unknown_scheme() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, "Digest abc123".parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, "Basic !!!not-base64!!!".parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_no_colon() {
-        // Valid base64 but no colon separator => splitn returns only one part
-        let encoded = base64::engine::general_purpose::STANDARD.encode("useronly");
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, format!("Basic {}", encoded).parse().unwrap());
-        let result = extract_credentials(&headers);
-        assert!(result.is_none());
-    }
-
     // -----------------------------------------------------------------------
     // Content type determination logic (from upload_artifact)
     // -----------------------------------------------------------------------

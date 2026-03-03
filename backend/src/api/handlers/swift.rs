@@ -10,25 +10,23 @@
 //!   PUT  /swift/:repo_key/:scope/:name/:version         - Publish release (auth required)
 //!   GET  /swift/:repo_key/identifiers?url={package_url} - Lookup package identifiers
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::swift::SwiftHandler;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -46,64 +44,6 @@ pub fn router() -> Router<SharedState> {
             get(version_path_handler).put(publish_release_from_wildcard),
         )
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    // Try Bearer token first
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-    {
-        return Some(("token".to_string(), bearer.to_string()));
-    }
-
-    // Try Basic auth
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Basic auth or Bearer token, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"swift\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"swift\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -554,12 +494,14 @@ async fn fetch_manifest(
 
 async fn publish_release_from_wildcard(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, scope, name, version_path)): Path<(String, String, String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
     let version = version_path.trim_start_matches('/').to_string();
-    publish_release(state, repo_key, scope, name, version, headers, body).await
+    let user_id = require_auth_basic(auth, "swift")?.user_id;
+    publish_release(state, repo_key, scope, name, version, user_id, headers, body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -572,11 +514,10 @@ async fn publish_release(
     scope: String,
     name: String,
     version: String,
+    user_id: uuid::Uuid,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    // Authenticate
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
     let repo = resolve_swift_repo(&state.db, &repo_key).await?;
 
     // Reject writes to remote/virtual repos
@@ -771,117 +712,10 @@ async fn lookup_identifiers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // extract_credentials
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_credentials_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-swift-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "my-swift-token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("token".to_string(), "my-token".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_basic() {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode("alice:p@ssword");
-        let value = format!("Basic {}", encoded);
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("alice".to_string(), "p@ssword".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_lowercase() {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let value = format!("basic {}", encoded);
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_with_colon_in_password() {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass:with:colons");
-        let value = format!("Basic {}", encoded);
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("user".to_string(), "pass:with:colons".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_no_header() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
-    #[test]
-    fn test_extract_credentials_invalid_scheme() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Digest abc123"),
-        );
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
-    #[test]
-    fn test_extract_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!not-base64!!!"),
-        );
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_no_colon() {
-        let mut headers = HeaderMap::new();
-        let encoded = base64::engine::general_purpose::STANDARD.encode("usernocolon");
-        let value = format!("Basic {}", encoded);
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&value).unwrap(),
-        );
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
     // -----------------------------------------------------------------------
     // swift_json_response
     // -----------------------------------------------------------------------

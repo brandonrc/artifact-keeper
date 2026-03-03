@@ -11,23 +11,21 @@
 //!   POST /pub/{repo_key}/api/packages/versions/newUpload           - Upload package
 //!   GET  /pub/{repo_key}/api/packages/versions/newUploadFinish     - Finalize upload
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -56,64 +54,6 @@ pub fn router() -> Router<SharedState> {
         // Download archive - wildcard to capture name/versions/version.tar.gz
         .route("/:repo_key/packages/*archive_path", get(download_archive))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    // Try Bearer token first (used by `dart pub publish`)
-    if let Some(bearer) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-    {
-        return Some(("token".to_string(), bearer.to_string()));
-    }
-
-    // Try Basic auth
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Bearer token or Basic auth, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Bearer realm=\"pub\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Bearer realm=\"pub\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -482,10 +422,10 @@ async fn download_archive(
 
 async fn new_upload_url(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "pub")?.user_id;
     let _repo = resolve_pub_repo(&state.db, &repo_key).await?;
 
     let upload_url = format!("/pub/{}/api/packages/versions/newUpload", repo_key);
@@ -507,11 +447,11 @@ async fn new_upload_url(
 
 async fn upload_package(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "pub")?.user_id;
     let repo = resolve_pub_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -740,57 +680,6 @@ fn extract_pubspec_from_archive(data: &[u8]) -> Result<crate::formats::r#pub::Pu
 mod tests {
     use super::*;
     use axum::http::header::AUTHORIZATION;
-    use axum::http::HeaderValue;
-
-    #[test]
-    fn test_extract_credentials_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer dart_token"));
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "dart_token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("bearer dart_token"));
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "dart_token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_none() {
-        let headers = HeaderMap::new();
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
-    #[test]
-    fn test_extract_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!invalid!!!"),
-        );
-        assert_eq!(extract_credentials(&headers), None);
-    }
-
     #[test]
     fn test_archive_path_parsing_valid() {
         let archive_path = "my_package/versions/1.0.0.tar.gz";

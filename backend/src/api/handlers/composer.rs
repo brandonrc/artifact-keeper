@@ -12,25 +12,23 @@
 //!   PUT  /composer/{repo_key}/api/packages                            - Upload/register package
 //!   POST /composer/{repo_key}/api/packages                            - Upload/register package
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::composer::ComposerHandler;
-use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -54,54 +52,6 @@ pub fn router() -> Router<SharedState> {
         // Upload/register package (PUT and POST)
         .route("/:repo_key/api/packages", put(upload).post(upload))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
-}
-
-// ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-/// Authenticate via Basic auth, returning user_id on success.
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"composer\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"composer\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,12 +676,12 @@ async fn search(
 
 async fn upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
     // Authenticate
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "composer")?.user_id;
     let repo = resolve_composer_repo(&state.db, &repo_key).await?;
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
 
@@ -894,59 +844,10 @@ async fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials
     // -----------------------------------------------------------------------
-
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let headers = make_basic_header("composer", "secret");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("composer".to_string(), "secret".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        assert_eq!(
-            extract_basic_credentials(&headers),
-            Some(("user".to_string(), "pass".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_missing() {
-        assert!(extract_basic_credentials(&HeaderMap::new()).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("nocolon");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
 
     // -----------------------------------------------------------------------
     // RepoInfo struct

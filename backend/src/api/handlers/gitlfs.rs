@@ -12,16 +12,14 @@
 //!   POST /lfs/:repo_key/locks/verify         - Verify locks
 //!   POST /lfs/:repo_key/locks/:id/unlock     - Delete lock
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{post, put};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,8 +27,8 @@ use sqlx::PgPool;
 use tracing::info;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::services::auth_service::AuthService;
 
 const LFS_CONTENT_TYPE: &str = "application/vnd.git-lfs+json";
 
@@ -186,53 +184,6 @@ struct UnlockResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    // Try Basic auth (standard for Git LFS)
-    if let Some(creds) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-    {
-        return Some(creds);
-    }
-
-    // Try Bearer token
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or(v.strip_prefix("bearer ")))
-        .map(|token| ("token".to_string(), token.to_string()))
-}
-
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<uuid::Uuid, Response> {
-    let (username, password) = extract_credentials(headers)
-        .ok_or_else(|| lfs_error_response(StatusCode::UNAUTHORIZED, "Authentication required"))?;
-
-    let auth_service = AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| lfs_error_response(StatusCode::UNAUTHORIZED, "Invalid credentials"))?;
-
-    Ok(user.id)
-}
-
-// ---------------------------------------------------------------------------
 // Repository resolution
 // ---------------------------------------------------------------------------
 
@@ -319,6 +270,7 @@ fn lfs_error_response(status: StatusCode, message: &str) -> Response {
 
 async fn batch(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -338,7 +290,7 @@ async fn batch(
 
     // Upload requires authentication
     let auth_header = if request.operation == "upload" {
-        let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+        let _user_id = require_auth_basic(auth, "git-lfs")?.user_id;
         // Pass auth header through to action hrefs
         headers
             .get(axum::http::header::AUTHORIZATION)
@@ -490,11 +442,11 @@ fn build_base_url(headers: &HeaderMap, repo_key: &str) -> String {
 
 async fn upload_object(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, oid)): Path<(String, String)>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "git-lfs")?.user_id;
     let repo = resolve_lfs_repo(&state.db, &repo_key).await?;
 
     // Reject writes to remote/virtual repos
@@ -794,11 +746,11 @@ async fn verify_object(
 
 async fn create_lock(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "git-lfs")?.user_id;
     let repo = resolve_lfs_repo(&state.db, &repo_key).await?;
 
     let request: CreateLockRequest = serde_json::from_slice(&body).map_err(|e| {
@@ -949,11 +901,11 @@ async fn list_locks(
 
 async fn verify_locks(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path(repo_key): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "git-lfs")?.user_id;
     let repo = resolve_lfs_repo(&state.db, &repo_key).await?;
 
     // Parse request body (optional, may be empty)
@@ -1038,11 +990,11 @@ async fn verify_locks(
 
 async fn delete_lock(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     Path((repo_key, lock_id)): Path<(String, String)>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "git-lfs")?.user_id;
     let repo = resolve_lfs_repo(&state.db, &repo_key).await?;
 
     let force = if body.is_empty() {
@@ -1142,88 +1094,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // extract_credentials
     // -----------------------------------------------------------------------
-
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_auth() {
-        let headers = make_basic_header("git-user", "git-pass");
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("git-user".to_string(), "git-pass".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_lowercase() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer my-lfs-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("token".to_string(), "my-lfs-token".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_credentials_bearer_lowercase() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("bearer my-token"),
-        );
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("token".to_string(), "my-token".to_string())));
-    }
-
-    #[test]
-    fn test_extract_credentials_none() {
-        let headers = HeaderMap::new();
-        assert!(extract_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("justusername");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        assert!(extract_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_credentials_basic_colon_in_password() {
-        let headers = make_basic_header("user", "pa:ss:wd");
-        let result = extract_credentials(&headers);
-        assert_eq!(result, Some(("user".to_string(), "pa:ss:wd".to_string())));
-    }
 
     // -----------------------------------------------------------------------
     // validate_oid

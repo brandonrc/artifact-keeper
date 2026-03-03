@@ -22,16 +22,14 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
+use axum::Extension;
 use axum::Router;
-use base64::Engine;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
@@ -39,6 +37,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use crate::api::handlers::proxy_helpers;
+use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::incus::IncusHandler;
 
@@ -369,54 +368,6 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
 }
 
 // ---------------------------------------------------------------------------
-// Auth helpers
-// ---------------------------------------------------------------------------
-
-fn extract_basic_credentials(headers: &HeaderMap) -> Option<(String, String)> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Basic ").or(v.strip_prefix("basic ")))
-        .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .and_then(|s| {
-            let mut parts = s.splitn(2, ':');
-            let user = parts.next()?.to_string();
-            let pass = parts.next()?.to_string();
-            Some((user, pass))
-        })
-}
-
-async fn authenticate(
-    db: &PgPool,
-    config: &crate::config::Config,
-    headers: &HeaderMap,
-) -> Result<Uuid, Response> {
-    let (username, password) = extract_basic_credentials(headers).ok_or_else(|| {
-        Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .header("WWW-Authenticate", "Basic realm=\"incus\"")
-            .body(Body::from("Authentication required"))
-            .unwrap()
-    })?;
-
-    let auth_service =
-        crate::services::auth_service::AuthService::new(db.clone(), Arc::new(config.clone()));
-    let (user, _tokens) = auth_service
-        .authenticate(&username, &password)
-        .await
-        .map_err(|_| {
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header("WWW-Authenticate", "Basic realm=\"incus\"")
-                .body(Body::from("Invalid credentials"))
-                .unwrap()
-        })?;
-
-    Ok(user.id)
-}
-
-// ---------------------------------------------------------------------------
 // Repository resolution
 // ---------------------------------------------------------------------------
 
@@ -659,11 +610,11 @@ async fn download_image(
 
 async fn upload_image(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((repo_key, product, version, filename)): AxumPath<(String, String, String, String)>,
-    headers: HeaderMap,
     body: Body,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "incus")?.user_id;
     let repo = resolve_incus_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -737,10 +688,10 @@ async fn upload_image(
 
 async fn delete_image(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((repo_key, product, version, filename)): AxumPath<(String, String, String, String)>,
-    headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "incus")?.user_id;
     let repo = resolve_incus_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -809,11 +760,11 @@ struct UploadSession {
 
 async fn start_chunked_upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((repo_key, product, version, filename)): AxumPath<(String, String, String, String)>,
-    headers: HeaderMap,
     body: Body,
 ) -> Result<Response, Response> {
-    let user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let user_id = require_auth_basic(auth, "incus")?.user_id;
     let repo = resolve_incus_repo(&state.db, &repo_key).await?;
 
     proxy_helpers::reject_write_if_not_hosted(&repo.repo_type)?;
@@ -886,11 +837,11 @@ async fn start_chunked_upload(
 
 async fn upload_chunk(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((repo_key, session_id)): AxumPath<(String, Uuid)>,
-    headers: HeaderMap,
     body: Body,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "incus")?.user_id;
     let session = get_session(&state.db, session_id).await?;
     let temp_path = PathBuf::from(&session.storage_temp_path);
 
@@ -930,11 +881,12 @@ async fn upload_chunk(
 
 async fn complete_chunked_upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((repo_key, session_id)): AxumPath<(String, Uuid)>,
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "incus")?.user_id;
     let session = get_session(&state.db, session_id).await?;
     let repo = resolve_incus_repo(&state.db, &repo_key).await?;
     let temp_path = PathBuf::from(&session.storage_temp_path);
@@ -1030,10 +982,10 @@ async fn complete_chunked_upload(
 
 async fn cancel_chunked_upload(
     State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
     AxumPath((_repo_key, session_id)): AxumPath<(String, Uuid)>,
-    headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let _user_id = authenticate(&state.db, &state.config, &headers).await?;
+    let _user_id = require_auth_basic(auth, "incus")?.user_id;
     let session = get_session(&state.db, session_id).await?;
 
     // Delete temp file
@@ -1160,107 +1112,11 @@ async fn finalize_temp_file(temp_path: &Path, final_path: &Path) -> Result<(), R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
-    fn make_basic_header(user: &str, pass: &str) -> HeaderMap {
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", user, pass));
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        headers
-    }
 
     // -----------------------------------------------------------------------
     // extract_basic_credentials
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_basic_credentials_valid() {
-        let headers = make_basic_header("admin", "password");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("admin".to_string(), "password".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_missing() {
-        assert!(extract_basic_credentials(&HeaderMap::new()).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_lowercase_prefix() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("user:pass");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("basic {}", encoded)).unwrap(),
-        );
-        assert_eq!(
-            extract_basic_credentials(&headers),
-            Some(("user".to_string(), "pass".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_bearer_ignored() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer some-token"),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_invalid_base64() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_static("Basic !!!not-base64!!!"),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_no_colon() {
-        let encoded = base64::engine::general_purpose::STANDARD.encode("justusername");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(&format!("Basic {}", encoded)).unwrap(),
-        );
-        assert!(extract_basic_credentials(&headers).is_none());
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_empty_password() {
-        let headers = make_basic_header("admin", "");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(result, Some(("admin".to_string(), "".to_string())));
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_password_with_colon() {
-        let headers = make_basic_header("admin", "pass:word:extra");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("admin".to_string(), "pass:word:extra".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_extract_basic_credentials_unicode() {
-        let headers = make_basic_header("user", "\u{00e9}l\u{00e8}ve");
-        let result = extract_basic_credentials(&headers);
-        assert_eq!(
-            result,
-            Some(("user".to_string(), "\u{00e9}l\u{00e8}ve".to_string()))
-        );
-    }
-
     // -----------------------------------------------------------------------
     // storage_path_for_key
     // -----------------------------------------------------------------------
