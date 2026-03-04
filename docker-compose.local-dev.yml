@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
 
   trivy:
-    image: aquasec/trivy:latest
+    image: ghcr.io/aquasecurity/trivy:latest
     container_name: artifact-keeper-dev-trivy
     command: ["server", "--listen", "0.0.0.0:8090"]
     ports:
