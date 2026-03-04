@@ -19,15 +19,15 @@ jobs:
       matrix:
         include:
           - image: postgres:16-alpine
-            target: ghcr.io/artifact-keeper/mirror/postgres:16-alpine
+            target: ghcr.io/artifact-keeper/ci-mirror/postgres:16-alpine
           - image: alpine:3.19
-            target: ghcr.io/artifact-keeper/mirror/alpine:3.19
+            target: ghcr.io/artifact-keeper/ci-mirror/alpine:3.19
           - image: python:3.12-slim
-            target: ghcr.io/artifact-keeper/mirror/python:3.12-slim
+            target: ghcr.io/artifact-keeper/ci-mirror/python:3.12-slim
           - image: node:20-slim
-            target: ghcr.io/artifact-keeper/mirror/node:20-slim
+            target: ghcr.io/artifact-keeper/ci-mirror/node:20-slim
           - image: rust:1.75-slim
-            target: ghcr.io/artifact-keeper/mirror/rust:1.75-slim
+            target: ghcr.io/artifact-keeper/ci-mirror/rust:1.75-slim
 
     steps:
       - name: Log in to GHCR
