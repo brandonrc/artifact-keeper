@@ -35,8 +35,10 @@ jobs:
     steps:
       - name: Get PR number
         id: pr
+        env:
+          PR_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
         run: |
-          PR_NUMBER=$(echo '${{ toJSON(github.event.workflow_run.pull_requests) }}' | \
+          PR_NUMBER=$(echo "$PR_JSON" | \
             python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')")
           if [[ -z "$PR_NUMBER" ]]; then
             echo "No PR associated with this workflow run. Skipping."
@@ -65,13 +67,14 @@ jobs:
           echo "Quality gate status from API: $GATE_STATUS"
           echo "status=$GATE_STATUS" >> "$GITHUB_OUTPUT"
 
-      # For fork PRs (or when analysis is missing): download coverage and run scan
+      # For fork PRs (or when analysis is missing): download coverage and run scan.
+      # Uses refs/pull/N/head from the base repo instead of checking out the fork
+      # repo directly, avoiding untrusted repository checkout in privileged context.
       - name: Checkout PR code
         if: steps.check.outputs.status == 'NONE'
         uses: actions/checkout@v6
         with:
-          repository: ${{ github.event.workflow_run.head_repository.full_name }}
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: refs/pull/${{ steps.pr.outputs.number }}/head
           fetch-depth: 0
 
       - name: Download coverage artifact
@@ -82,6 +85,17 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
+
+      - name: Get PR metadata
+        if: steps.check.outputs.status == 'NONE'
+        id: pr_meta
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+        run: |
+          echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+          BASE_REF=$(echo "$PR_JSON" | python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['base']['ref'] if prs else 'main')" 2>/dev/null || echo "main")
+          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
 
       - name: Run SonarCloud Scan
         if: steps.check.outputs.status == 'NONE'
@@ -94,8 +108,8 @@ jobs:
             -Dsonar.organization=artifact-keeper
             -Dsonar.rust.lcov.reportPaths=lcov.info
             -Dsonar.pullrequest.key=${{ steps.pr.outputs.number }}
-            -Dsonar.pullrequest.branch=${{ github.event.workflow_run.head_branch }}
-            -Dsonar.pullrequest.base=${{ github.event.workflow_run.pull_requests[0].base.ref }}
+            -Dsonar.pullrequest.branch=${{ steps.pr_meta.outputs.head_branch }}
+            -Dsonar.pullrequest.base=${{ steps.pr_meta.outputs.base_ref }}
 
       - name: Wait for analysis processing
         if: steps.check.outputs.status == 'NONE'
