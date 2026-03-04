@@ -20,6 +20,7 @@ permissions:
   contents: read
   pull-requests: write
   actions: read
+  statuses: write
 
 concurrency:
   group: sonarcloud-gate-${{ github.event.workflow_run.id }}
@@ -176,8 +177,50 @@ jobs:
             exit 1
           fi
 
+      # Set commit status on the PR HEAD so branch protection sees the result.
+      # workflow_run jobs run on the default branch, so their check runs don't
+      # appear on the PR. We must explicitly post a commit status instead.
+      - name: Set commit status
+        if: always() && steps.pr.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        env:
+          GATE_STATUS: ${{ steps.gate.outputs.status || steps.check.outputs.status }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const gate = process.env.GATE_STATUS;
+            const sha = process.env.HEAD_SHA;
+            const pr = process.env.PR_NUMBER;
+
+            let state, description;
+            if (gate === 'OK') {
+              state = 'success';
+              description = 'Quality Gate passed';
+            } else if (gate === 'ERROR') {
+              state = 'failure';
+              description = 'Quality Gate failed';
+            } else if (gate === 'skipped') {
+              state = 'success';
+              description = 'Skipped (no SONAR_TOKEN)';
+            } else {
+              state = 'success';
+              description = 'Analysis not available';
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha,
+              state,
+              context: 'SonarCloud Quality Gate',
+              description,
+              target_url: `https://sonarcloud.io/summary/new_code?id=artifact-keeper_artifact-keeper&pullRequest=${pr}`,
+            });
+
       - name: Post PR comment
         if: always() && steps.pr.outputs.skip != 'true'
+        continue-on-error: true
         uses: actions/github-script@v7
         env:
           GATE_STATUS: ${{ steps.gate.outputs.status || steps.check.outputs.status }}
