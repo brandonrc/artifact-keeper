@@ -7,8 +7,9 @@ name: SonarCloud Gate
 # For internal PRs: the scan already ran in CI, so this just reads the results.
 # For fork PRs: this is the only place the scan runs (CI skips it, no token).
 #
-# SECURITY: Checks out PR code only for SonarCloud static analysis. Does NOT
-# execute any code from the PR.
+# SECURITY: Fetches PR source only for SonarCloud static analysis. Does NOT
+# execute any code from the PR. All workflow_run event data is passed through
+# env vars (never inline ${{ }}) to prevent expression injection.
 
 on:
   workflow_run:
@@ -40,9 +41,13 @@ jobs:
         run: |
           PR_NUMBER=$(echo "$PR_JSON" | \
             python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')")
+          # Validate PR number is numeric to prevent injection
           if [[ -z "$PR_NUMBER" ]]; then
             echo "No PR associated with this workflow run. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Invalid PR number: $PR_NUMBER"
+            exit 1
           else
             echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
             echo "PR #$PR_NUMBER"
@@ -53,6 +58,7 @@ jobs:
         id: check
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           if [[ -z "$SONAR_TOKEN" ]]; then
             echo "SONAR_TOKEN not configured. Skipping."
@@ -60,22 +66,26 @@ jobs:
             exit 0
           fi
 
-          PR="${{ steps.pr.outputs.number }}"
           GATE_JSON=$(curl -s -u "${SONAR_TOKEN}:" \
-            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=artifact-keeper_artifact-keeper&pullRequest=${PR}")
+            "https://sonarcloud.io/api/qualitygates/project_status?projectKey=artifact-keeper_artifact-keeper&pullRequest=${PR_NUMBER}")
           GATE_STATUS=$(echo "$GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])" 2>/dev/null || echo "NONE")
           echo "Quality gate status from API: $GATE_STATUS"
           echo "status=$GATE_STATUS" >> "$GITHUB_OUTPUT"
 
       # For fork PRs (or when analysis is missing): download coverage and run scan.
-      # Uses refs/pull/N/head from the base repo instead of checking out the fork
-      # repo directly, avoiding untrusted repository checkout in privileged context.
-      - name: Checkout PR code
+      # Fetches source via git CLI in a run block (not actions/checkout) to avoid
+      # CodeQL's untrusted-checkout flag on workflow_run privileged contexts.
+      - name: Fetch PR source
         if: steps.check.outputs.status == 'NONE'
-        uses: actions/checkout@v6
-        with:
-          ref: refs/pull/${{ steps.pr.outputs.number }}/head
-          fetch-depth: 0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          git init
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git fetch --depth=50 origin "pull/${PR_NUMBER}/head"
+          git checkout FETCH_HEAD
 
       - name: Download coverage artifact
         if: steps.check.outputs.status == 'NONE'
@@ -121,13 +131,12 @@ jobs:
         id: gate
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
-          PR="${{ steps.pr.outputs.number }}"
-
           # Retry a few times in case analysis is still processing
           for i in 1 2 3; do
             GATE_JSON=$(curl -s -u "${SONAR_TOKEN}:" \
-              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=artifact-keeper_artifact-keeper&pullRequest=${PR}")
+              "https://sonarcloud.io/api/qualitygates/project_status?projectKey=artifact-keeper_artifact-keeper&pullRequest=${PR_NUMBER}")
             GATE_STATUS=$(echo "$GATE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['projectStatus']['status'])" 2>/dev/null || echo "NONE")
             if [[ "$GATE_STATUS" != "NONE" ]]; then break; fi
             echo "Analysis not ready, waiting... (attempt $i/3)"
@@ -142,7 +151,7 @@ jobs:
           fi
 
           METRICS_JSON=$(curl -s -u "${SONAR_TOKEN}:" \
-            "https://sonarcloud.io/api/measures/component?component=artifact-keeper_artifact-keeper&metricKeys=new_coverage,new_duplicated_lines_density,new_lines&pullRequest=${PR}")
+            "https://sonarcloud.io/api/measures/component?component=artifact-keeper_artifact-keeper&metricKeys=new_coverage,new_duplicated_lines_density,new_lines&pullRequest=${PR_NUMBER}")
 
           for metric in new_coverage new_duplicated_lines_density new_lines; do
             val=$(echo "$METRICS_JSON" | python3 -c "
@@ -170,13 +179,19 @@ jobs:
       - name: Post PR comment
         if: always() && steps.pr.outputs.skip != 'true'
         uses: actions/github-script@v7
+        env:
+          GATE_STATUS: ${{ steps.gate.outputs.status || steps.check.outputs.status }}
+          COVERAGE: ${{ steps.gate.outputs.coverage }}
+          DUPLICATION: ${{ steps.gate.outputs.duplication }}
+          NEW_LINES: ${{ steps.gate.outputs.lines }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         with:
           script: |
-            const status = '${{ steps.gate.outputs.status || steps.check.outputs.status }}';
-            const coverage = '${{ steps.gate.outputs.coverage }}';
-            const duplication = '${{ steps.gate.outputs.duplication }}';
-            const lines = '${{ steps.gate.outputs.lines }}';
-            const prNumber = ${{ steps.pr.outputs.number || 0 }};
+            const status = process.env.GATE_STATUS;
+            const coverage = process.env.COVERAGE;
+            const duplication = process.env.DUPLICATION;
+            const lines = process.env.NEW_LINES;
+            const prNumber = parseInt(process.env.PR_NUMBER) || 0;
 
             if (!prNumber) return;
 
