@@ -139,7 +139,7 @@ pub struct ListRepositoriesQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,
     pub format: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "repo_type")]
     pub repo_type: Option<String>,
     pub q: Option<String>,
 }
@@ -2128,6 +2128,16 @@ mod tests {
         assert_eq!(query.format, Some("npm".to_string()));
         assert_eq!(query.repo_type, Some("local".to_string()));
         assert_eq!(query.q, Some("test".to_string()));
+    }
+
+    #[test]
+    fn test_list_repositories_query_repo_type_alias() {
+        // Frontend may send "repo_type" instead of "type" — both must work
+        let json = r#"{
+            "repo_type": "staging"
+        }"#;
+        let query: ListRepositoriesQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.repo_type, Some("staging".to_string()));
     }
 
     #[test]
