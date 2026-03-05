@@ -244,7 +244,11 @@ Extend Artifact Keeper with custom format handlers compiled to WebAssembly.
 ```bash
 mkdir artifact-keeper && cd artifact-keeper
 curl -fsSLO https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker/Caddyfile
+mkdir docker
+curl -fsSLo docker/Caddyfile https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker/Caddyfile
+curl -fsSLo docker/init-db.sql https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker/init-db.sql
+curl -fsSLo docker/init-pg-ssl.sh https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker/init-pg-ssl.sh
+curl -fsSLo docker/init-dtrack.sh https://raw.githubusercontent.com/artifact-keeper/artifact-keeper/main/docker/init-dtrack.sh
 docker compose up -d
 ```
 
