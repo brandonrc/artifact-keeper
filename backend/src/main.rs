@@ -386,19 +386,25 @@ async fn main() -> Result<()> {
     let grpc_auth_policy = grpc_auth;
     tokio::spawn(async move {
         tracing::info!("gRPC server listening on {}", grpc_addr);
+        #[allow(clippy::result_large_err)]
+        let sbom_interceptor = move |req| grpc_auth_sbom.intercept(req);
+        #[allow(clippy::result_large_err)]
+        let cve_interceptor = move |req| grpc_auth_cve.intercept(req);
+        #[allow(clippy::result_large_err)]
+        let policy_interceptor = move |req| grpc_auth_policy.intercept(req);
         if let Err(e) = TonicServer::builder()
             .add_service(reflection_service)
             .add_service(SbomServiceServer::with_interceptor(
                 sbom_server,
-                move |req| grpc_auth_sbom.intercept(req),
+                sbom_interceptor,
             ))
             .add_service(CveHistoryServiceServer::with_interceptor(
                 cve_history_server,
-                move |req| grpc_auth_cve.intercept(req),
+                cve_interceptor,
             ))
             .add_service(SecurityPolicyServiceServer::with_interceptor(
                 security_policy_server,
-                move |req| grpc_auth_policy.intercept(req),
+                policy_interceptor,
             ))
             .serve(grpc_addr)
             .await
