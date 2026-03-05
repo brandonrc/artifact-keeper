@@ -763,10 +763,9 @@ async fn provision_admin_user(db: &sqlx::PgPool, storage_path: &str) -> Result<b
         } else {
             // Restrict file permissions to owner-only (0600) since this file contains credentials
             #[cfg(unix)]
-            if let Err(e) = std::fs::set_permissions(
-                &password_file,
-                std::fs::Permissions::from_mode(0o600),
-            ) {
+            if let Err(e) =
+                std::fs::set_permissions(&password_file, std::fs::Permissions::from_mode(0o600))
+            {
                 tracing::warn!("Failed to set permissions on admin password file: {}", e);
             }
             tracing::info!("Admin password written to: {}", password_file.display());
