@@ -37,6 +37,30 @@ async fn audit_auth(
     let _ = AuditService::new(state.db.clone()).log(entry).await;
 }
 
+/// Build a login/refresh response with auth cookies set.
+fn login_response(
+    tokens: &crate::services::auth_service::TokenPair,
+    must_change_password: bool,
+) -> Response {
+    let body = LoginResponse {
+        access_token: tokens.access_token.clone(),
+        refresh_token: tokens.refresh_token.clone(),
+        expires_in: tokens.expires_in,
+        token_type: "Bearer".to_string(),
+        must_change_password,
+        totp_required: None,
+        totp_token: None,
+    };
+    let mut response = Json(body).into_response();
+    set_auth_cookies(
+        response.headers_mut(),
+        &tokens.access_token,
+        &tokens.refresh_token,
+        tokens.expires_in,
+    );
+    response
+}
+
 /// Create public auth routes (no auth required)
 pub fn public_router() -> Router<SharedState> {
     Router::new()
@@ -182,24 +206,7 @@ pub async fn login(
     )
     .await;
 
-    let body = LoginResponse {
-        access_token: tokens.access_token.clone(),
-        refresh_token: tokens.refresh_token.clone(),
-        expires_in: tokens.expires_in,
-        token_type: "Bearer".to_string(),
-        must_change_password: user.must_change_password,
-        totp_required: None,
-        totp_token: None,
-    };
-
-    let mut response = Json(body).into_response();
-    set_auth_cookies(
-        response.headers_mut(),
-        &tokens.access_token,
-        &tokens.refresh_token,
-        tokens.expires_in,
-    );
-    Ok(response)
+    Ok(login_response(&tokens, user.must_change_password))
 }
 
 /// Logout current session
@@ -266,24 +273,7 @@ pub async fn refresh_token(
     )
     .await;
 
-    let body = LoginResponse {
-        access_token: tokens.access_token.clone(),
-        refresh_token: tokens.refresh_token.clone(),
-        expires_in: tokens.expires_in,
-        token_type: "Bearer".to_string(),
-        must_change_password: user.must_change_password,
-        totp_required: None,
-        totp_token: None,
-    };
-
-    let mut response = Json(body).into_response();
-    set_auth_cookies(
-        response.headers_mut(),
-        &tokens.access_token,
-        &tokens.refresh_token,
-        tokens.expires_in,
-    );
-    Ok(response)
+    Ok(login_response(&tokens, user.must_change_password))
 }
 
 /// Get current user info
