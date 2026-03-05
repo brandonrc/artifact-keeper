@@ -2,25 +2,59 @@
 	auto_https disable_redirects
 }
 
-{$SITE_ADDRESS:localhost} {
-	bind 0.0.0.0
-	reverse_proxy /v2 backend:8080
-	reverse_proxy /v2/* backend:8080
+(backend_routes) {
+	# API and health endpoints
 	reverse_proxy /api/* backend:8080
 	reverse_proxy /health backend:8080
 	reverse_proxy /livez backend:8080
 	reverse_proxy /readyz backend:8080
 	reverse_proxy /metrics backend:8080
+	reverse_proxy /swagger-ui* backend:8080
+	# OCI / Docker registry
+	reverse_proxy /v2 backend:8080
+	reverse_proxy /v2/* backend:8080
+	# Native package format handlers — route directly to backend
+	# so requests avoid the Next.js middleware proxy hop
+	reverse_proxy /maven/* backend:8080
+	reverse_proxy /npm/* backend:8080
+	reverse_proxy /pypi/* backend:8080
+	reverse_proxy /nuget/* backend:8080
+	reverse_proxy /cargo/* backend:8080
+	reverse_proxy /gems/* backend:8080
+	reverse_proxy /go/* backend:8080
+	reverse_proxy /helm/* backend:8080
+	reverse_proxy /debian/* backend:8080
+	reverse_proxy /rpm/* backend:8080
+	reverse_proxy /alpine/* backend:8080
+	reverse_proxy /composer/* backend:8080
+	reverse_proxy /conan/* backend:8080
+	reverse_proxy /conda/* backend:8080
+	reverse_proxy /swift/* backend:8080
+	reverse_proxy /terraform/* backend:8080
+	reverse_proxy /cocoapods/* backend:8080
+	reverse_proxy /hex/* backend:8080
+	reverse_proxy /pub/* backend:8080
+	reverse_proxy /lfs/* backend:8080
+	reverse_proxy /ivy/* backend:8080
+	reverse_proxy /chef/* backend:8080
+	reverse_proxy /puppet/* backend:8080
+	reverse_proxy /ansible/* backend:8080
+	reverse_proxy /cran/* backend:8080
+	reverse_proxy /huggingface/* backend:8080
+	reverse_proxy /jetbrains/* backend:8080
+	reverse_proxy /vscode/* backend:8080
+	reverse_proxy /proto/* backend:8080
+	reverse_proxy /incus/* backend:8080
+	reverse_proxy /ext/* backend:8080
+}
+
+{$SITE_ADDRESS:localhost} {
+	bind 0.0.0.0
+	import backend_routes
 	reverse_proxy web:3000
 }
 
 :80 {
-	reverse_proxy /v2 backend:8080
-	reverse_proxy /v2/* backend:8080
-	reverse_proxy /api/* backend:8080
-	reverse_proxy /health backend:8080
-	reverse_proxy /livez backend:8080
-	reverse_proxy /readyz backend:8080
-	reverse_proxy /metrics backend:8080
+	import backend_routes
 	reverse_proxy web:3000
 }
