@@ -1527,7 +1527,10 @@ mod tests {
         assert!(!result_empty.unwrap());
 
         // And with the hash itself as input (sanity check)
-        let result_self = verify(AuthService::DUMMY_BCRYPT_HASH, AuthService::DUMMY_BCRYPT_HASH);
+        let result_self = verify(
+            AuthService::DUMMY_BCRYPT_HASH,
+            AuthService::DUMMY_BCRYPT_HASH,
+        );
         assert!(result_self.is_ok());
         assert!(!result_self.unwrap());
     }
