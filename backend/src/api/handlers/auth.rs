@@ -22,6 +22,21 @@ use crate::services::auth_config_service::AuthConfigService;
 use crate::services::auth_service::AuthService;
 use std::sync::atomic::Ordering;
 
+/// Fire-and-forget auth audit log. Failures are silently ignored so audit
+/// issues never break the auth flow.
+async fn audit_auth(
+    state: &SharedState,
+    action: AuditAction,
+    user_id: Option<Uuid>,
+    details: serde_json::Value,
+) {
+    let mut entry = AuditEntry::new(action, ResourceType::User).details(details);
+    if let Some(id) = user_id {
+        entry = entry.user(id).resource(id);
+    }
+    let _ = AuditService::new(state.db.clone()).log(entry).await;
+}
+
 /// Create public auth routes (no auth required)
 pub fn public_router() -> Router<SharedState> {
     Router::new()
@@ -126,7 +141,6 @@ pub async fn login(
     }
 
     let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
-    let audit_service = AuditService::new(state.db.clone());
 
     let (user, tokens) = match auth_service
         .authenticate(&payload.username, &payload.password)
@@ -134,13 +148,13 @@ pub async fn login(
     {
         Ok(result) => result,
         Err(err) => {
-            // Log failed login attempt
-            let _ = audit_service
-                .log(
-                    AuditEntry::new(AuditAction::LoginFailed, ResourceType::User)
-                        .details(serde_json::json!({ "username": payload.username })),
-                )
-                .await;
+            audit_auth(
+                &state,
+                AuditAction::LoginFailed,
+                None,
+                serde_json::json!({ "username": payload.username }),
+            )
+            .await;
             return Err(err);
         }
     };
@@ -160,15 +174,13 @@ pub async fn login(
         return Ok(Json(body).into_response());
     }
 
-    // Log successful login
-    let _ = audit_service
-        .log(
-            AuditEntry::new(AuditAction::Login, ResourceType::User)
-                .user(user.id)
-                .resource(user.id)
-                .details(serde_json::json!({ "username": user.username })),
-        )
-        .await;
+    audit_auth(
+        &state,
+        AuditAction::Login,
+        Some(user.id),
+        serde_json::json!({ "username": user.username }),
+    )
+    .await;
 
     let body = LoginResponse {
         access_token: tokens.access_token.clone(),
@@ -204,16 +216,14 @@ pub async fn logout(
     State(state): State<SharedState>,
     auth: Option<Extension<AuthExtension>>,
 ) -> Result<Response> {
-    // Log logout if we can identify the user (auth may not be present on public route)
     if let Some(Extension(auth)) = auth {
-        let audit_service = AuditService::new(state.db.clone());
-        let _ = audit_service
-            .log(
-                AuditEntry::new(AuditAction::Logout, ResourceType::User)
-                    .user(auth.user_id)
-                    .resource(auth.user_id),
-            )
-            .await;
+        audit_auth(
+            &state,
+            AuditAction::Logout,
+            Some(auth.user_id),
+            serde_json::json!({}),
+        )
+        .await;
     }
 
     let mut response = ().into_response();
@@ -248,16 +258,13 @@ pub async fn refresh_token(
 
     let (user, tokens) = auth_service.refresh_tokens(&refresh_token_str).await?;
 
-    // Log token refresh
-    let audit_service = AuditService::new(state.db.clone());
-    let _ = audit_service
-        .log(
-            AuditEntry::new(AuditAction::Login, ResourceType::User)
-                .user(user.id)
-                .resource(user.id)
-                .details(serde_json::json!({ "method": "token_refresh" })),
-        )
-        .await;
+    audit_auth(
+        &state,
+        AuditAction::Login,
+        Some(user.id),
+        serde_json::json!({ "method": "token_refresh" }),
+    )
+    .await;
 
     let body = LoginResponse {
         access_token: tokens.access_token.clone(),
