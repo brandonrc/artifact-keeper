@@ -103,7 +103,7 @@ impl QualityCheckService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         // 3. Get repository format
-        let format: String = sqlx::query_scalar("SELECT format FROM repositories WHERE id = $1")
+        let format: String = sqlx::query_scalar("SELECT format::text FROM repositories WHERE id = $1")
             .bind(artifact.repository_id)
             .fetch_one(&self.db)
             .await
