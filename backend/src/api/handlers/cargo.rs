@@ -2320,4 +2320,101 @@ mod tests {
         assert!(index_cache_get(&cache, "repo-a:serde").is_none());
         assert!(index_cache_get(&cache, "repo-b:serde").is_some());
     }
+
+    #[test]
+    fn test_index_cache_ttl_matches_http_max_age() {
+        // INDEX_CACHE_TTL_SECS must equal the numeric value in the HTTP
+        // Cache-Control header that index_response() sets.  If someone changes
+        // one without the other, cargo clients will either hold stale data
+        // longer than the in-process cache, or re-request before the in-process
+        // cache has expired.
+        assert_eq!(INDEX_CACHE_TTL_SECS, 300);
+        let resp = index_response("", None);
+        let cache_control = resp
+            .headers()
+            .get("cache-control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            cache_control,
+            &format!("max-age={}", INDEX_CACHE_TTL_SECS)
+        );
+    }
+
+    #[test]
+    fn test_index_cache_concurrent_access() {
+        // Arc<RwLock<HashMap>> must allow concurrent reads and writes from
+        // multiple threads without panicking or losing data.
+        use std::thread;
+        let cache = make_index_cache();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let c = cache.clone();
+                thread::spawn(move || {
+                    let key = format!("repo:crate-{}", i);
+                    let data = Bytes::from(format!("data-{}", i).into_bytes());
+                    index_cache_set(&c, key.clone(), data.clone());
+                    let result = index_cache_get(&c, &key);
+                    assert!(result.is_some());
+                    assert_eq!(result.unwrap(), data);
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_virtual_repo_invalidation_pattern() {
+        // Simulates the multi-key invalidation that publish performs:
+        // invalidate the hosted repo's entry AND each virtual repo that
+        // aggregates it.
+        let cache = make_index_cache();
+        let crate_name = "serde";
+        let hosted_key = "hosted-repo";
+        let virtual_keys = ["virtual-a", "virtual-b"];
+
+        // Populate all keys (as if serve_index has warmed them).
+        index_cache_set(
+            &cache,
+            format!("{}:{}", hosted_key, crate_name),
+            Bytes::from_static(b"hosted-index"),
+        );
+        for vk in &virtual_keys {
+            index_cache_set(
+                &cache,
+                format!("{}:{}", vk, crate_name),
+                Bytes::from_static(b"virtual-index"),
+            );
+        }
+
+        // Invalidate (mirrors the publish handler).
+        index_cache_invalidate(&cache, &format!("{}:{}", hosted_key, crate_name));
+        for vk in &virtual_keys {
+            index_cache_invalidate(&cache, &format!("{}:{}", vk, crate_name));
+        }
+
+        // All three entries must be gone.
+        assert!(index_cache_get(&cache, &format!("{}:{}", hosted_key, crate_name)).is_none());
+        for vk in &virtual_keys {
+            assert!(index_cache_get(&cache, &format!("{}:{}", vk, crate_name)).is_none());
+        }
+    }
+
+    #[test]
+    fn test_index_cache_binary_content_round_trip() {
+        // The cache stores raw Bytes; arbitrary byte sequences (not just UTF-8
+        // JSON) must be returned unchanged.
+        let cache = make_index_cache();
+        let binary_data = Bytes::from(vec![0u8, 1, 2, 127, 128, 255, b'"', b'\n']);
+        index_cache_set(
+            &cache,
+            "repo:binary-crate".to_string(),
+            binary_data.clone(),
+        );
+        let result = index_cache_get(&cache, "repo:binary-crate").unwrap();
+        assert_eq!(result, binary_data);
+    }
 }
