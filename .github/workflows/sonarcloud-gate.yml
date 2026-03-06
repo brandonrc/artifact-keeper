@@ -39,9 +39,21 @@ jobs:
         id: pr
         env:
           PR_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           PR_NUMBER=$(echo "$PR_JSON" | \
             python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')")
+
+          # For fork PRs, workflow_run.pull_requests is empty. Fall back to
+          # searching by HEAD SHA via the GitHub API.
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "pull_requests array empty, searching by HEAD SHA..."
+            PR_NUMBER=$(gh api "repos/${GH_REPO}/pulls?state=open&sort=updated&direction=desc&per_page=30" \
+              --jq ".[] | select(.head.sha == \"${HEAD_SHA}\") | .number" 2>/dev/null | head -1)
+          fi
+
           # Validate PR number is numeric to prevent injection
           if [[ -z "$PR_NUMBER" ]]; then
             echo "No PR associated with this workflow run. Skipping."
