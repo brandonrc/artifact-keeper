@@ -2336,10 +2336,7 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert_eq!(
-            cache_control,
-            &format!("max-age={}", INDEX_CACHE_TTL_SECS)
-        );
+        assert_eq!(cache_control, &format!("max-age={}", INDEX_CACHE_TTL_SECS));
     }
 
     #[test]
@@ -2409,11 +2406,7 @@ mod tests {
         // JSON) must be returned unchanged.
         let cache = make_index_cache();
         let binary_data = Bytes::from(vec![0u8, 1, 2, 127, 128, 255, b'"', b'\n']);
-        index_cache_set(
-            &cache,
-            "repo:binary-crate".to_string(),
-            binary_data.clone(),
-        );
+        index_cache_set(&cache, "repo:binary-crate".to_string(), binary_data.clone());
         let result = index_cache_get(&cache, "repo:binary-crate").unwrap();
         assert_eq!(result, binary_data);
     }
