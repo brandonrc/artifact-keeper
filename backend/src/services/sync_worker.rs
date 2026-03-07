@@ -53,8 +53,7 @@ pub async fn spawn_sync_worker(db: PgPool) {
 /// Detect peers that have not sent a heartbeat within the threshold and
 /// mark them offline.
 async fn run_stale_peer_detection(db: &PgPool) {
-    let peer_service =
-        crate::services::peer_instance_service::PeerInstanceService::new(db.clone());
+    let peer_service = crate::services::peer_instance_service::PeerInstanceService::new(db.clone());
     match peer_service
         .mark_stale_offline(STALE_PEER_THRESHOLD_MINUTES)
         .await
