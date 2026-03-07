@@ -2224,30 +2224,33 @@ async fn build_virtual_repodata(
     let mut merged_packages = serde_json::Map::new();
     let mut merged_packages_conda = serde_json::Map::new();
 
-    for member in &members {
-        if member.repo_type == RepositoryType::Remote {
-            // Remote member: fetch upstream repodata and parse it
-            if let (Some(proxy), Some(upstream_url)) =
-                (proxy_service, member.upstream_url.as_deref())
-            {
-                let upstream_path = format!("{}/repodata.json", subdir);
-                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
-                    proxy,
-                    member.id,
-                    &member.key,
-                    upstream_url,
-                    &upstream_path,
+    // Collect from remote members using shared helper
+    let upstream_path = format!("{}/repodata.json", subdir);
+    let remote_data = proxy_helpers::collect_virtual_metadata(
+        db,
+        proxy_service,
+        virtual_repo_id,
+        &upstream_path,
+        |bytes, _member_key| async move {
+            parse_upstream_repodata(&bytes).ok_or_else(|| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "Failed to parse upstream repodata",
                 )
-                .await
-                {
-                    if let Some((pkgs, pkgs_conda)) = parse_upstream_repodata(&content) {
-                        merge_package_maps(&mut merged_packages, &pkgs);
-                        merge_package_maps(&mut merged_packages_conda, &pkgs_conda);
-                    }
-                }
-            }
-        } else {
-            // Hosted/local/staging member: query artifacts from DB
+                    .into_response()
+            })
+        },
+    )
+    .await?;
+
+    for (_member_key, (pkgs, pkgs_conda)) in &remote_data {
+        merge_package_maps(&mut merged_packages, pkgs);
+        merge_package_maps(&mut merged_packages_conda, pkgs_conda);
+    }
+
+    // Handle hosted/local members
+    for member in &members {
+        if member.repo_type != RepositoryType::Remote {
             let artifacts = list_conda_artifacts(db, member.id).await?;
             let subdir_artifacts = artifacts_for_subdir(&artifacts, subdir);
 
@@ -2292,26 +2295,31 @@ async fn build_virtual_channeldata(
 
     let mut merged_packages = serde_json::Map::new();
 
-    for member in &members {
-        if member.repo_type == RepositoryType::Remote {
-            if let (Some(proxy), Some(upstream_url)) =
-                (proxy_service, member.upstream_url.as_deref())
-            {
-                if let Ok((content, _ct)) = proxy_helpers::proxy_fetch(
-                    proxy,
-                    member.id,
-                    &member.key,
-                    upstream_url,
-                    "channeldata.json",
+    // Collect from remote members using shared helper
+    let remote_data = proxy_helpers::collect_virtual_metadata(
+        db,
+        proxy_service,
+        virtual_repo_id,
+        "channeldata.json",
+        |bytes, _member_key| async move {
+            parse_upstream_channeldata(&bytes).ok_or_else(|| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    "Failed to parse upstream channeldata",
                 )
-                .await
-                {
-                    if let Some(pkgs) = parse_upstream_channeldata(&content) {
-                        merge_package_maps(&mut merged_packages, &pkgs);
-                    }
-                }
-            }
-        } else {
+                    .into_response()
+            })
+        },
+    )
+    .await?;
+
+    for (_member_key, pkgs) in &remote_data {
+        merge_package_maps(&mut merged_packages, pkgs);
+    }
+
+    // Handle hosted/local members
+    for member in &members {
+        if member.repo_type != RepositoryType::Remote {
             let artifacts = list_conda_artifacts(db, member.id).await?;
             for artifact in &artifacts {
                 let filename = artifact.path.rsplit('/').next().unwrap_or(&artifact.path);
