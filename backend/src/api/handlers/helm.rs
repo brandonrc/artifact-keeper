@@ -25,7 +25,7 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::formats::helm::{generate_index_yaml, ChartYaml, HelmHandler};
+use crate::formats::helm::{generate_index_yaml, ChartYaml, HelmHandler, HelmIndex};
 use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
@@ -93,18 +93,13 @@ async fn resolve_helm_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Resp
     })
 }
 
-// ---------------------------------------------------------------------------
-// GET /helm/{repo_key}/index.yaml -- Helm repository index
-// ---------------------------------------------------------------------------
-
-async fn index_yaml(
-    State(state): State<SharedState>,
-    Path(repo_key): Path<String>,
-) -> Result<Response, Response> {
-    let repo = resolve_helm_repo(&state.db, &repo_key).await?;
-
-    // Query all non-deleted Helm artifacts with their metadata.
-    // Using sqlx::query() (non-macro) since this is a new query not in the offline cache.
+/// Query Helm chart artifacts from a repository and append chart entries to `out`.
+async fn query_charts_from_repo(
+    db: &PgPool,
+    repo_id: uuid::Uuid,
+    repo_key: &str,
+    out: &mut Vec<(ChartYaml, String, String, String)>,
+) -> Result<(), Response> {
     let rows = sqlx::query(
         r#"
         SELECT a.id, a.name, a.version, a.size_bytes, a.checksum_sha256,
@@ -117,8 +112,8 @@ async fn index_yaml(
         ORDER BY a.name ASC, a.created_at DESC
         "#,
     )
-    .bind(repo.id)
-    .fetch_all(&state.db)
+    .bind(repo_id)
+    .fetch_all(db)
     .await
     .map_err(|e| {
         (
@@ -127,9 +122,6 @@ async fn index_yaml(
         )
             .into_response()
     })?;
-
-    // Build chart entries for index generation
-    let mut charts: Vec<(ChartYaml, String, String, String)> = Vec::new();
 
     for row in &rows {
         let name: String = row.get("name");
@@ -143,13 +135,11 @@ async fn index_yaml(
             None => continue,
         };
 
-        // Try to reconstruct ChartYaml from stored metadata
         let chart_yaml = metadata
             .as_ref()
             .and_then(|m| m.get("chart"))
             .and_then(|chart_value| serde_json::from_value::<ChartYaml>(chart_value.clone()).ok());
 
-        // Fall back to a minimal ChartYaml if metadata is missing
         let chart_yaml = chart_yaml.unwrap_or_else(|| ChartYaml {
             api_version: "v2".to_string(),
             name: name.clone(),
@@ -181,9 +171,17 @@ async fn index_yaml(
         let created = created_at.to_rfc3339();
         let digest = checksum_sha256;
 
-        charts.push((chart_yaml, url, created, digest));
+        out.push((chart_yaml, url, created, digest));
     }
 
+    Ok(())
+}
+
+/// Generate index.yaml content and wrap in a YAML response.
+#[allow(clippy::result_large_err)]
+fn build_index_response(
+    charts: Vec<(ChartYaml, String, String, String)>,
+) -> Result<Response, Response> {
     let index_content = generate_index_yaml(charts).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -197,6 +195,64 @@ async fn index_yaml(
         .header(CONTENT_TYPE, "application/x-yaml; charset=utf-8")
         .body(Body::from(index_content))
         .unwrap())
+}
+
+// ---------------------------------------------------------------------------
+// GET /helm/{repo_key}/index.yaml -- Helm repository index
+// ---------------------------------------------------------------------------
+
+async fn index_yaml(
+    State(state): State<SharedState>,
+    Path(repo_key): Path<String>,
+) -> Result<Response, Response> {
+    let repo = resolve_helm_repo(&state.db, &repo_key).await?;
+
+    // Virtual repository: merge index.yaml from all member repositories
+    if repo.repo_type == RepositoryType::Virtual {
+        let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+        let mut all_charts: Vec<(ChartYaml, String, String, String)> = Vec::new();
+
+        // Collect index.yaml from remote members and parse chart entries
+        let remote_indexes = proxy_helpers::collect_virtual_metadata(
+            &state.db,
+            state.proxy_service.as_deref(),
+            repo.id,
+            "index.yaml",
+            |bytes, _member_key| async move {
+                let yaml_str = String::from_utf8(bytes.to_vec()).map_err(|_| {
+                    (StatusCode::BAD_GATEWAY, "Invalid UTF-8 from upstream").into_response()
+                })?;
+                let index: HelmIndex = serde_yaml::from_str(&yaml_str).map_err(|_| {
+                    (StatusCode::BAD_GATEWAY, "Invalid index.yaml from upstream").into_response()
+                })?;
+                Ok(index)
+            },
+        )
+        .await?;
+
+        for (_member_key, index) in remote_indexes {
+            for (_chart_name, entries) in index.entries {
+                for entry in entries {
+                    let filename = format!("{}-{}.tgz", entry.chart.name, entry.chart.version);
+                    let url = format!("/helm/{}/charts/{}", repo_key, filename);
+                    all_charts.push((entry.chart, url, entry.created, entry.digest));
+                }
+            }
+        }
+
+        // Query artifacts from local/hosted members
+        for member in &members {
+            if member.repo_type != RepositoryType::Remote {
+                query_charts_from_repo(&state.db, member.id, &repo_key, &mut all_charts).await?;
+            }
+        }
+
+        return build_index_response(all_charts);
+    }
+
+    let mut charts: Vec<(ChartYaml, String, String, String)> = Vec::new();
+    query_charts_from_repo(&state.db, repo.id, &repo_key, &mut charts).await?;
+    build_index_response(charts)
 }
 
 // ---------------------------------------------------------------------------

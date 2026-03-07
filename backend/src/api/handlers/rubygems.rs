@@ -20,10 +20,12 @@ use axum::routing::{get, post};
 use axum::Extension;
 use axum::Router;
 use bytes::Bytes;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
+use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
 use tracing::info;
 
@@ -31,7 +33,7 @@ use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::rubygems::RubygemsHandler;
-use crate::models::repository::RepositoryType;
+use crate::models::repository::{Repository, RepositoryType};
 
 // ---------------------------------------------------------------------------
 // Router
@@ -139,47 +141,68 @@ async fn gem_info(
             format!("Database error: {}", e),
         )
             .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Gem not found").into_response())?;
+    })?;
 
-    // Get download count
-    let download_count: i64 = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM download_statistics WHERE artifact_id = $1",
-        artifact.id
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(Some(0))
-    .unwrap_or(0);
+    if let Some(artifact) = artifact {
+        // Get download count
+        let download_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM download_statistics WHERE artifact_id = $1",
+            artifact.id
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(Some(0))
+        .unwrap_or(0);
 
-    let version = artifact.version.unwrap_or_default();
-    let description = artifact
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("gemspec"))
-        .and_then(|gs| gs.get("summary"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        let version = artifact.version.unwrap_or_default();
+        let description = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("gemspec"))
+            .and_then(|gs| gs.get("summary"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-    let gem_filename = format!("{}-{}.gem", gem_name, version);
-    let gem_uri = format!("/gems/{}/gems/{}", repo_key, gem_filename);
+        let gem_filename = format!("{}-{}.gem", gem_name, version);
+        let gem_uri = format!("/gems/{}/gems/{}", repo_key, gem_filename);
 
-    let json = serde_json::json!({
-        "name": gem_name,
-        "version": version,
-        "info": description,
-        "gem_uri": gem_uri,
-        "sha": artifact.checksum_sha256,
-        "downloads": download_count,
-        "version_downloads": download_count,
-    });
+        let json = serde_json::json!({
+            "name": gem_name,
+            "version": version,
+            "info": description,
+            "gem_uri": gem_uri,
+            "sha": artifact.checksum_sha256,
+            "downloads": download_count,
+            "version_downloads": download_count,
+        });
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_string(&json).unwrap()))
-        .unwrap())
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&json).unwrap()))
+            .unwrap());
+    }
+
+    // Virtual repo: try remote members in priority order
+    if repo.repo_type == RepositoryType::Virtual {
+        return proxy_helpers::resolve_virtual_metadata(
+            &state.db,
+            state.proxy_service.as_deref(),
+            repo.id,
+            &format!("api/v1/gems/{}.json", gem_name),
+            |bytes, _member_key| async move {
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(bytes))
+                    .unwrap())
+            },
+        )
+        .await;
+    }
+
+    Err((StatusCode::NOT_FOUND, "Gem not found").into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -542,42 +565,108 @@ async fn push_gem(
         .unwrap())
 }
 
-// ---------------------------------------------------------------------------
-// GET /gems/{repo_key}/specs.4.8.gz — Full spec index (gzipped JSON)
-// ---------------------------------------------------------------------------
+const SPECS_QUERY: &str = r#"
+    SELECT name, version
+    FROM artifacts
+    WHERE repository_id = $1
+      AND is_deleted = false
+    ORDER BY name, created_at DESC
+"#;
 
-async fn specs_index(
-    State(state): State<SharedState>,
-    Path(repo_key): Path<String>,
-) -> Result<Response, Response> {
-    let repo = resolve_rubygems_repo(&state.db, &repo_key).await?;
+const LATEST_SPECS_QUERY: &str = r#"
+    SELECT DISTINCT ON (LOWER(name)) name, version
+    FROM artifacts
+    WHERE repository_id = $1
+      AND is_deleted = false
+    ORDER BY LOWER(name), created_at DESC
+"#;
 
-    let artifacts = sqlx::query!(
-        r#"
-        SELECT name, version
-        FROM artifacts
-        WHERE repository_id = $1
-          AND is_deleted = false
-        ORDER BY name, created_at DESC
-        "#,
-        repo.id
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| {
+/// Query gem specs from a single repository using the given SQL.
+async fn query_gem_specs(
+    db: &PgPool,
+    repo_id: uuid::Uuid,
+    sql: &str,
+) -> Result<Vec<serde_json::Value>, Response> {
+    let rows = sqlx::query(sql)
+        .bind(repo_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        })?;
+
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let name: String = r.get("name");
+            let version: Option<String> = r.get("version");
+            serde_json::json!([name, version.unwrap_or_default(), "ruby"])
+        })
+        .collect())
+}
+
+/// Query gem specs from all local (non-remote) virtual members.
+async fn query_local_member_specs(
+    db: &PgPool,
+    members: &[Repository],
+    sql: &str,
+) -> Result<Vec<serde_json::Value>, Response> {
+    let mut all_specs = Vec::new();
+    for member in members {
+        if member.repo_type != RepositoryType::Remote {
+            let specs = query_gem_specs(db, member.id, sql).await?;
+            all_specs.extend(specs);
+        }
+    }
+    Ok(all_specs)
+}
+
+/// Decompress gzipped upstream spec data and parse as a JSON array of spec tuples.
+#[allow(clippy::result_large_err)]
+fn parse_upstream_specs(bytes: &[u8]) -> Result<Vec<serde_json::Value>, Response> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed).map_err(|_| {
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
+            StatusCode::BAD_GATEWAY,
+            "Failed to decompress upstream specs",
         )
             .into_response()
     })?;
+    serde_json::from_slice(&decompressed)
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Failed to parse upstream specs").into_response())
+}
 
-    let specs: Vec<serde_json::Value> = artifacts
-        .iter()
-        .map(|a| serde_json::json!([a.name, a.version.clone().unwrap_or_default(), "ruby"]))
-        .collect();
+/// Collect remote specs from virtual members, decompress and parse each one.
+async fn collect_remote_specs(
+    state: &SharedState,
+    virtual_repo_id: uuid::Uuid,
+    upstream_path: &str,
+) -> Result<Vec<serde_json::Value>, Response> {
+    let remote_specs = proxy_helpers::collect_virtual_metadata(
+        &state.db,
+        state.proxy_service.as_deref(),
+        virtual_repo_id,
+        upstream_path,
+        |bytes, _member_key| async move { parse_upstream_specs(&bytes) },
+    )
+    .await?;
 
-    let json_bytes = serde_json::to_vec(&specs).map_err(|e| {
+    let mut all = Vec::new();
+    for (_key, specs) in remote_specs {
+        all.extend(specs);
+    }
+    Ok(all)
+}
+
+/// Serialize specs to JSON, gzip-compress, and return as a response.
+#[allow(clippy::result_large_err)]
+fn specs_to_gzip_response(specs: &[serde_json::Value]) -> Result<Response, Response> {
+    let json_bytes = serde_json::to_vec(specs).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Serialization error: {}", e),
@@ -602,6 +691,31 @@ async fn specs_index(
 }
 
 // ---------------------------------------------------------------------------
+// GET /gems/{repo_key}/specs.4.8.gz — Full spec index (gzipped JSON)
+// ---------------------------------------------------------------------------
+
+async fn specs_index(
+    State(state): State<SharedState>,
+    Path(repo_key): Path<String>,
+) -> Result<Response, Response> {
+    let repo = resolve_rubygems_repo(&state.db, &repo_key).await?;
+
+    // Virtual repo: merge specs from all local and remote members
+    if repo.repo_type == RepositoryType::Virtual {
+        let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+        let mut all_specs = query_local_member_specs(&state.db, &members, SPECS_QUERY).await?;
+
+        let remote = collect_remote_specs(&state, repo.id, "specs.4.8.gz").await?;
+        all_specs.extend(remote);
+
+        return specs_to_gzip_response(&all_specs);
+    }
+
+    let specs = query_gem_specs(&state.db, repo.id, SPECS_QUERY).await?;
+    specs_to_gzip_response(&specs)
+}
+
+// ---------------------------------------------------------------------------
 // GET /gems/{repo_key}/latest_specs.4.8.gz — Latest spec index
 // ---------------------------------------------------------------------------
 
@@ -611,54 +725,33 @@ async fn latest_specs_index(
 ) -> Result<Response, Response> {
     let repo = resolve_rubygems_repo(&state.db, &repo_key).await?;
 
-    // Get latest version of each gem using DISTINCT ON
-    let artifacts = sqlx::query!(
-        r#"
-        SELECT DISTINCT ON (LOWER(name)) name, version
-        FROM artifacts
-        WHERE repository_id = $1
-          AND is_deleted = false
-        ORDER BY LOWER(name), created_at DESC
-        "#,
-        repo.id
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+    // Virtual repo: merge latest specs from all local and remote members,
+    // then deduplicate by gem name (keep the first occurrence per name).
+    if repo.repo_type == RepositoryType::Virtual {
+        let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+        let mut all_specs =
+            query_local_member_specs(&state.db, &members, LATEST_SPECS_QUERY).await?;
 
-    let specs: Vec<serde_json::Value> = artifacts
-        .iter()
-        .map(|a| serde_json::json!([a.name, a.version.clone().unwrap_or_default(), "ruby"]))
-        .collect();
+        let remote = collect_remote_specs(&state, repo.id, "latest_specs.4.8.gz").await?;
+        all_specs.extend(remote);
 
-    let json_bytes = serde_json::to_vec(&specs).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Serialization error: {}", e),
-        )
-            .into_response()
-    })?;
+        // Deduplicate by gem name, keeping the first occurrence (higher-priority member wins)
+        let mut seen = std::collections::HashSet::new();
+        all_specs.retain(|spec| {
+            let name = spec
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            seen.insert(name)
+        });
 
-    let compressed = gzip_compress(&json_bytes).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Compression error: {}", e),
-        )
-            .into_response()
-    })?;
+        return specs_to_gzip_response(&all_specs);
+    }
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, "application/gzip")
-        .header(CONTENT_LENGTH, compressed.len().to_string())
-        .body(Body::from(compressed))
-        .unwrap())
+    let specs = query_gem_specs(&state.db, repo.id, LATEST_SPECS_QUERY).await?;
+    specs_to_gzip_response(&specs)
 }
 
 // ---------------------------------------------------------------------------

@@ -960,6 +960,11 @@ async fn try_remote_index(
 /// Iterates members in priority order: local index entries first, then upstream
 /// proxy for remote members. Honours each member's `index_upstream_url` from
 /// `repository_config` (falls back to `upstream_url` when absent).
+///
+/// NOTE: This does not use `resolve_virtual_metadata` because cargo index
+/// resolution interleaves local DB queries with remote proxy fallback per
+/// member, and uses `index_upstream_url` config overrides for the proxy URL.
+/// The shared helper only handles remote members in isolation.
 async fn try_virtual_index(
     state: &SharedState,
     repo: &RepoInfo,

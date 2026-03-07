@@ -115,6 +115,131 @@ where
         .into_response())
 }
 
+/// Resolve virtual repository metadata using first-match semantics.
+/// Iterates through remote members by priority, fetching metadata from
+/// each upstream until one succeeds. The `transform` closure converts
+/// the raw bytes into a final HTTP response.
+///
+/// Suitable for metadata endpoints where only one upstream response is
+/// needed (npm package info, pypi simple index, hex package, rubygems gem info).
+pub async fn resolve_virtual_metadata<F, Fut>(
+    db: &PgPool,
+    proxy_service: Option<&ProxyService>,
+    virtual_repo_id: Uuid,
+    path: &str,
+    transform: F,
+) -> Result<Response, Response>
+where
+    F: Fn(Bytes, String) -> Fut,
+    Fut: std::future::Future<Output = Result<Response, Response>>,
+{
+    let members = fetch_virtual_members(db, virtual_repo_id).await?;
+
+    if members.is_empty() {
+        return Err((StatusCode::NOT_FOUND, "Virtual repository has no members").into_response());
+    }
+
+    for member in &members {
+        if member.repo_type != RepositoryType::Remote {
+            continue;
+        }
+
+        let Some(upstream_url) = member.upstream_url.as_deref() else {
+            continue;
+        };
+
+        let Some(proxy) = proxy_service else {
+            continue;
+        };
+
+        match proxy_fetch(proxy, member.id, &member.key, upstream_url, path).await {
+            Ok((bytes, _content_type)) => match transform(bytes, member.key.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(_e) => {
+                    tracing::warn!(
+                        "Metadata transform failed for member '{}' at path '{}'",
+                        member.key,
+                        path
+                    );
+                }
+            },
+            Err(_e) => {
+                tracing::debug!(
+                    "Metadata proxy fetch miss for member '{}' at path '{}'",
+                    member.key,
+                    path
+                );
+            }
+        }
+    }
+
+    Err((
+        StatusCode::NOT_FOUND,
+        "Metadata not found in any member repository",
+    )
+        .into_response())
+}
+
+/// Collect metadata from ALL remote members of a virtual repository.
+/// Each member's response is extracted via the `extract` closure and
+/// gathered into a `Vec<(repo_key, T)>`. The caller is responsible for
+/// merging the collected results.
+///
+/// Suitable for metadata endpoints where responses from every upstream
+/// must be combined (conda repodata, cran PACKAGES, helm index, rubygems specs).
+pub async fn collect_virtual_metadata<T, F, Fut>(
+    db: &PgPool,
+    proxy_service: Option<&ProxyService>,
+    virtual_repo_id: Uuid,
+    path: &str,
+    extract: F,
+) -> Result<Vec<(String, T)>, Response>
+where
+    F: Fn(Bytes, String) -> Fut,
+    Fut: std::future::Future<Output = Result<T, Response>>,
+{
+    let members = fetch_virtual_members(db, virtual_repo_id).await?;
+    let mut results: Vec<(String, T)> = Vec::new();
+
+    for member in &members {
+        if member.repo_type != RepositoryType::Remote {
+            continue;
+        }
+
+        let Some(upstream_url) = member.upstream_url.as_deref() else {
+            continue;
+        };
+
+        let Some(proxy) = proxy_service else {
+            continue;
+        };
+
+        match proxy_fetch(proxy, member.id, &member.key, upstream_url, path).await {
+            Ok((bytes, _content_type)) => match extract(bytes, member.key.clone()).await {
+                Ok(data) => {
+                    results.push((member.key.clone(), data));
+                }
+                Err(_e) => {
+                    tracing::warn!(
+                        "Metadata extract failed for member '{}' at path '{}'",
+                        member.key,
+                        path
+                    );
+                }
+            },
+            Err(_e) => {
+                tracing::warn!(
+                    "Metadata proxy fetch failed for member '{}' at path '{}'",
+                    member.key,
+                    path
+                );
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Fetch virtual repository member repos sorted by priority.
 pub async fn fetch_virtual_members(
     db: &PgPool,
