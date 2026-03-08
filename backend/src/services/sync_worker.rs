@@ -17,12 +17,23 @@ const STALE_PEER_THRESHOLD_MINUTES: i32 = 5;
 /// 6 ticks = 60 seconds.
 const STALE_CHECK_INTERVAL_TICKS: u64 = 6;
 
+/// Duration of each worker tick in seconds.
+const TICK_INTERVAL_SECS: u64 = 10;
+
 /// Check whether the current tick should trigger a stale peer detection run.
 ///
 /// Returns `true` every `interval_ticks` ticks (e.g. every 6th tick = 60s
 /// when each tick is 10s).
 pub(crate) fn should_run_stale_check(tick_count: u64, interval_ticks: u64) -> bool {
     interval_ticks > 0 && tick_count % interval_ticks == 0
+}
+
+/// Compute the effective stale check period in seconds.
+///
+/// Useful for operators to understand the actual detection delay.
+#[allow(dead_code)]
+pub(crate) fn stale_check_period_secs() -> u64 {
+    TICK_INTERVAL_SECS * STALE_CHECK_INTERVAL_TICKS
 }
 
 /// Spawn the background sync worker.
@@ -34,7 +45,7 @@ pub async fn spawn_sync_worker(db: PgPool) {
     tokio::spawn(async move {
         // Small startup delay so the server can finish initializing.
         tokio::time::sleep(Duration::from_secs(5)).await;
-        let mut tick = interval(Duration::from_secs(10));
+        let mut tick = interval(Duration::from_secs(TICK_INTERVAL_SECS));
         let client = crate::services::http_client::base_client_builder()
             .timeout(Duration::from_secs(300))
             .build()
@@ -1133,5 +1144,16 @@ mod tests {
     fn test_stale_threshold_default() {
         // Verify the threshold matches the admin default of 5 minutes.
         assert_eq!(STALE_PEER_THRESHOLD_MINUTES, 5);
+    }
+
+    #[test]
+    fn test_stale_check_period_secs() {
+        // 10s tick * 6 ticks = 60s check period.
+        assert_eq!(stale_check_period_secs(), 60);
+    }
+
+    #[test]
+    fn test_tick_interval_constant() {
+        assert_eq!(TICK_INTERVAL_SECS, 10);
     }
 }
