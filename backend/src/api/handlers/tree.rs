@@ -4,6 +4,8 @@
 
 use axum::{
     extract::{Extension, Query, State},
+    http::header,
+    response::IntoResponse,
     routing::get,
     Json, Router,
 };
@@ -17,7 +19,9 @@ use crate::api::SharedState;
 use crate::error::{AppError, Result};
 
 pub fn router() -> Router<SharedState> {
-    Router::new().route("/", get(get_tree))
+    Router::new()
+        .route("/", get(get_tree))
+        .route("/content", get(get_content))
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -28,6 +32,16 @@ pub struct TreeQuery {
     pub path: Option<String>,
     /// Whether to include metadata in the response
     pub include_metadata: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ContentQuery {
+    /// Repository key containing the artifact
+    pub repository_key: String,
+    /// Full artifact path within the repository
+    pub path: String,
+    /// Optional maximum number of bytes to return (truncates the response)
+    pub max_bytes: Option<i64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -214,8 +228,111 @@ pub async fn get_tree(
     Ok(Json(TreeResponse { nodes }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/content",
+    context_path = "/api/v1/tree",
+    tag = "repositories",
+    params(ContentQuery),
+    responses(
+        (status = 200, description = "Artifact file content", content_type = "application/octet-stream"),
+        (status = 400, description = "Validation error", body = crate::api::openapi::ErrorResponse),
+        (status = 404, description = "Artifact not found", body = crate::api::openapi::ErrorResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn get_content(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<Option<AuthExtension>>,
+    Query(params): Query<ContentQuery>,
+) -> Result<impl IntoResponse> {
+    // Verify repository exists and check visibility
+    let repo_row: Option<(Uuid, bool, String)> = sqlx::query_as(
+        "SELECT id, is_public, storage_path FROM repositories WHERE key = $1",
+    )
+    .bind(&params.repository_key)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let (repo_id, is_public, storage_path) = repo_row.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Repository '{}' not found",
+            params.repository_key
+        ))
+    })?;
+
+    // Private repos require authentication
+    if !is_public && auth.is_none() {
+        return Err(AppError::NotFound(format!(
+            "Repository '{}' not found",
+            params.repository_key
+        )));
+    }
+
+    // Look up the artifact by repository_id + path
+    #[derive(sqlx::FromRow)]
+    struct ArtifactRow {
+        size_bytes: i64,
+        content_type: String,
+        storage_key: String,
+    }
+
+    let artifact = sqlx::query_as::<_, ArtifactRow>(
+        r#"
+        SELECT size_bytes, content_type, storage_key
+        FROM artifacts
+        WHERE repository_id = $1 AND path = $2 AND is_deleted = false
+        "#,
+    )
+    .bind(repo_id)
+    .bind(&params.path)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?
+    .ok_or_else(|| AppError::NotFound(format!("Artifact '{}' not found", params.path)))?;
+
+    // Fetch content from storage
+    let storage = state.storage_for_repo(&storage_path);
+    let content = storage.get(&artifact.storage_key).await?;
+
+    // Truncate to max_bytes if specified
+    let body = match params.max_bytes {
+        Some(max) if max >= 0 && (max as usize) < content.len() => {
+            content.slice(..max as usize)
+        }
+        _ => content,
+    };
+
+    // Detect content type: use the stored value, fall back to mime_guess
+    let content_type = if artifact.content_type.is_empty()
+        || artifact.content_type == "application/octet-stream"
+    {
+        mime_guess::from_path(&params.path)
+            .first_or_octet_stream()
+            .to_string()
+    } else {
+        artifact.content_type
+    };
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::HeaderName::from_static("x-content-size"),
+                artifact.size_bytes.to_string(),
+            ),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=3600".to_string(),
+            ),
+        ],
+        body,
+    ))
+}
+
 #[derive(OpenApi)]
-#[openapi(paths(get_tree), components(schemas(TreeResponse, TreeNodeResponse,)))]
+#[openapi(paths(get_tree, get_content), components(schemas(TreeResponse, TreeNodeResponse,)))]
 pub struct TreeApiDoc;
 
 #[cfg(test)]
@@ -562,5 +679,33 @@ mod tests {
         let src = folders.get("src").unwrap();
         assert!(!src.is_file);
         assert_eq!(src.child_count, 3);
+    }
+
+    // ── ContentQuery deserialization tests ────────────────────────────
+
+    #[test]
+    fn test_content_query_required_fields() {
+        let json = r#"{"repository_key": "maven-releases", "path": "com/example/lib-1.0.jar"}"#;
+        let q: ContentQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.repository_key, "maven-releases");
+        assert_eq!(q.path, "com/example/lib-1.0.jar");
+        assert!(q.max_bytes.is_none());
+    }
+
+    #[test]
+    fn test_content_query_with_max_bytes() {
+        let json =
+            r#"{"repository_key": "npm", "path": "lodash/package.json", "max_bytes": 4096}"#;
+        let q: ContentQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.repository_key, "npm");
+        assert_eq!(q.path, "lodash/package.json");
+        assert_eq!(q.max_bytes, Some(4096));
+    }
+
+    #[test]
+    fn test_content_query_max_bytes_zero() {
+        let json = r#"{"repository_key": "x", "path": "y", "max_bytes": 0}"#;
+        let q: ContentQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(q.max_bytes, Some(0));
     }
 }
