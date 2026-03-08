@@ -459,6 +459,15 @@ async fn handle_transfer_success(db: &PgPool, task: &TaskRow, bytes_transferred:
     .await;
 }
 
+/// Check whether a sync task is eligible for automatic retry.
+///
+/// A task is retriable when it has not yet exhausted its `max_retries` limit.
+/// The `retry_count` passed here should be the **new** count (after incrementing
+/// for the current failure).
+pub(crate) fn is_task_retriable(new_retry_count: i32, max_retries: i32) -> bool {
+    new_retry_count < max_retries
+}
+
 /// Handle a failed transfer: mark task, apply backoff, update peer counters.
 ///
 /// If the task has remaining retries (`retry_count < max_retries`), it is
@@ -485,7 +494,7 @@ async fn handle_transfer_failure(db: &PgPool, task: &TaskRow, error_message: &st
     .execute(db)
     .await;
 
-    if new_retry_count < task.max_retries {
+    if is_task_retriable(new_retry_count, task.max_retries) {
         tracing::info!(
             "Sync task {} failed (attempt {}/{}), will retry after peer recovery",
             task.id,
@@ -1084,5 +1093,65 @@ mod tests {
             "exclude_patterns": []
         });
         assert!(matches_replication_filter("anything", Some(&filter)));
+    }
+
+    // ── is_task_retriable ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_task_retriable_first_failure() {
+        // retry_count=1 (just failed once), max_retries=3 → retriable
+        assert!(is_task_retriable(1, 3));
+    }
+
+    #[test]
+    fn test_task_retriable_second_failure() {
+        // retry_count=2, max_retries=3 → retriable (one attempt left)
+        assert!(is_task_retriable(2, 3));
+    }
+
+    #[test]
+    fn test_task_not_retriable_at_max() {
+        // retry_count=3, max_retries=3 → permanently failed
+        assert!(!is_task_retriable(3, 3));
+    }
+
+    #[test]
+    fn test_task_not_retriable_over_max() {
+        // retry_count=5, max_retries=3 → permanently failed
+        assert!(!is_task_retriable(5, 3));
+    }
+
+    #[test]
+    fn test_task_retriable_with_zero_retries_so_far() {
+        // retry_count=0 (hasn't failed yet, shouldn't happen but handle it)
+        assert!(is_task_retriable(0, 3));
+    }
+
+    #[test]
+    fn test_task_not_retriable_with_zero_max() {
+        // max_retries=0 means no retries allowed
+        assert!(!is_task_retriable(1, 0));
+    }
+
+    #[test]
+    fn test_task_not_retriable_zero_zero() {
+        // Edge case: no retries configured and no failures yet
+        assert!(!is_task_retriable(0, 0));
+    }
+
+    #[test]
+    fn test_task_retriable_single_retry_allowed() {
+        // max_retries=1, first failure → still retriable
+        assert!(is_task_retriable(0, 1));
+        // After one retry → not retriable
+        assert!(!is_task_retriable(1, 1));
+    }
+
+    #[test]
+    fn test_task_retriable_high_max() {
+        // Large max_retries, early failure
+        assert!(is_task_retriable(1, 100));
+        assert!(is_task_retriable(99, 100));
+        assert!(!is_task_retriable(100, 100));
     }
 }
