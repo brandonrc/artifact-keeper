@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --profile PROFILE  Test profile to run (smoke, all, proxy, redteam, storage-gc, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, hex)"
+            echo "  --profile PROFILE  Test profile to run (smoke, all, proxy, redteam, storage-gc, curation, pypi, npm, cargo, maven, go, rpm, deb, helm, conda, docker, hex)"
             echo "  --build            Force rebuild all containers"
             echo "  --clean            Clean up containers and volumes after tests"
             echo "  --stress           Run stress tests after E2E tests"
@@ -168,6 +168,21 @@ if [ "$PROFILE" = "storage-gc" ]; then
         echo -e "${RED}Storage GC tests failed (exit code: $GC_EXIT).${NC}"
     fi
     exit $GC_EXIT
+fi
+
+# Curation profile: run curation policy tests only (no Playwright)
+if [ "$PROFILE" = "curation" ]; then
+    echo -e "${BLUE}Running curation E2E tests...${NC}"
+    docker compose -f docker-compose.test.yml --profile curation up -d mock-upstream
+    docker compose -f docker-compose.test.yml --profile curation run --rm curation-test
+    CURATION_EXIT=$?
+    echo ""
+    if [ $CURATION_EXIT -eq 0 ]; then
+        echo -e "${GREEN}Curation tests completed.${NC}"
+    else
+        echo -e "${RED}Curation tests failed (exit code: $CURATION_EXIT).${NC}"
+    fi
+    exit $CURATION_EXIT
 fi
 
 # Build and start containers with profile

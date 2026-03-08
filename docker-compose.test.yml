@@ -20,6 +20,7 @@
 #   hex         - Hex/Elixir package tests
 #   proxy       - Remote proxy + virtual repository tests
 #   storage-gc  - Storage garbage collection tests
+#   curation    - Curation policy E2E tests (RPM/DEB with mock upstream)
 #   smoke       - Smoke tests only (pypi, npm, cargo)
 #   all         - All native client tests
 
@@ -100,7 +101,7 @@ services:
       retries: 30
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication", "curation"]
 
   # PKI service: uses pre-generated files from .pki/ if available (CI), otherwise generates them (local)
   pki:
@@ -134,7 +135,7 @@ services:
       retries: 20
     networks:
       - e2e-test-network
-    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication"]
+    profiles: ["pypi", "npm", "cargo", "maven", "go", "rpm", "deb", "helm", "conda", "docker", "smoke", "all", "proxy", "redteam", "tag-replication", "curation"]
 
   # ==========================================================================
   # SMOKE TEST SERVICES (pypi, npm, cargo)
@@ -480,6 +481,51 @@ services:
     networks:
       - e2e-test-network
     profiles: ["redteam"]
+
+  # ==========================================================================
+  # CURATION POLICY TESTS
+  # ==========================================================================
+
+  mock-upstream:
+    image: nginx:alpine
+    container_name: e2e-test-mock-upstream
+    profiles: ["curation"]
+    volumes:
+      - ./scripts/native-tests/fixtures/curation/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./scripts/native-tests/fixtures/curation/rpm:/usr/share/nginx/html/rpm:ro
+      - ./scripts/native-tests/fixtures/curation/deb:/usr/share/nginx/html/deb:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/rpm/repodata/repomd.xml"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - e2e-test-network
+
+  curation-test:
+    image: alpine:3.19
+    container_name: e2e-test-curation
+    profiles: ["curation"]
+    depends_on:
+      setup:
+        condition: service_healthy
+      mock-upstream:
+        condition: service_healthy
+    environment:
+      REGISTRY_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: admin123
+      MOCK_UPSTREAM_URL: http://mock-upstream
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: artifact_registry
+      PGUSER: registry
+      PGPASSWORD: registry
+    volumes:
+      - ./scripts/native-tests:/scripts:ro
+    entrypoint: ["sh", "-c", "apk add --no-cache curl jq postgresql-client bash > /dev/null 2>&1 && bash /scripts/test-curation.sh"]
+    networks:
+      - e2e-test-network
 
 networks:
   e2e-test-network:
