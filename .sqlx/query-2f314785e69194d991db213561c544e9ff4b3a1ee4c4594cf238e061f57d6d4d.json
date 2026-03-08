@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO repositories (\n                key, name, description, format, repo_type,\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            RETURNING\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                promotion_target_id, promotion_policy_id,\n                created_at, updated_at\n            ",
+  "query": "\n            UPDATE repositories\n            SET\n                key = COALESCE($2, key),\n                name = COALESCE($3, name),\n                description = COALESCE($4, description),\n                is_public = COALESCE($5, is_public),\n                quota_bytes = COALESCE($6, quota_bytes),\n                upstream_url = COALESCE($7, upstream_url),\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                promotion_target_id, promotion_policy_id,\n                curation_enabled, curation_source_repo_id, curation_target_repo_id,\n                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,\n                created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -159,99 +159,54 @@
       },
       {
         "ordinal": 14,
+        "name": "curation_enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "curation_source_repo_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 16,
+        "name": "curation_target_repo_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 17,
+        "name": "curation_default_action",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 18,
+        "name": "curation_sync_interval_secs",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 19,
+        "name": "curation_auto_fetch",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 20,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 21,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Varchar",
         "Varchar",
         "Text",
-        {
-          "Custom": {
-            "name": "repository_format",
-            "kind": {
-              "Enum": [
-                "maven",
-                "gradle",
-                "npm",
-                "pypi",
-                "nuget",
-                "go",
-                "rubygems",
-                "docker",
-                "helm",
-                "rpm",
-                "debian",
-                "conan",
-                "cargo",
-                "generic",
-                "podman",
-                "buildx",
-                "oras",
-                "wasm_oci",
-                "helm_oci",
-                "poetry",
-                "conda",
-                "yarn",
-                "bower",
-                "pnpm",
-                "chocolatey",
-                "powershell",
-                "terraform",
-                "opentofu",
-                "alpine",
-                "conda_native",
-                "composer",
-                "hex",
-                "cocoapods",
-                "swift",
-                "pub",
-                "sbt",
-                "chef",
-                "puppet",
-                "ansible",
-                "gitlfs",
-                "vscode",
-                "jetbrains",
-                "huggingface",
-                "mlmodel",
-                "cran",
-                "vagrant",
-                "opkg",
-                "p2",
-                "bazel",
-                "protobuf",
-                "incus",
-                "lxc"
-              ]
-            }
-          }
-        },
-        {
-          "Custom": {
-            "name": "repository_type",
-            "kind": {
-              "Enum": [
-                "local",
-                "remote",
-                "virtual",
-                "staging"
-              ]
-            }
-          }
-        },
-        "Varchar",
-        "Varchar",
-        "Varchar",
         "Bool",
-        "Int8"
+        "Int8",
+        "Varchar"
       ]
     },
     "nullable": [
@@ -270,8 +225,14 @@
       true,
       true,
       false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "0068d46eafae7f640db30b4fb99de8d0541f2971f0115d45c835d9cf61386df2"
+  "hash": "2f314785e69194d991db213561c544e9ff4b3a1ee4c4594cf238e061f57d6d4d"
 }

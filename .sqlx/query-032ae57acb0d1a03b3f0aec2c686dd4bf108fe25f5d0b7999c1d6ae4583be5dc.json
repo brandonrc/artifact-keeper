@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            r.id, r.key, r.name, r.description,\n            r.format as \"format: RepositoryFormat\",\n            r.repo_type as \"repo_type: RepositoryType\",\n            r.storage_backend, r.storage_path, r.upstream_url,\n            r.is_public, r.quota_bytes,\n            r.replication_priority as \"replication_priority: ReplicationPriority\",\n            r.promotion_target_id, r.promotion_policy_id,\n            r.created_at, r.updated_at\n        FROM repositories r\n        INNER JOIN virtual_repo_members vrm ON r.id = vrm.member_repo_id\n        WHERE vrm.virtual_repo_id = $1\n        ORDER BY vrm.priority\n        ",
+  "query": "\n            SELECT\n                id, key, name, description,\n                format as \"format: RepositoryFormat\",\n                repo_type as \"repo_type: RepositoryType\",\n                storage_backend, storage_path, upstream_url,\n                is_public, quota_bytes,\n                replication_priority as \"replication_priority: ReplicationPriority\",\n                promotion_target_id, promotion_policy_id,\n                curation_enabled, curation_source_repo_id, curation_target_repo_id,\n                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,\n                created_at, updated_at\n            FROM repositories\n            WHERE key = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -159,18 +159,48 @@
       },
       {
         "ordinal": 14,
+        "name": "curation_enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 15,
+        "name": "curation_source_repo_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 16,
+        "name": "curation_target_repo_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 17,
+        "name": "curation_default_action",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 18,
+        "name": "curation_sync_interval_secs",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 19,
+        "name": "curation_auto_fetch",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 20,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 15,
+        "ordinal": 21,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text"
       ]
     },
     "nullable": [
@@ -189,8 +219,14 @@
       true,
       true,
       false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "8e71cd28dd731b118b023a6fc3456bc5bcba60e68723b0f1fb0e667063386238"
+  "hash": "032ae57acb0d1a03b3f0aec2c686dd4bf108fe25f5d0b7999c1d6ae4583be5dc"
 }

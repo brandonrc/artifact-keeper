@@ -157,6 +157,18 @@ pub struct Repository {
     pub promotion_target_id: Option<Uuid>,
     /// For staging repos: security policy to evaluate before promotion
     pub promotion_policy_id: Option<Uuid>,
+    /// Curation: enable upstream package vetting for this staging repo
+    pub curation_enabled: bool,
+    /// Curation: the remote repo to sync upstream metadata from
+    pub curation_source_repo_id: Option<Uuid>,
+    /// Curation: the local repo to promote approved packages into
+    pub curation_target_repo_id: Option<Uuid>,
+    /// Curation: default action for packages not matching any rule (allow or review)
+    pub curation_default_action: String,
+    /// Curation: seconds between upstream metadata syncs
+    pub curation_sync_interval_secs: i32,
+    /// Curation: whether to pre-fetch approved package bytes
+    pub curation_auto_fetch: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

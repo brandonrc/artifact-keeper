@@ -256,6 +256,8 @@ pub async fn fetch_virtual_members(
             r.is_public, r.quota_bytes,
             r.replication_priority as "replication_priority: ReplicationPriority",
             r.promotion_target_id, r.promotion_policy_id,
+            r.curation_enabled, r.curation_source_repo_id, r.curation_target_repo_id,
+            r.curation_default_action, r.curation_sync_interval_secs, r.curation_auto_fetch,
             r.created_at, r.updated_at
         FROM repositories r
         INNER JOIN virtual_repo_members vrm ON r.id = vrm.member_repo_id
@@ -414,6 +416,12 @@ fn build_remote_repo(id: Uuid, key: &str, upstream_url: &str) -> Repository {
         replication_priority: ReplicationPriority::OnDemand,
         promotion_target_id: None,
         promotion_policy_id: None,
+        curation_enabled: false,
+        curation_source_repo_id: None,
+        curation_target_repo_id: None,
+        curation_default_action: "allow".to_string(),
+        curation_sync_interval_secs: 3600,
+        curation_auto_fetch: false,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

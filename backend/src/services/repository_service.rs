@@ -165,6 +165,8 @@ impl RepositoryService {
                 is_public, quota_bytes,
                 replication_priority as "replication_priority: ReplicationPriority",
                 promotion_target_id, promotion_policy_id,
+                curation_enabled, curation_source_repo_id, curation_target_repo_id,
+                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,
                 created_at, updated_at
             "#,
             req.key,
@@ -229,6 +231,8 @@ impl RepositoryService {
                 is_public, quota_bytes,
                 replication_priority as "replication_priority: ReplicationPriority",
                 promotion_target_id, promotion_policy_id,
+                curation_enabled, curation_source_repo_id, curation_target_repo_id,
+                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,
                 created_at, updated_at
             FROM repositories
             WHERE id = $1
@@ -256,6 +260,8 @@ impl RepositoryService {
                 is_public, quota_bytes,
                 replication_priority as "replication_priority: ReplicationPriority",
                 promotion_target_id, promotion_policy_id,
+                curation_enabled, curation_source_repo_id, curation_target_repo_id,
+                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,
                 created_at, updated_at
             FROM repositories
             WHERE key = $1
@@ -293,6 +299,8 @@ impl RepositoryService {
                 is_public, quota_bytes,
                 replication_priority as "replication_priority: ReplicationPriority",
                 promotion_target_id, promotion_policy_id,
+                curation_enabled, curation_source_repo_id, curation_target_repo_id,
+                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,
                 created_at, updated_at
             FROM repositories
             WHERE ($1::repository_format IS NULL OR format = $1)
@@ -359,6 +367,8 @@ impl RepositoryService {
                 is_public, quota_bytes,
                 replication_priority as "replication_priority: ReplicationPriority",
                 promotion_target_id, promotion_policy_id,
+                curation_enabled, curation_source_repo_id, curation_target_repo_id,
+                curation_default_action, curation_sync_interval_secs, curation_auto_fetch,
                 created_at, updated_at
             "#,
             id,
@@ -511,6 +521,8 @@ impl RepositoryService {
                 r.is_public, r.quota_bytes,
                 r.replication_priority as "replication_priority: ReplicationPriority",
                 r.promotion_target_id, r.promotion_policy_id,
+                r.curation_enabled, r.curation_source_repo_id, r.curation_target_repo_id,
+                r.curation_default_action, r.curation_sync_interval_secs, r.curation_auto_fetch,
                 r.created_at, r.updated_at
             FROM repositories r
             INNER JOIN virtual_repo_members vrm ON r.id = vrm.member_repo_id
@@ -599,6 +611,12 @@ mod tests {
             replication_priority: ReplicationPriority::Scheduled,
             promotion_target_id: None,
             promotion_policy_id: None,
+            curation_enabled: false,
+            curation_source_repo_id: None,
+            curation_target_repo_id: None,
+            curation_default_action: "allow".to_string(),
+            curation_sync_interval_secs: 3600,
+            curation_auto_fetch: false,
             created_at: now,
             updated_at: now,
         }
@@ -661,6 +679,12 @@ mod tests {
             replication_priority: ReplicationPriority::LocalOnly,
             promotion_target_id: None,
             promotion_policy_id: None,
+            curation_enabled: false,
+            curation_source_repo_id: None,
+            curation_target_repo_id: None,
+            curation_default_action: "allow".to_string(),
+            curation_sync_interval_secs: 3600,
+            curation_auto_fetch: false,
             created_at: now,
             updated_at: now,
         };

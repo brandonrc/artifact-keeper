@@ -4,6 +4,7 @@ pub mod api_token;
 pub mod artifact;
 pub mod audit_log;
 pub mod backup;
+pub mod curation;
 pub mod format_handler;
 pub mod migration;
 pub mod peer_connection;

@@ -924,6 +924,12 @@ mod tests {
             replication_priority: crate::models::repository::ReplicationPriority::LocalOnly,
             promotion_target_id: None,
             promotion_policy_id: None,
+            curation_enabled: false,
+            curation_source_repo_id: None,
+            curation_target_repo_id: None,
+            curation_default_action: "allow".to_string(),
+            curation_sync_interval_secs: 3600,
+            curation_auto_fetch: false,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }
