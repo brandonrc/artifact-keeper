@@ -118,6 +118,7 @@ impl CurationService {
     // Rule CRUD
     // ---------------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_rule(
         &self,
         staging_repo_id: Option<Uuid>,
@@ -170,6 +171,7 @@ impl CurationService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_rule(
         &self,
         rule_id: Uuid,
@@ -212,6 +214,7 @@ impl CurationService {
     // Package catalog
     // ---------------------------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_package(
         &self,
         staging_repo_id: Uuid,
@@ -437,8 +440,8 @@ fn glob_match_inner(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bo
 /// Compare two version strings. Returns -1, 0, or 1.
 /// Splits on `.` and `-`, compares segments numerically when possible.
 fn version_compare(a: &str, b: &str) -> i32 {
-    let seg_a: Vec<&str> = a.split(|c| c == '.' || c == '-').collect();
-    let seg_b: Vec<&str> = b.split(|c| c == '.' || c == '-').collect();
+    let seg_a: Vec<&str> = a.split(['.', '-']).collect();
+    let seg_b: Vec<&str> = b.split(['.', '-']).collect();
 
     for i in 0..seg_a.len().max(seg_b.len()) {
         let sa = seg_a.get(i).unwrap_or(&"0");
