@@ -258,8 +258,26 @@ pub fn spawn_all(
         });
     }
 
+    // Curation upstream metadata sync (checks every 5 minutes for repos due for sync)
+    {
+        let db = db.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            let mut ticker = interval(Duration::from_secs(300));
+
+            loop {
+                ticker.tick().await;
+                tracing::debug!("Checking for curation repos due for upstream sync");
+
+                if let Err(e) = run_curation_sync_cycle(&db).await {
+                    tracing::warn!("Curation sync cycle failed: {}", e);
+                }
+            }
+        });
+    }
+
     tracing::info!(
-        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules, sync policies, webhook retries"
+        "Background schedulers started: metrics, health monitor, lifecycle, backup schedules, sync policies, webhook retries, curation sync"
     );
 }
 
@@ -424,6 +442,174 @@ async fn update_gauge_metrics(db: &PgPool) -> crate::error::Result<()> {
     metrics_service::set_db_pool_gauges(db);
 
     Ok(())
+}
+
+/// Find all staging repos with curation enabled, fetch upstream metadata, and evaluate new packages.
+async fn run_curation_sync_cycle(db: &PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::services::curation_service::CurationService;
+    use crate::services::curation_sync;
+
+    // Find repos due for sync
+    let repos: Vec<(uuid::Uuid, String, uuid::Uuid, String, String, i32)> = sqlx::query_as(
+        r#"SELECT r.id, r.format::text, r.curation_source_repo_id, remote.upstream_url,
+                  r.curation_default_action, r.curation_sync_interval_secs
+           FROM repositories r
+           JOIN repositories remote ON remote.id = r.curation_source_repo_id
+           WHERE r.curation_enabled = true
+             AND r.curation_source_repo_id IS NOT NULL
+             AND r.repo_type = 'staging'
+             AND remote.upstream_url IS NOT NULL"#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    if repos.is_empty() {
+        return Ok(());
+    }
+
+    let curation = CurationService::new(db.clone());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    for (staging_id, format, remote_id, upstream_url, default_action, _interval) in &repos {
+        let entries = match format.as_str() {
+            "rpm" => {
+                let repomd_url = format!("{}/repodata/repomd.xml", upstream_url.trim_end_matches('/'));
+                // Try to find primary.xml location from repomd.xml, fall back to default path
+                let primary_path = match client.get(&repomd_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body = resp.text().await.unwrap_or_default();
+                        extract_primary_href(&body).unwrap_or_else(|| "repodata/primary.xml.gz".to_string())
+                    }
+                    _ => "repodata/primary.xml.gz".to_string(),
+                };
+                let primary_url = format!("{}/{}", upstream_url.trim_end_matches('/'), primary_path);
+                match client.get(&primary_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let bytes = resp.bytes().await?;
+                        let xml = if primary_path.ends_with(".gz") {
+                            use std::io::Read;
+                            let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+                            let mut s = String::new();
+                            decoder.read_to_string(&mut s)?;
+                            s
+                        } else {
+                            String::from_utf8_lossy(&bytes).to_string()
+                        };
+                        curation_sync::parse_rpm_primary_xml(&xml)
+                    }
+                    Ok(resp) => {
+                        tracing::warn!("RPM primary.xml fetch failed: {}", resp.status());
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("RPM primary.xml fetch error: {}", e);
+                        continue;
+                    }
+                }
+            }
+            "debian" => {
+                let packages_url = format!("{}/Packages.gz", upstream_url.trim_end_matches('/'));
+                match client.get(&packages_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let bytes = resp.bytes().await?;
+                        use std::io::Read;
+                        let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+                        let mut content = String::new();
+                        decoder.read_to_string(&mut content)?;
+                        curation_sync::parse_deb_packages_index(&content, "main")
+                    }
+                    _ => {
+                        // Fall back to uncompressed
+                        let plain_url = format!("{}/Packages", upstream_url.trim_end_matches('/'));
+                        match client.get(&plain_url).send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                let content = resp.text().await?;
+                                curation_sync::parse_deb_packages_index(&content, "main")
+                            }
+                            _ => {
+                                tracing::warn!("DEB Packages fetch failed for {}", upstream_url);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                tracing::debug!("Curation sync not yet implemented for format: {}", format);
+                continue;
+            }
+        };
+
+        tracing::info!(
+            "Curation sync: {} entries parsed for staging repo {}",
+            entries.len(),
+            staging_id
+        );
+
+        for entry in &entries {
+            match curation
+                .upsert_package(
+                    *staging_id,
+                    *remote_id,
+                    &entry.format,
+                    &entry.package_name,
+                    &entry.version,
+                    entry.release.as_deref(),
+                    entry.architecture.as_deref(),
+                    entry.checksum_sha256.as_deref(),
+                    &entry.upstream_path,
+                    &entry.metadata,
+                )
+                .await
+            {
+                Ok(pkg) if pkg.status == "pending" => {
+                    let eval = curation
+                        .evaluate_package(
+                            *staging_id,
+                            default_action,
+                            &entry.package_name,
+                            &entry.version,
+                            entry.architecture.as_deref(),
+                        )
+                        .await;
+
+                    if let Ok(eval) = eval {
+                        let status = match eval.action.as_str() {
+                            "allow" => "approved",
+                            "block" => "blocked",
+                            _ => "review",
+                        };
+                        let _ = curation
+                            .set_package_status(pkg.id, status, &eval.reason, None, eval.rule_id)
+                            .await;
+                    }
+                }
+                Ok(_) => {} // Already processed
+                Err(e) => {
+                    tracing::warn!("Failed to upsert curation package {}: {}", entry.package_name, e);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract the primary.xml href from repomd.xml content.
+fn extract_primary_href(repomd: &str) -> Option<String> {
+    // Look for: <data type="primary"><location href="repodata/...-primary.xml.gz"/>
+    for data_block in repomd.split("<data type=\"primary\">").skip(1) {
+        if let Some(block) = data_block.split("</data>").next() {
+            let loc_start = block.find("<location href=\"")?;
+            let href_start = loc_start + "<location href=\"".len();
+            let remaining = &block[href_start..];
+            let href_end = remaining.find('"')?;
+            return Some(remaining[..href_end].to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
