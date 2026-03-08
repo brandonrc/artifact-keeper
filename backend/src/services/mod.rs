@@ -62,6 +62,7 @@ pub mod wasm_runtime;
 // Observability & lifecycle
 pub mod analytics_service;
 pub mod crash_reporting_service;
+pub mod curation_service;
 pub mod health_monitor_service;
 pub mod lifecycle_service;
 pub mod metrics_service;
