@@ -623,10 +623,7 @@ pub async fn repo_visibility_middleware(
     // provider which only injects a Bearer token after receiving a 401).
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
-        .header(
-            "WWW-Authenticate",
-            "Basic realm=\"artifact-keeper\"",
-        )
+        .header("WWW-Authenticate", "Basic realm=\"artifact-keeper\"")
         .header(
             "WWW-Authenticate",
             "Bearer realm=\"artifact-keeper\", charset=\"UTF-8\"",
