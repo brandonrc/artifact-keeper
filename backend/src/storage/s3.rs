@@ -27,7 +27,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use s3::bucket::Bucket;
 use s3::creds::Credentials;
+use s3::error::S3Error;
 use s3::region::Region;
+use s3::request::ResponseData;
 use std::time::Duration;
 
 use super::{PresignedUrl, PresignedUrlSource, StoragePathFormat};
@@ -355,6 +357,70 @@ impl S3Backend {
         }
         None
     }
+
+    fn is_not_found_error(err: &str) -> bool {
+        err.contains("404") || err.contains("NoSuchKey")
+    }
+
+    fn classify_fallback_get_result(
+        key: &str,
+        fallback_key: &str,
+        result: std::result::Result<ResponseData, S3Error>,
+    ) -> Result<Option<Bytes>> {
+        match result {
+            Ok(resp) if (200..300).contains(&resp.status_code()) => {
+                tracing::info!(
+                    key = %key,
+                    fallback = %fallback_key,
+                    size = resp.bytes().len(),
+                    "Found artifact at Artifactory fallback path"
+                );
+                Ok(Some(Bytes::from(resp.to_vec())))
+            }
+            Ok(resp) if resp.status_code() == 404 => Ok(None),
+            Ok(resp) => Err(AppError::Storage(format!(
+                "S3 returned status {} for fallback '{}' while reading '{}'",
+                resp.status_code(),
+                fallback_key,
+                key
+            ))),
+            Err(e) => {
+                let err_str = e.to_string();
+                if Self::is_not_found_error(&err_str) {
+                    Ok(None)
+                } else {
+                    Err(AppError::Storage(format!(
+                        "Failed to get fallback object '{}' for '{}': {}",
+                        fallback_key, key, e
+                    )))
+                }
+            }
+        }
+    }
+
+    async fn try_fallback_get(&self, key: &str, reason: &'static str) -> Result<Option<Bytes>> {
+        if !self.path_format.has_fallback() {
+            return Ok(None);
+        }
+
+        let Some(fallback_key) = self.try_artifactory_fallback(key) else {
+            return Ok(None);
+        };
+
+        let fallback_full_key = self.full_key(&fallback_key);
+        tracing::debug!(
+            original = %key,
+            fallback = %fallback_key,
+            reason,
+            "Trying Artifactory fallback path"
+        );
+
+        Self::classify_fallback_get_result(
+            key,
+            &fallback_key,
+            self.bucket.get_object(&fallback_full_key).await,
+        )
+    }
 }
 
 #[async_trait]
@@ -362,10 +428,19 @@ impl super::StorageBackend for S3Backend {
     async fn put(&self, key: &str, content: Bytes) -> Result<()> {
         let full_key = self.full_key(key);
 
-        self.bucket
+        let resp = self
+            .bucket
             .put_object(&full_key, &content)
             .await
             .map_err(|e| AppError::Storage(format!("Failed to put object '{}': {}", key, e)))?;
+
+        let status = resp.status_code();
+        if !(200..300).contains(&status) {
+            return Err(AppError::Storage(format!(
+                "S3 returned status {} for put '{}'",
+                status, key
+            )));
+        }
 
         tracing::debug!(key = %key, "S3 put object successful");
         Ok(())
@@ -375,51 +450,47 @@ impl super::StorageBackend for S3Backend {
         let full_key = self.full_key(key);
 
         let response = match self.bucket.get_object(&full_key).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Check for 404 errors - if in migration mode, try fallback path
-                let err_str = e.to_string();
-                if (err_str.contains("404") || err_str.contains("NoSuchKey"))
-                    && self.path_format.has_fallback()
-                {
-                    // Extract checksum from the key to generate fallback path
-                    // Key format is like: ab/cd/abcd...full_checksum
-                    if let Some(fallback_key) = self.try_artifactory_fallback(key) {
-                        let fallback_full_key = self.full_key(&fallback_key);
-                        tracing::debug!(
-                            original = %key,
-                            fallback = %fallback_key,
-                            "Trying Artifactory fallback path"
-                        );
-                        match self.bucket.get_object(&fallback_full_key).await {
-                            Ok(resp) => {
-                                tracing::info!(
-                                    key = %key,
-                                    fallback = %fallback_key,
-                                    size = resp.bytes().len(),
-                                    "Found artifact at Artifactory fallback path"
-                                );
-                                return Ok(Bytes::from(resp.to_vec()));
-                            }
-                            Err(_) => {
-                                // Fallback also failed, return original error
-                            }
-                        }
+            Ok(resp) => {
+                let status = resp.status_code();
+                if status == 404 {
+                    // rust-s3 may return Ok with 404 status (e.g. Ceph RGW)
+                    if let Some(bytes) = self
+                        .try_fallback_get(key, "primary returned status 404")
+                        .await?
+                    {
+                        return Ok(bytes);
                     }
-                }
-
-                // Original error handling
-                if err_str.contains("404") || err_str.contains("NoSuchKey") {
                     return Err(AppError::NotFound(format!(
                         "Storage key not found: {}",
                         key
                     )));
-                } else {
+                } else if !(200..300).contains(&status) {
                     return Err(AppError::Storage(format!(
-                        "Failed to get object '{}': {}",
-                        key, e
+                        "S3 returned status {} for '{}'",
+                        status, key
                     )));
                 }
+                resp
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if Self::is_not_found_error(&err_str) {
+                    if let Some(bytes) = self
+                        .try_fallback_get(key, "primary returned not found error")
+                        .await?
+                    {
+                        return Ok(bytes);
+                    }
+                    return Err(AppError::NotFound(format!(
+                        "Storage key not found: {}",
+                        key
+                    )));
+                }
+
+                return Err(AppError::Storage(format!(
+                    "Failed to get object '{}': {}",
+                    key, e
+                )));
             }
         };
 
@@ -430,47 +501,88 @@ impl super::StorageBackend for S3Backend {
     async fn exists(&self, key: &str) -> Result<bool> {
         let full_key = self.full_key(key);
 
-        match self.bucket.head_object(&full_key).await {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                // Check if it's a "not found" error
-                let err_str = e.to_string();
-                if err_str.contains("404")
-                    || err_str.contains("NoSuchKey")
-                    || err_str.contains("Not Found")
-                {
-                    // In migration mode, also check the Artifactory fallback path
-                    if self.path_format.has_fallback() {
-                        if let Some(fallback_key) = self.try_artifactory_fallback(key) {
-                            let fallback_full_key = self.full_key(&fallback_key);
-                            if self.bucket.head_object(&fallback_full_key).await.is_ok() {
-                                tracing::debug!(
-                                    key = %key,
-                                    fallback = %fallback_key,
-                                    "Found artifact at Artifactory fallback path"
-                                );
-                                return Ok(true);
-                            }
-                        }
-                    }
-                    Ok(false)
+        let is_not_found = match self.bucket.head_object(&full_key).await {
+            Ok((_, status)) => {
+                if (200..300).contains(&status) {
+                    return Ok(true);
+                }
+                // rust-s3 may return Ok with 404 status (e.g. Ceph RGW)
+                if status == 404 {
+                    true
                 } else {
-                    Err(AppError::Storage(format!(
+                    return Err(AppError::Storage(format!(
+                        "S3 returned status {} for head '{}'",
+                        status, key
+                    )));
+                }
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if Self::is_not_found_error(&err_str) || err_str.contains("Not Found") {
+                    true
+                } else {
+                    return Err(AppError::Storage(format!(
                         "Failed to check existence of '{}': {}",
                         key, e
-                    )))
+                    )));
+                }
+            }
+        };
+
+        if is_not_found && self.path_format.has_fallback() {
+            if let Some(fallback_key) = self.try_artifactory_fallback(key) {
+                let fallback_full_key = self.full_key(&fallback_key);
+                match self.bucket.head_object(&fallback_full_key).await {
+                    Ok((_, status)) if (200..300).contains(&status) => {
+                        tracing::debug!(
+                            key = %key,
+                            fallback = %fallback_key,
+                            "Found artifact at Artifactory fallback path"
+                        );
+                        return Ok(true);
+                    }
+                    Ok((_, status)) if status != 404 => {
+                        tracing::warn!(
+                            key = %key,
+                            fallback = %fallback_key,
+                            status,
+                            "Unexpected status from fallback head_object"
+                        );
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if !Self::is_not_found_error(&err_str) && !err_str.contains("Not Found") {
+                            tracing::warn!(
+                                key = %key,
+                                fallback = %fallback_key,
+                                error = %e,
+                                "Fallback head_object failed with unexpected error"
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
+
+        Ok(false)
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
         let full_key = self.full_key(key);
 
-        self.bucket
-            .delete_object(&full_key)
-            .await
-            .map_err(|e| AppError::Storage(format!("Failed to delete object '{}': {}", key, e)))?;
+        let resp =
+            self.bucket.delete_object(&full_key).await.map_err(|e| {
+                AppError::Storage(format!("Failed to delete object '{}': {}", key, e))
+            })?;
+
+        let status = resp.status_code();
+        if !(200..300).contains(&status) && status != 404 {
+            return Err(AppError::Storage(format!(
+                "S3 returned status {} for delete '{}'",
+                status, key
+            )));
+        }
 
         tracing::debug!(key = %key, "S3 delete object successful");
         Ok(())
@@ -620,20 +732,39 @@ impl S3Backend {
     pub async fn size(&self, key: &str) -> Result<u64> {
         let full_key = self.full_key(key);
 
-        let (head, _) = self.bucket.head_object(&full_key).await.map_err(|e| {
-            let err_str = e.to_string();
-            if err_str.contains("404")
-                || err_str.contains("NoSuchKey")
-                || err_str.contains("Not Found")
-            {
-                AppError::NotFound(format!("Storage key not found: {}", key))
-            } else {
-                AppError::Storage(format!("Failed to get size of '{}': {}", key, e))
+        let (head, status) = match self.bucket.head_object(&full_key).await {
+            Ok((head, status)) => {
+                if (200..300).contains(&status) {
+                    (head, status)
+                } else if status == 404 {
+                    return Err(AppError::NotFound(format!(
+                        "Storage key not found: {}",
+                        key
+                    )));
+                } else {
+                    return Err(AppError::Storage(format!(
+                        "S3 returned status {} for head '{}'",
+                        status, key
+                    )));
+                }
             }
-        })?;
+            Err(e) => {
+                let err_str = e.to_string();
+                if Self::is_not_found_error(&err_str) || err_str.contains("Not Found") {
+                    return Err(AppError::NotFound(format!(
+                        "Storage key not found: {}",
+                        key
+                    )));
+                }
+                return Err(AppError::Storage(format!(
+                    "Failed to get size of '{}': {}",
+                    key, e
+                )));
+            }
+        };
 
         let size = head.content_length.unwrap_or(0) as u64;
-        tracing::debug!(key = %key, size = size, "S3 head object successful");
+        tracing::debug!(key = %key, size = size, status, "S3 head object successful");
         Ok(size)
     }
 
@@ -840,6 +971,96 @@ mod tests {
         assert!(config.redirect_downloads);
         // Without presign credentials, Option A (auto-refresh) will be used
         assert!(config.presign_access_key.is_none());
+    }
+
+    #[test]
+    fn test_is_not_found_error_matches_404() {
+        assert!(S3Backend::is_not_found_error(
+            "Got HTTP 404 with content 'NoSuchKey'"
+        ));
+        assert!(S3Backend::is_not_found_error("NoSuchKey"));
+        assert!(S3Backend::is_not_found_error("404"));
+    }
+
+    #[test]
+    fn test_is_not_found_error_rejects_other_errors() {
+        assert!(!S3Backend::is_not_found_error(
+            "Got HTTP 500 with content 'Internal'"
+        ));
+        assert!(!S3Backend::is_not_found_error("Service Unavailable"));
+        assert!(!S3Backend::is_not_found_error("connection refused"));
+    }
+
+    const TEST_KEY: &str = "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
+    const TEST_FALLBACK: &str =
+        "91/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
+
+    #[test]
+    fn test_classify_fallback_get_result_success_returns_bytes() {
+        use std::collections::HashMap;
+
+        let body = b"artifact data";
+        let resp = ResponseData::new(Bytes::from_static(body), 200, HashMap::new());
+        let result = S3Backend::classify_fallback_get_result(TEST_KEY, TEST_FALLBACK, Ok(resp));
+
+        let bytes = result.unwrap().expect("expected Some(bytes)");
+        assert_eq!(&bytes[..], body);
+    }
+
+    #[test]
+    fn test_classify_fallback_get_result_404_returns_none() {
+        use std::collections::HashMap;
+
+        let resp = ResponseData::new(Bytes::from_static(b""), 404, HashMap::new());
+        let result = S3Backend::classify_fallback_get_result(TEST_KEY, TEST_FALLBACK, Ok(resp));
+
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_classify_fallback_get_result_propagates_server_failure() {
+        use std::collections::HashMap;
+
+        let resp = ResponseData::new(
+            Bytes::from_static(b"fallback unavailable"),
+            500,
+            HashMap::new(),
+        );
+        let result = S3Backend::classify_fallback_get_result(TEST_KEY, TEST_FALLBACK, Ok(resp));
+
+        match result {
+            Err(AppError::Storage(message)) => {
+                assert!(
+                    message.contains("500"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected storage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_classify_fallback_get_result_not_found_error_returns_none() {
+        let err = S3Error::HttpFailWithBody(404, "NoSuchKey".to_string());
+        let result = S3Backend::classify_fallback_get_result(TEST_KEY, TEST_FALLBACK, Err(err));
+
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_classify_fallback_get_result_other_error_propagates() {
+        let err = S3Error::HttpFailWithBody(503, "Service Unavailable".to_string());
+        let result = S3Backend::classify_fallback_get_result(TEST_KEY, TEST_FALLBACK, Err(err));
+
+        match result {
+            Err(AppError::Storage(message)) => {
+                assert!(
+                    message.contains("Service Unavailable"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected storage error, got {other:?}"),
+        }
     }
 }
 
