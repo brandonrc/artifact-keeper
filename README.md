@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%20%7C%20Docker%20Hub-blue.svg)](https://hub.docker.com/u/artifactkeeper)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/bsgeraci)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/artifact-keeper)
 
 An enterprise-grade, open-source artifact registry supporting **45+ package formats**. Built with Rust.
 
