@@ -1707,41 +1707,26 @@ mod tests {
         assert_eq!(entry["yanked"], false);
     }
 
-    /// Build an index entry from metadata containing the given dep object,
-    /// then return the first dependency from the parsed index JSON.
-    fn index_dep_from_meta(dep_obj: serde_json::Value) -> serde_json::Value {
-        let meta = serde_json::json!({ "deps": [dep_obj], "features": {} });
-        let entry_str = build_index_entry("my-crate", "0.1.0", "abc123", Some(&meta));
-        let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
-        entry["deps"][0].clone()
-    }
-
     #[test]
-    fn test_build_index_entry_renames_version_req_to_req() {
+    fn test_build_index_entry_normalises_dep_version_req_field() {
         // Cargo publish sends "version_req" but the sparse index requires "req".
+        // If metadata already uses "req" (e.g. proxied index), it passes through.
         // See https://doc.rust-lang.org/cargo/reference/registry-index.html
-        let dep = index_dep_from_meta(serde_json::json!({
-            "name": "serde", "version_req": "^1.0", "features": ["derive"],
-            "optional": false, "default_features": true,
-            "target": null, "kind": "normal", "registry": null
-        }));
-        assert_eq!(dep["req"], "^1.0");
-        assert!(
-            dep.get("version_req").is_none(),
-            "version_req must be removed"
-        );
-    }
-
-    #[test]
-    fn test_build_index_entry_keeps_req_if_already_correct() {
-        // Metadata from a proxied upstream index already uses "req".
-        let dep = index_dep_from_meta(serde_json::json!({
-            "name": "log", "req": "^0.4", "features": [],
-            "optional": false, "default_features": true,
-            "target": null, "kind": "normal"
-        }));
-        assert_eq!(dep["req"], "^0.4");
-        assert!(dep.get("version_req").is_none());
+        let cases: &[(&str, &str)] = &[("version_req", "^1.0"), ("req", "^0.4")];
+        for &(field, ver) in cases {
+            let meta = serde_json::json!({
+                "deps": [{ "name": "dep", field: ver, "kind": "normal" }],
+                "features": {}
+            });
+            let entry_str = build_index_entry("test-crate", "0.1.0", "aaa", Some(&meta));
+            let entry: serde_json::Value = serde_json::from_str(&entry_str).unwrap();
+            let dep = &entry["deps"][0];
+            assert_eq!(dep["req"], ver, "field '{field}' should produce req={ver}");
+            assert!(
+                dep.get("version_req").is_none(),
+                "version_req must be absent for '{field}'"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
