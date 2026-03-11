@@ -23,7 +23,7 @@ use tracing::info;
 use crate::api::handlers::proxy_helpers;
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
-use crate::formats::maven::{generate_metadata_xml, MavenHandler};
+use crate::formats::maven::{generate_metadata_xml, MavenCoordinates, MavenHandler};
 use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
@@ -502,6 +502,55 @@ fn compute_checksum(data: &[u8], checksum_type: ChecksumType) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Maven GAV grouping helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the GAV directory prefix from a Maven path.
+/// For example: `com/example/mylib/1.0.0/mylib-1.0.0.jar` -> `com/example/mylib/1.0.0/`
+fn gav_directory(path: &str) -> &str {
+    let trimmed = path.trim_start_matches('/');
+    match trimmed.rfind('/') {
+        Some(pos) => &trimmed[..=pos],
+        None => trimmed,
+    }
+}
+
+/// Determine whether a Maven file is a "primary" packaging artifact (JAR, WAR, EAR, etc.)
+/// without a classifier. POM files and classifier-bearing files (sources, javadoc) are
+/// considered secondary.
+fn is_primary_maven_artifact(coords: &MavenCoordinates) -> bool {
+    if coords.classifier.is_some() {
+        return false;
+    }
+    matches!(
+        coords.extension.as_str(),
+        "jar" | "war" | "ear" | "aar" | "bundle" | "zip" | "tar.gz"
+    )
+}
+
+/// Build a JSON object describing a single file within a Maven package.
+fn make_file_entry(
+    path: &str,
+    extension: &str,
+    classifier: Option<&str>,
+    storage_key: &str,
+    size_bytes: i64,
+    sha256: &str,
+) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "path": path,
+        "extension": extension,
+        "storageKey": storage_key,
+        "sizeBytes": size_bytes,
+        "sha256": sha256,
+    });
+    if let Some(c) = classifier {
+        entry["classifier"] = serde_json::Value::String(c.to_string());
+    }
+    entry
+}
+
+// ---------------------------------------------------------------------------
 // PUT /maven/{repo_key}/*path — Upload artifact
 // ---------------------------------------------------------------------------
 
@@ -602,7 +651,7 @@ async fn upload(
         super::cleanup_soft_deleted_artifact(&state.db, repo.id, &path).await;
     }
 
-    // Store file
+    // Store file in object storage regardless of grouping outcome
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -611,9 +660,9 @@ async fn upload(
             .into_response()
     })?;
 
-    // Build metadata JSON
+    // Build metadata JSON for this file
     let handler = MavenHandler::new();
-    let metadata = crate::formats::FormatHandler::parse_metadata(&handler, &path, &body)
+    let file_metadata = crate::formats::FormatHandler::parse_metadata(&handler, &path, &body)
         .await
         .unwrap_or_else(|_| {
             serde_json::json!({
@@ -625,49 +674,257 @@ async fn upload(
         });
 
     let name = coords.artifact_id.clone();
+    let gav_dir = gav_directory(&path);
+    let is_primary = is_primary_maven_artifact(&coords);
 
-    // Insert artifact record
-    let artifact_id = sqlx::query_scalar!(
-        r#"
-        INSERT INTO artifacts (
-            repository_id, path, name, version, size_bytes,
-            checksum_sha256, content_type, storage_key, uploaded_by
+    // Look for an existing artifact record for the same GAV directory.
+    // This groups POM, JAR, sources, javadoc, etc. under a single record
+    // so the UI shows one package per GAV instead of separate entries.
+    let gav_existing: Option<(uuid::Uuid, String, String, Option<serde_json::Value>)> = {
+        let gav_pattern = format!("{}%", gav_dir);
+        let row = sqlx::query(
+            r#"
+            SELECT a.id, a.path, a.storage_key, am.metadata
+            FROM artifacts a
+            LEFT JOIN artifact_metadata am ON am.artifact_id = a.id
+            WHERE a.repository_id = $1
+              AND a.is_deleted = false
+              AND a.path LIKE $2
+              AND a.name = $3
+              AND a.version = $4
+            ORDER BY a.created_at ASC
+            LIMIT 1
+            "#,
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id
-        "#,
-        repo.id,
-        path,
-        name,
-        coords.version,
-        size_bytes,
-        checksum_sha256,
-        ct,
-        storage_key,
-        user_id,
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?;
+        .bind(repo.id)
+        .bind(&gav_pattern)
+        .bind(&name)
+        .bind(&coords.version)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            )
+                .into_response()
+        })?;
 
-    // Store metadata
-    let _ = sqlx::query!(
-        r#"
-        INSERT INTO artifact_metadata (artifact_id, format, metadata)
-        VALUES ($1, 'maven', $2)
-        ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2
-        "#,
-        artifact_id,
-        metadata,
-    )
-    .execute(&state.db)
-    .await;
+        use sqlx::Row;
+        row.map(|r| {
+            (
+                r.get::<uuid::Uuid, _>("id"),
+                r.get::<String, _>("path"),
+                r.get::<String, _>("storage_key"),
+                r.get::<Option<serde_json::Value>, _>("metadata"),
+            )
+        })
+    };
+
+    match gav_existing {
+        Some((existing_id, existing_path, existing_storage_key, existing_meta)) => {
+            // An artifact record already exists for this GAV.
+            let existing_is_pom = MavenHandler::is_pom(&existing_path);
+
+            let new_file = make_file_entry(
+                &path,
+                &coords.extension,
+                coords.classifier.as_deref(),
+                &storage_key,
+                size_bytes,
+                &checksum_sha256,
+            );
+
+            if is_primary && existing_is_pom {
+                // The existing record is a POM-only placeholder. Promote the new
+                // JAR/WAR to primary and demote the POM into the files list.
+                let old_pom_coords = MavenHandler::parse_coordinates(&existing_path).ok();
+                let old_ext = old_pom_coords
+                    .as_ref()
+                    .map(|c| c.extension.as_str())
+                    .unwrap_or("pom");
+                let old_classifier = old_pom_coords
+                    .as_ref()
+                    .and_then(|c| c.classifier.as_deref());
+
+                let old_size: i64 =
+                    if let Ok(old_content) = storage.get(&existing_storage_key).await {
+                        old_content.len() as i64
+                    } else {
+                        0
+                    };
+                let old_sha = existing_meta
+                    .as_ref()
+                    .and_then(|m| m.get("sha256"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let pom_file = make_file_entry(
+                    &existing_path,
+                    old_ext,
+                    old_classifier,
+                    &existing_storage_key,
+                    old_size,
+                    &old_sha,
+                );
+
+                let mut files = existing_meta
+                    .as_ref()
+                    .and_then(|m| m.get("files"))
+                    .and_then(|f| f.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                files.push(pom_file);
+
+                // Merge POM-parsed fields into the new primary metadata
+                let mut merged = file_metadata.clone();
+                if let Some(existing) = &existing_meta {
+                    for key in &["name", "description", "url", "dependencies"] {
+                        if let Some(val) = existing.get(*key) {
+                            merged[*key] = val.clone();
+                        }
+                    }
+                }
+                merged["files"] = serde_json::Value::Array(files);
+
+                // Update the artifact record to point to the JAR as primary
+                super::cleanup_soft_deleted_artifact(&state.db, repo.id, &path).await;
+                let _ = sqlx::query(
+                    r#"
+                    UPDATE artifacts
+                    SET path = $1, size_bytes = $2, checksum_sha256 = $3,
+                        content_type = $4, storage_key = $5, updated_at = NOW()
+                    WHERE id = $6
+                    "#,
+                )
+                .bind(&path)
+                .bind(size_bytes)
+                .bind(&checksum_sha256)
+                .bind(ct)
+                .bind(&storage_key)
+                .bind(existing_id)
+                .execute(&state.db)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Database error: {}", e),
+                    )
+                        .into_response()
+                })?;
+
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO artifact_metadata (artifact_id, format, metadata)
+                    VALUES ($1, 'maven', $2)
+                    ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2
+                    "#,
+                )
+                .bind(existing_id)
+                .bind(&merged)
+                .execute(&state.db)
+                .await;
+            } else {
+                // Secondary file (POM when JAR exists, or classifier like sources/javadoc).
+                // Add it to the existing artifact's metadata files array.
+                let mut updated_meta = existing_meta.unwrap_or_else(|| {
+                    serde_json::json!({
+                        "groupId": coords.group_id,
+                        "artifactId": coords.artifact_id,
+                        "version": coords.version,
+                    })
+                });
+
+                let mut files = updated_meta
+                    .get("files")
+                    .and_then(|f| f.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                files.push(new_file);
+                updated_meta["files"] = serde_json::Value::Array(files);
+
+                // Merge POM-parsed fields if this is a POM upload
+                if MavenHandler::is_pom(&path) {
+                    for key in &["name", "description", "url", "dependencies"] {
+                        if let Some(val) = file_metadata.get(*key) {
+                            if updated_meta.get(*key).is_none() {
+                                updated_meta[*key] = val.clone();
+                            }
+                        }
+                    }
+                }
+
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO artifact_metadata (artifact_id, format, metadata)
+                    VALUES ($1, 'maven', $2)
+                    ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2
+                    "#,
+                )
+                .bind(existing_id)
+                .bind(&updated_meta)
+                .execute(&state.db)
+                .await;
+
+                let _ = sqlx::query("UPDATE artifacts SET updated_at = NOW() WHERE id = $1")
+                    .bind(existing_id)
+                    .execute(&state.db)
+                    .await;
+            }
+        }
+        None => {
+            // No existing artifact for this GAV. Create a new record.
+            let mut metadata = file_metadata;
+
+            use sqlx::Row;
+            let row = sqlx::query(
+                r#"
+                INSERT INTO artifacts (
+                    repository_id, path, name, version, size_bytes,
+                    checksum_sha256, content_type, storage_key, uploaded_by
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                RETURNING id
+                "#,
+            )
+            .bind(repo.id)
+            .bind(&path)
+            .bind(&name)
+            .bind(&coords.version)
+            .bind(size_bytes)
+            .bind(&checksum_sha256)
+            .bind(ct)
+            .bind(&storage_key)
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Database error: {}", e),
+                )
+                    .into_response()
+            })?;
+            let artifact_id: uuid::Uuid = row.get("id");
+
+            // Initialize empty files array; the primary info lives on the
+            // artifact record itself.
+            metadata["files"] = serde_json::json!([]);
+
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO artifact_metadata (artifact_id, format, metadata)
+                VALUES ($1, 'maven', $2)
+                ON CONFLICT (artifact_id) DO UPDATE SET metadata = $2
+                "#,
+            )
+            .bind(artifact_id)
+            .bind(&metadata)
+            .execute(&state.db)
+            .await;
+        }
+    }
 
     // Update repository timestamp
     let _ = sqlx::query!(
@@ -1012,5 +1269,125 @@ mod tests {
             repo.upstream_url.as_deref(),
             Some("https://repo1.maven.org/maven2")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // gav_directory
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gav_directory_jar() {
+        assert_eq!(
+            gav_directory("com/example/mylib/1.0.0/mylib-1.0.0.jar"),
+            "com/example/mylib/1.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_gav_directory_pom() {
+        assert_eq!(
+            gav_directory("com/example/mylib/1.0.0/mylib-1.0.0.pom"),
+            "com/example/mylib/1.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_gav_directory_sources() {
+        assert_eq!(
+            gav_directory("com/example/mylib/1.0.0/mylib-1.0.0-sources.jar"),
+            "com/example/mylib/1.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_gav_directory_leading_slash() {
+        assert_eq!(
+            gav_directory("/com/example/mylib/1.0.0/mylib-1.0.0.jar"),
+            "com/example/mylib/1.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_gav_directory_deep_group() {
+        assert_eq!(
+            gav_directory("org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar"),
+            "org/apache/commons/commons-lang3/3.12.0/"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_primary_maven_artifact
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_primary_jar() {
+        let coords =
+            MavenHandler::parse_coordinates("com/example/mylib/1.0.0/mylib-1.0.0.jar").unwrap();
+        assert!(is_primary_maven_artifact(&coords));
+    }
+
+    #[test]
+    fn test_is_primary_war() {
+        let coords =
+            MavenHandler::parse_coordinates("com/example/webapp/1.0.0/webapp-1.0.0.war").unwrap();
+        assert!(is_primary_maven_artifact(&coords));
+    }
+
+    #[test]
+    fn test_is_not_primary_pom() {
+        let coords =
+            MavenHandler::parse_coordinates("com/example/mylib/1.0.0/mylib-1.0.0.pom").unwrap();
+        assert!(!is_primary_maven_artifact(&coords));
+    }
+
+    #[test]
+    fn test_is_not_primary_sources() {
+        let coords =
+            MavenHandler::parse_coordinates("com/example/mylib/1.0.0/mylib-1.0.0-sources.jar")
+                .unwrap();
+        assert!(!is_primary_maven_artifact(&coords));
+    }
+
+    #[test]
+    fn test_is_not_primary_javadoc() {
+        let coords =
+            MavenHandler::parse_coordinates("com/example/mylib/1.0.0/mylib-1.0.0-javadoc.jar")
+                .unwrap();
+        assert!(!is_primary_maven_artifact(&coords));
+    }
+
+    // -----------------------------------------------------------------------
+    // make_file_entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_make_file_entry_without_classifier() {
+        let entry = make_file_entry(
+            "com/example/mylib/1.0.0/mylib-1.0.0.pom",
+            "pom",
+            None,
+            "maven/com/example/mylib/1.0.0/mylib-1.0.0.pom",
+            1024,
+            "abc123",
+        );
+        assert_eq!(entry["path"], "com/example/mylib/1.0.0/mylib-1.0.0.pom");
+        assert_eq!(entry["extension"], "pom");
+        assert!(entry.get("classifier").is_none());
+        assert_eq!(entry["sizeBytes"], 1024);
+        assert_eq!(entry["sha256"], "abc123");
+    }
+
+    #[test]
+    fn test_make_file_entry_with_classifier() {
+        let entry = make_file_entry(
+            "com/example/mylib/1.0.0/mylib-1.0.0-sources.jar",
+            "jar",
+            Some("sources"),
+            "maven/com/example/mylib/1.0.0/mylib-1.0.0-sources.jar",
+            2048,
+            "def456",
+        );
+        assert_eq!(entry["classifier"], "sources");
+        assert_eq!(entry["extension"], "jar");
     }
 }
