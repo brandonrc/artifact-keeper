@@ -319,7 +319,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build backend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile.backend
@@ -358,7 +358,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build openscap image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./docker/Dockerfile.openscap
