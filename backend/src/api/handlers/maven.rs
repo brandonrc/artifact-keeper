@@ -439,6 +439,34 @@ async fn serve_artifact(
             .into_response()
     })?;
 
+    // If artifact not found by exact path, try SNAPSHOT resolution
+    let artifact = match artifact {
+        Some(a) => Some(a),
+        None if path.contains("-SNAPSHOT") => {
+            if let Some(resolved) = resolve_snapshot_artifact(&state.db, repo.id, path).await {
+                let storage = state.storage_for_repo(&repo.storage_path);
+                let content = storage.get(&resolved.storage_key).await.map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Storage error: {}", e),
+                    )
+                        .into_response()
+                })?;
+
+                let ct = content_type_for_path(path);
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, ct)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .header("X-Checksum-SHA256", &resolved.checksum_sha256)
+                    .body(Body::from(content))
+                    .unwrap());
+            }
+            None
+        }
+        None => None,
+    };
+
     // If artifact not found locally, try proxy for remote repos
     let artifact = match artifact {
         Some(a) => a,
@@ -498,6 +526,26 @@ async fn serve_artifact(
                     .body(Body::from(content))
                     .unwrap());
             }
+
+            // For hosted repos, fall back to serving from storage directly.
+            // This handles secondary files (POM, sources, javadoc) that were
+            // grouped under a primary artifact record by GAV grouping — their
+            // database `path` was replaced but the file still exists in storage.
+            if repo.repo_type == RepositoryType::Local || repo.repo_type == RepositoryType::Staging
+            {
+                let storage = state.storage_for_repo(&repo.storage_path);
+                let storage_key = format!("maven/{}", path);
+                if let Ok(content) = storage.get(&storage_key).await {
+                    let ct = content_type_for_path(path);
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, ct)
+                        .header(CONTENT_LENGTH, content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap());
+                }
+            }
+
             return Err((StatusCode::NOT_FOUND, "File not found").into_response());
         }
     };
