@@ -683,13 +683,7 @@ async fn store_npm_version(
         "npm/{}/{}/{}",
         package_name, ver.version, ver.tarball_filename
     );
-    let storage = state.storage_for_repo(location).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
+    let storage = state.storage_for_repo_or_500(location)?;
     storage
         .put(&storage_key, Bytes::from(ver.tarball_bytes.clone()))
         .await

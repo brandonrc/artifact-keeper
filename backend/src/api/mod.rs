@@ -19,6 +19,9 @@ use crate::services::quality_check_service::QualityCheckService;
 use crate::services::repository_service::RepositoryService;
 use crate::services::scanner_service::ScannerService;
 use crate::services::wasm_plugin_service::WasmPluginService;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+
 use crate::storage::{StorageBackend, StorageLocation, StorageRegistry};
 use bytes::Bytes;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -155,6 +158,22 @@ impl AppState {
         location: &StorageLocation,
     ) -> crate::error::Result<Arc<dyn StorageBackend>> {
         self.storage_registry.backend_for(location)
+    }
+
+    /// Convenience for handlers that return `Result<..., Response>`.
+    /// Resolves storage and maps errors to a 500 plain-text response.
+    #[allow(clippy::result_large_err)]
+    pub fn storage_for_repo_or_500(
+        &self,
+        location: &StorageLocation,
+    ) -> Result<Arc<dyn StorageBackend>, Response> {
+        self.storage_for_repo(location).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Storage error: {}", e),
+            )
+                .into_response()
+        })
     }
 
     /// Set the scanner service for security scanning.

@@ -589,13 +589,7 @@ async fn serve_metadata(
     .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found").into_response())?;
 
     // Try to extract METADATA from the package file
-    let storage = state.storage_for_repo(location).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
+    let storage = state.storage_for_repo_or_500(location)?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -648,13 +648,7 @@ async fn serve_computed_checksum(
     let checksum = match checksum_type {
         ChecksumType::Sha256 => resolved_sha256,
         _ => {
-            let storage = state.storage_for_repo(location).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Storage error: {}", e),
-                )
-                    .into_response()
-            })?;
+            let storage = state.storage_for_repo_or_500(location)?;
             let content = storage.get(&resolved_storage_key).await.map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

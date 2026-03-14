@@ -14,6 +14,20 @@ use crate::models::repository::{
 use crate::services::proxy_service::ProxyService;
 use crate::storage::StorageLocation;
 
+/// Map an error to a 500 Internal Server Error plain-text response.
+///
+/// The `label` is prepended to the error message (e.g. "Storage", "Database").
+/// This avoids repeating the five-line `(StatusCode::INTERNAL_SERVER_ERROR,
+/// format!("... error: {}", e)).into_response()` block throughout the
+/// local_fetch helpers.
+fn internal_error(label: &str, e: impl std::fmt::Display) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("{} error: {}", label, e),
+    )
+        .into_response()
+}
+
 /// Reject write operations (publish/upload) on remote and virtual repositories.
 /// Returns 405 Method Not Allowed for remote repos, 400 for virtual repos.
 #[allow(clippy::result_large_err)]
@@ -297,29 +311,14 @@ pub async fn local_fetch_by_path(
     )
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(|e| internal_error("Database", e))?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(location).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
-    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
+    let storage = state.storage_for_repo_or_500(location)?;
+    let content = storage
+        .get(&artifact.storage_key)
+        .await
+        .map_err(|e| internal_error("Storage", e))?;
 
     Ok((content, Some(artifact.content_type)))
 }
@@ -345,29 +344,14 @@ pub async fn local_fetch_by_name_version(
     )
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(|e| internal_error("Database", e))?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(location).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
-    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
+    let storage = state.storage_for_repo_or_500(location)?;
+    let content = storage
+        .get(&artifact.storage_key)
+        .await
+        .map_err(|e| internal_error("Storage", e))?;
 
     Ok((content, Some(artifact.content_type)))
 }
@@ -391,29 +375,14 @@ pub async fn local_fetch_by_path_suffix(
     )
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
+    .map_err(|e| internal_error("Database", e))?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(location).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
-    let content = storage.get(&artifact.storage_key).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Storage error: {}", e),
-        )
-            .into_response()
-    })?;
+    let storage = state.storage_for_repo_or_500(location)?;
+    let content = storage
+        .get(&artifact.storage_key)
+        .await
+        .map_err(|e| internal_error("Storage", e))?;
 
     Ok((content, Some(artifact.content_type)))
 }
@@ -560,5 +529,19 @@ mod tests {
     fn test_reject_write_unknown_type_is_ok() {
         let result = reject_write_if_not_hosted("something-else");
         assert!(result.is_ok());
+    }
+
+    // ── internal_error tests ────────────────────────────────────────
+
+    #[test]
+    fn test_internal_error_returns_500() {
+        let response = internal_error("Storage", "disk full");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_internal_error_database_label() {
+        let response = internal_error("Database", "connection refused");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }
