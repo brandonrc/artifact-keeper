@@ -62,10 +62,12 @@ impl MavenHandler {
             .strip_suffix("-SNAPSHOT")
             .map(|base_version| format!("{}-{}", artifact_id, base_version));
 
+        let mut is_snapshot_timestamp = false;
         let remainder = if filename.starts_with(&expected_prefix) {
             &filename[expected_prefix.len()..]
         } else if let Some(ref snap) = snapshot_prefix {
             if filename.starts_with(snap) {
+                is_snapshot_timestamp = true;
                 &filename[snap.len()..]
             } else {
                 // Could be metadata file
@@ -102,6 +104,15 @@ impl MavenHandler {
             ));
         }
 
+        // For snapshot timestamps, the remainder starts with the
+        // timestamp-build suffix: -YYYYMMDD.HHMMSS-N
+        // Strip it so classifier parsing works correctly.
+        let remainder = if is_snapshot_timestamp {
+            Self::strip_snapshot_timestamp(remainder)
+        } else {
+            remainder
+        };
+
         // Check for classifier: -classifier.ext
         if let Some(rest) = remainder.strip_prefix('-') {
             if let Some(dot_pos) = rest.rfind('.') {
@@ -119,6 +130,39 @@ impl MavenHandler {
         Err(AppError::Validation(
             "Invalid Maven filename format".to_string(),
         ))
+    }
+
+    /// Strip a Maven SNAPSHOT timestamp-build suffix from a remainder string.
+    ///
+    /// Pattern: `-YYYYMMDD.HHMMSS-N` where N is one or more digits.
+    ///
+    /// Examples:
+    /// - `"-20260314.155654-1.jar"` -> `".jar"`
+    /// - `"-20260314.155654-1-sources.jar"` -> `"-sources.jar"`
+    ///
+    /// Returns the input unchanged if the pattern doesn't match.
+    fn strip_snapshot_timestamp(remainder: &str) -> &str {
+        let b = remainder.as_bytes();
+        // Minimum: -YYYYMMDD.HHMMSS-N = 18 chars
+        if b.len() < 18
+            || b[0] != b'-'
+            || !b[1..9].iter().all(u8::is_ascii_digit)
+            || b[9] != b'.'
+            || !b[10..16].iter().all(u8::is_ascii_digit)
+            || b[16] != b'-'
+        {
+            return remainder;
+        }
+        // Skip past the build number digits after the second dash
+        let end = b[17..]
+            .iter()
+            .position(|c| !c.is_ascii_digit())
+            .map_or(b.len(), |p| 17 + p);
+        if end == 17 {
+            remainder
+        } else {
+            &remainder[end..]
+        }
     }
 
     /// Check if this is a POM file
@@ -403,6 +447,7 @@ mod tests {
     #[test]
     fn test_parse_snapshot_timestamp_coordinates() {
         // SNAPSHOT version with timestamp-resolved filename (Maven deploy format)
+        // The timestamp-build suffix should NOT be treated as a classifier.
         let coords = MavenHandler::parse_coordinates(
             "com/example/test/1.0.0-SNAPSHOT/test-1.0.0-20260211.124623-1.jar",
         )
@@ -410,18 +455,43 @@ mod tests {
         assert_eq!(coords.group_id, "com.example");
         assert_eq!(coords.artifact_id, "test");
         assert_eq!(coords.version, "1.0.0-SNAPSHOT");
+        assert_eq!(coords.classifier, None);
         assert_eq!(coords.extension, "jar");
     }
 
     #[test]
     fn test_parse_snapshot_timestamp_with_classifier() {
+        // A timestamped SNAPSHOT with an actual classifier (sources/javadoc)
         let coords = MavenHandler::parse_coordinates(
             "com/example/test/1.2.3-SNAPSHOT/test-1.2.3-20260211.124623-1-sources.jar",
         )
         .unwrap();
         assert_eq!(coords.artifact_id, "test");
         assert_eq!(coords.version, "1.2.3-SNAPSHOT");
+        assert_eq!(coords.classifier, Some("sources".to_string()));
         assert_eq!(coords.extension, "jar");
+    }
+
+    #[test]
+    fn test_strip_snapshot_timestamp() {
+        assert_eq!(
+            MavenHandler::strip_snapshot_timestamp("-20260314.155654-1.jar"),
+            ".jar"
+        );
+        assert_eq!(
+            MavenHandler::strip_snapshot_timestamp("-20260314.155654-1-sources.jar"),
+            "-sources.jar"
+        );
+        assert_eq!(
+            MavenHandler::strip_snapshot_timestamp("-20260314.155654-12.pom"),
+            ".pom"
+        );
+        // Non-timestamp remainders returned unchanged
+        assert_eq!(
+            MavenHandler::strip_snapshot_timestamp("-sources.jar"),
+            "-sources.jar"
+        );
+        assert_eq!(MavenHandler::strip_snapshot_timestamp(".jar"), ".jar");
     }
 
     #[test]

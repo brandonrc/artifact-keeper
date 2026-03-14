@@ -685,6 +685,47 @@ fn make_file_entry(
     entry
 }
 
+/// Update an existing artifact record to point to a new file (used when a
+/// primary upload replaces a secondary, or a SNAPSHOT re-upload updates the
+/// primary). Cleans up any soft-deleted artifact at the target path first.
+#[allow(clippy::too_many_arguments)]
+async fn update_artifact_record(
+    db: &sqlx::PgPool,
+    repo_id: uuid::Uuid,
+    artifact_id: uuid::Uuid,
+    path: &str,
+    size_bytes: i64,
+    checksum_sha256: &str,
+    content_type: &str,
+    storage_key: &str,
+) -> Result<(), Response> {
+    super::cleanup_soft_deleted_artifact(db, repo_id, path).await;
+    sqlx::query(
+        r#"
+        UPDATE artifacts
+        SET path = $1, size_bytes = $2, checksum_sha256 = $3,
+            content_type = $4, storage_key = $5, updated_at = NOW()
+        WHERE id = $6
+        "#,
+    )
+    .bind(path)
+    .bind(size_bytes)
+    .bind(checksum_sha256)
+    .bind(content_type)
+    .bind(storage_key)
+    .bind(artifact_id)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response()
+    })?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // PUT /maven/{repo_key}/*path — Upload artifact
 // ---------------------------------------------------------------------------
@@ -926,30 +967,17 @@ async fn upload(
                 merged["files"] = serde_json::Value::Array(files);
 
                 // Update the artifact record to point to the JAR as primary
-                super::cleanup_soft_deleted_artifact(&state.db, repo.id, &path).await;
-                let _ = sqlx::query(
-                    r#"
-                    UPDATE artifacts
-                    SET path = $1, size_bytes = $2, checksum_sha256 = $3,
-                        content_type = $4, storage_key = $5, updated_at = NOW()
-                    WHERE id = $6
-                    "#,
+                update_artifact_record(
+                    &state.db,
+                    repo.id,
+                    existing_id,
+                    &path,
+                    size_bytes,
+                    &checksum_sha256,
+                    ct,
+                    &storage_key,
                 )
-                .bind(&path)
-                .bind(size_bytes)
-                .bind(&checksum_sha256)
-                .bind(ct)
-                .bind(&storage_key)
-                .bind(existing_id)
-                .execute(&state.db)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Database error: {}", e),
-                    )
-                        .into_response()
-                })?;
+                .await?;
 
                 let _ = sqlx::query(
                     r#"
@@ -962,7 +990,20 @@ async fn upload(
                 .bind(&merged)
                 .execute(&state.db)
                 .await;
-            } else {
+            } else if is_primary && coords.version.contains("SNAPSHOT") {
+                // SNAPSHOT re-upload: update the artifact record, then fall
+                // through to shared metadata update below.
+                update_artifact_record(
+                    &state.db,
+                    repo.id,
+                    existing_id,
+                    &path,
+                    size_bytes,
+                    &checksum_sha256,
+                    ct,
+                    &storage_key,
+                )
+                .await?;
                 // Secondary file (POM when JAR exists, or classifier like sources/javadoc).
                 // Add it to the existing artifact's metadata files array.
                 let mut updated_meta = existing_meta.unwrap_or_else(|| {
