@@ -106,6 +106,7 @@ pub fn router() -> Router<SharedState> {
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    storage_backend: String,
     repo_type: String,
     upstream_url: Option<String>,
     /// Separate index host for registries like crates.io that split index
@@ -113,6 +114,15 @@ struct RepoInfo {
     /// two hosts. Loaded from the `repository_config` table on the key
     /// `index_upstream_url`. Falls back to `upstream_url` when absent.
     index_upstream_url: Option<String>,
+}
+
+impl RepoInfo {
+    fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
 }
 
 async fn resolve_cargo_repo(
@@ -140,6 +150,7 @@ async fn resolve_cargo_repo(
                 return Ok(RepoInfo {
                     id: entry.id,
                     storage_path: entry.storage_path.clone(),
+                    storage_backend: entry.storage_backend.clone(),
                     repo_type: entry.repo_type.clone(),
                     upstream_url: entry.upstream_url.clone(),
                     index_upstream_url: entry.index_upstream_url.clone(),
@@ -153,7 +164,7 @@ async fn resolve_cargo_repo(
     // (not the macro) so no offline-cache update is needed.
     use sqlx::Row;
     let repo = sqlx::query(
-        "SELECT id, storage_path, format::text as format, repo_type::text as repo_type, \
+        "SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, \
          upstream_url, is_public, \
          (SELECT value FROM repository_config \
           WHERE repository_id = repositories.id \
@@ -186,6 +197,7 @@ async fn resolve_cargo_repo(
     }
 
     let id: uuid::Uuid = repo.get("id");
+    let storage_backend: String = repo.get("storage_backend");
     let storage_path: String = repo.get("storage_path");
     let repo_type: String = repo.get("repo_type");
     let upstream_url: Option<String> = repo.get("upstream_url");
@@ -204,6 +216,7 @@ async fn resolve_cargo_repo(
                     repo_type: repo_type.clone(),
                     upstream_url: upstream_url.clone(),
                     storage_path: storage_path.clone(),
+                    storage_backend: storage_backend.clone(),
                     is_public,
                     index_upstream_url: index_upstream_url.clone(),
                 },
@@ -215,6 +228,7 @@ async fn resolve_cargo_repo(
     Ok(RepoInfo {
         id,
         storage_path,
+        storage_backend,
         repo_type,
         upstream_url,
         index_upstream_url,
@@ -511,7 +525,9 @@ async fn store_crate_artifact(
 ) -> Result<(), Response> {
     let filename = format!("{}-{}.crate", name_lower, crate_version);
     let storage_key = format!("cargo/{}/{}/{}", name_lower, crate_version, filename);
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     storage
         .put(&storage_key, crate_bytes.clone())
         .await
@@ -742,19 +758,14 @@ async fn download(
                     state.proxy_service.as_deref(),
                     repo.id,
                     &upstream_path,
-                    |member_id, storage_path| {
+                    |member_id, location| {
                         let db = db.clone();
                         let state = state.clone();
                         let vname = vname.clone();
                         let vversion = vversion.clone();
                         async move {
                             proxy_helpers::local_fetch_by_name_version(
-                                &db,
-                                &state,
-                                member_id,
-                                &storage_path,
-                                &vname,
-                                &vversion,
+                                &db, &state, member_id, &location, &vname, &vversion,
                             )
                             .await
                         }
@@ -783,7 +794,9 @@ async fn download(
         }
     };
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1884,6 +1897,7 @@ mod tests {
         let info = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data/cargo".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
             upstream_url: None,
             index_upstream_url: None,
@@ -1897,6 +1911,7 @@ mod tests {
         let info = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data/cargo-remote".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "remote".to_string(),
             upstream_url: Some("https://crates.io".to_string()),
             index_upstream_url: None,
@@ -1910,6 +1925,7 @@ mod tests {
         let info = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data/cargo-remote".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "remote".to_string(),
             upstream_url: Some("https://crates.io".to_string()),
             index_upstream_url: Some("https://index.crates.io".to_string()),
@@ -1926,6 +1942,7 @@ mod tests {
         let info = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data/cargo-virtual".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "virtual".to_string(),
             upstream_url: None,
             index_upstream_url: None,

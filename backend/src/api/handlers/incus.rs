@@ -374,14 +374,24 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
 struct RepoInfo {
     id: Uuid,
     storage_path: String,
+    storage_backend: String,
     repo_type: String,
     #[allow(dead_code)]
     upstream_url: Option<String>,
 }
 
+impl RepoInfo {
+    fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
 async fn resolve_incus_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let repo = sqlx::query(
-        r#"SELECT id, storage_path, format::text as format, repo_type::text as repo_type, upstream_url
+        r#"SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url
         FROM repositories WHERE key = $1"#,
     )
     .bind(repo_key)
@@ -406,6 +416,7 @@ async fn resolve_incus_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     Ok(RepoInfo {
         id: repo.get("id"),
         storage_path: repo.get("storage_path"),
+        storage_backend: repo.get("storage_backend"),
         repo_type: repo.get("repo_type"),
         upstream_url: repo.get("upstream_url"),
     })
@@ -580,7 +591,9 @@ async fn download_image(
     let size_bytes: i64 = artifact.get("size_bytes");
     let checksum: String = artifact.get("checksum_sha256");
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     let content = storage.get(&storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1555,6 +1568,7 @@ mod tests {
         let info = RepoInfo {
             id: Uuid::new_v4(),
             storage_path: "/data/incus".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
             upstream_url: None,
         };
@@ -1568,6 +1582,7 @@ mod tests {
         let info = RepoInfo {
             id: Uuid::new_v4(),
             storage_path: "/data/incus-remote".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "remote".to_string(),
             upstream_url: Some("https://images.linuxcontainers.org".to_string()),
         };

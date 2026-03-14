@@ -26,7 +26,6 @@ use crate::services::image_scanner::ImageScanner;
 use crate::services::scan_config_service::ScanConfigService;
 use crate::services::scan_result_service::ScanResultService;
 use crate::services::trivy_fs_scanner::TrivyFsScanner;
-use crate::storage::filesystem::FilesystemStorage;
 use crate::storage::StorageBackend;
 
 // ---------------------------------------------------------------------------
@@ -843,8 +842,9 @@ pub struct ScannerService {
     scanners: Vec<Arc<dyn Scanner>>,
     scan_result_service: Arc<ScanResultService>,
     scan_config_service: Arc<ScanConfigService>,
+    #[allow(dead_code)]
     storage: Arc<dyn StorageBackend>,
-    storage_backend_type: String,
+    storage_registry: Arc<crate::storage::StorageRegistry>,
     #[allow(dead_code)]
     storage_base_path: String,
     scan_workspace_path: String,
@@ -859,7 +859,7 @@ impl ScannerService {
         scan_config_service: Arc<ScanConfigService>,
         trivy_url: Option<String>,
         storage: Arc<dyn StorageBackend>,
-        storage_backend_type: String,
+        storage_registry: Arc<crate::storage::StorageRegistry>,
         storage_base_path: String,
         scan_workspace_path: String,
         openscap_url: Option<String>,
@@ -907,7 +907,7 @@ impl ScannerService {
             scan_result_service,
             scan_config_service,
             storage,
-            storage_backend_type,
+            storage_registry,
             storage_base_path,
             scan_workspace_path,
         }
@@ -1146,27 +1146,26 @@ impl ScannerService {
         })
     }
 
-    /// Resolve the storage backend for a given repository, mirroring
-    /// `AppState::storage_for_repo()`. For S3/Azure/GCS the shared backend
-    /// instance is returned; for filesystem a per-repo instance is created.
+    /// Resolve the storage backend for a given repository by looking up
+    /// its storage_backend and storage_path, then delegating to the registry.
     async fn resolve_repo_storage(&self, repository_id: Uuid) -> Result<Arc<dyn StorageBackend>> {
-        match self.storage_backend_type.as_str() {
-            "s3" | "azure" | "gcs" => Ok(self.storage.clone()),
-            _ => {
-                let storage_path: String =
-                    sqlx::query_scalar("SELECT storage_path FROM repositories WHERE id = $1")
-                        .bind(repository_id)
-                        .fetch_one(&self.db)
-                        .await
-                        .map_err(|e| {
-                            AppError::Database(format!(
-                                "Failed to fetch storage_path for repository {}: {}",
-                                repository_id, e
-                            ))
-                        })?;
-                Ok(Arc::new(FilesystemStorage::new(&storage_path)))
-            }
-        }
+        use sqlx::Row;
+        let row =
+            sqlx::query("SELECT storage_backend, storage_path FROM repositories WHERE id = $1")
+                .bind(repository_id)
+                .fetch_one(&self.db)
+                .await
+                .map_err(|e| {
+                    AppError::Database(format!(
+                        "Failed to fetch storage location for repository {}: {}",
+                        repository_id, e
+                    ))
+                })?;
+        let location = crate::storage::StorageLocation {
+            backend: row.try_get("storage_backend").unwrap_or_default(),
+            path: row.try_get("storage_path").unwrap_or_default(),
+        };
+        self.storage_registry.backend_for(&location)
     }
 
     /// Prepare a scan workspace directory with the artifact content.

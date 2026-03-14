@@ -33,7 +33,8 @@ struct GaugeStats {
 pub fn spawn_all(
     db: PgPool,
     config: Config,
-    primary_storage: Arc<dyn crate::storage::StorageBackend>,
+    _primary_storage: Arc<dyn crate::storage::StorageBackend>,
+    storage_registry: Arc<crate::storage::StorageRegistry>,
 ) {
     // Daily metrics snapshot (runs every hour, captures once per day via UPSERT)
     {
@@ -145,14 +146,11 @@ pub fn spawn_all(
     {
         let db = db.clone();
         let config_clone = config.clone();
-        let gc_storage = primary_storage.clone();
+        let gc_registry = storage_registry.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(120)).await;
-            let service = crate::services::storage_gc_service::StorageGcService::new(
-                db,
-                gc_storage,
-                config_clone.storage_backend.clone(),
-            );
+            let service =
+                crate::services::storage_gc_service::StorageGcService::new(db, gc_registry);
 
             let normalized = normalize_cron_expression(&config_clone.gc_schedule);
             let gc_schedule = match parse_cron_schedule(&normalized) {

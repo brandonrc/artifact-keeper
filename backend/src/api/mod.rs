@@ -19,7 +19,7 @@ use crate::services::quality_check_service::QualityCheckService;
 use crate::services::repository_service::RepositoryService;
 use crate::services::scanner_service::ScannerService;
 use crate::services::wasm_plugin_service::WasmPluginService;
-use crate::storage::StorageBackend;
+use crate::storage::{StorageBackend, StorageLocation, StorageRegistry};
 use bytes::Bytes;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
@@ -48,6 +48,7 @@ pub struct CachedRepo {
     pub repo_type: String,
     pub upstream_url: Option<String>,
     pub storage_path: String,
+    pub storage_backend: String,
     pub is_public: bool,
     /// The `index_upstream_url` config value (cargo-specific; `None` for
     /// other formats or when not configured).
@@ -67,6 +68,7 @@ pub struct AppState {
     pub config: Config,
     pub db: PgPool,
     pub storage: Arc<dyn StorageBackend>,
+    pub storage_registry: Arc<StorageRegistry>,
     pub plugin_registry: Option<Arc<PluginRegistry>>,
     pub wasm_plugin_service: Option<Arc<WasmPluginService>>,
     pub scanner_service: Option<Arc<ScannerService>>,
@@ -88,11 +90,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, db: PgPool, storage: Arc<dyn StorageBackend>) -> Self {
+    pub fn new(
+        config: Config,
+        db: PgPool,
+        storage: Arc<dyn StorageBackend>,
+        storage_registry: Arc<StorageRegistry>,
+    ) -> Self {
         Self {
             config,
             db,
             storage,
+            storage_registry,
             plugin_registry: None,
             wasm_plugin_service: None,
             scanner_service: None,
@@ -113,6 +121,7 @@ impl AppState {
         config: Config,
         db: PgPool,
         storage: Arc<dyn StorageBackend>,
+        storage_registry: Arc<StorageRegistry>,
         plugin_registry: Arc<PluginRegistry>,
         wasm_plugin_service: Arc<WasmPluginService>,
     ) -> Self {
@@ -120,6 +129,7 @@ impl AppState {
             config,
             db,
             storage,
+            storage_registry,
             plugin_registry: Some(plugin_registry),
             wasm_plugin_service: Some(wasm_plugin_service),
             scanner_service: None,
@@ -137,16 +147,14 @@ impl AppState {
 
     /// Get the storage backend for a given repository.
     ///
-    /// For S3/Azure/GCS, all repos share a single backend instance (artifacts
-    /// are keyed by content-addressed SHA-256 hashes). For filesystem, each
-    /// repo has its own directory so we create a per-repo instance.
-    pub fn storage_for_repo(&self, repo_storage_path: &str) -> Arc<dyn StorageBackend> {
-        match self.config.storage_backend.as_str() {
-            "s3" | "azure" | "gcs" => self.storage.clone(),
-            _ => Arc::new(crate::storage::filesystem::FilesystemStorage::new(
-                repo_storage_path,
-            )),
-        }
+    /// Delegates to the `StorageRegistry` which handles filesystem backends
+    /// (creating a per-repo directory instance) and cloud backends (returning
+    /// the shared instance).
+    pub fn storage_for_repo(
+        &self,
+        location: &StorageLocation,
+    ) -> crate::error::Result<Arc<dyn StorageBackend>> {
+        self.storage_registry.backend_for(location)
     }
 
     /// Set the scanner service for security scanning.
@@ -211,6 +219,7 @@ mod tests {
             repo_type: "hosted".to_string(),
             upstream_url: None,
             storage_path: "/data/repos/my-repo".to_string(),
+            storage_backend: "filesystem".to_string(),
             is_public: true,
             index_upstream_url: None,
         }

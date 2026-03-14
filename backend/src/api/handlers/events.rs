@@ -114,8 +114,13 @@ mod tests {
     fn test_state() -> Arc<AppState> {
         let pool = PgPool::connect_lazy("postgres://fake:fake@localhost/fake")
             .expect("connect_lazy should not fail");
-        let storage = Arc::new(FilesystemStorage::new("/tmp/test-events"));
-        Arc::new(AppState::new(test_config(), pool, storage))
+        let storage: Arc<dyn crate::storage::StorageBackend> =
+            Arc::new(FilesystemStorage::new("/tmp/test-events"));
+        let registry = Arc::new(crate::storage::StorageRegistry::new(
+            std::collections::HashMap::new(),
+            "filesystem".to_string(),
+        ));
+        Arc::new(AppState::new(test_config(), pool, storage, registry))
     }
 
     async fn send_stream_request(state: Arc<AppState>) -> axum::response::Response<Body> {

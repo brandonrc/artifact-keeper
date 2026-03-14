@@ -566,7 +566,7 @@ pub async fn repo_visibility_middleware(
             use sqlx::Row;
             let row = sqlx::query(
                 "SELECT id, format::text as format, repo_type::text as repo_type, \
-                 upstream_url, storage_path, is_public, \
+                 upstream_url, storage_backend, storage_path, is_public, \
                  (SELECT value FROM repository_config \
                   WHERE repository_id = repositories.id \
                   AND key = 'index_upstream_url') AS index_upstream_url \
@@ -584,6 +584,7 @@ pub async fn repo_visibility_middleware(
                     format: r.get("format"),
                     repo_type: r.get("repo_type"),
                     upstream_url: r.get("upstream_url"),
+                    storage_backend: r.get("storage_backend"),
                     storage_path: r.get("storage_path"),
                     is_public: r.get("is_public"),
                     index_upstream_url: r.get("index_upstream_url"),

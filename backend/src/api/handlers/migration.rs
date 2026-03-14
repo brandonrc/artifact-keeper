@@ -1039,7 +1039,10 @@ async fn start_migration(
     let conflict_resolution = ConflictResolution::from_str(&config.conflict_resolution);
 
     // Create storage backend
-    let storage = state.storage_for_repo(&state.config.storage_path);
+    let storage = state.storage_for_repo(&crate::storage::StorageLocation {
+        backend: state.config.storage_backend.clone(),
+        path: state.config.storage_path.clone(),
+    })?;
 
     // Create cancellation token for this job
     let cancel_token = CancellationToken::new();
@@ -1167,7 +1170,10 @@ async fn resume_migration(
     let config: MigrationConfig = serde_json::from_value(job.config.clone()).unwrap_or_default();
     let conflict_resolution = ConflictResolution::from_str(&config.conflict_resolution);
 
-    let storage = state.storage_for_repo(&state.config.storage_path);
+    let storage = state.storage_for_repo(&crate::storage::StorageLocation {
+        backend: state.config.storage_backend.clone(),
+        path: state.config.storage_path.clone(),
+    })?;
     let cancel_token = CancellationToken::new();
 
     let worker_config = WorkerConfig {

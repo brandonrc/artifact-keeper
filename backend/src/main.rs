@@ -185,6 +185,64 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Build the storage registry for per-repo backend routing.
+    // The registry maps backend names to initialized StorageBackend instances.
+    // "filesystem" is always available (handled dynamically by the registry).
+    let storage_registry = {
+        use std::collections::HashMap;
+        let mut backends: HashMap<
+            String,
+            Arc<dyn artifact_keeper_backend::storage::StorageBackend>,
+        > = HashMap::new();
+
+        // Register the primary backend under its type name if it is not filesystem
+        if config.storage_backend != "filesystem" {
+            backends.insert(config.storage_backend.clone(), primary_storage.clone());
+        }
+
+        // Try to register additional backends if credentials are available and
+        // they are not already the primary backend.
+        if config.storage_backend != "s3" {
+            if let Ok(s3) = artifact_keeper_backend::storage::s3::S3Backend::from_env().await {
+                tracing::info!("Additional S3 storage backend registered");
+                backends.insert("s3".to_string(), Arc::new(s3));
+            }
+        }
+        if config.storage_backend != "azure" {
+            if let Ok(azure_cfg) = artifact_keeper_backend::storage::azure::AzureConfig::from_env()
+            {
+                if let Ok(azure) =
+                    artifact_keeper_backend::storage::azure::AzureBackend::new(azure_cfg).await
+                {
+                    tracing::info!("Additional Azure storage backend registered");
+                    backends.insert("azure".to_string(), Arc::new(azure));
+                }
+            }
+        }
+        if config.storage_backend != "gcs" {
+            if let Ok(gcs_cfg) = artifact_keeper_backend::storage::gcs::GcsConfig::from_env() {
+                if let Ok(gcs) =
+                    artifact_keeper_backend::storage::gcs::GcsBackend::new(gcs_cfg).await
+                {
+                    tracing::info!("Additional GCS storage backend registered");
+                    backends.insert("gcs".to_string(), Arc::new(gcs));
+                }
+            }
+        }
+
+        let available: Vec<String> = {
+            let mut names = vec!["filesystem".to_string()];
+            names.extend(backends.keys().cloned());
+            names
+        };
+        tracing::info!("Storage backends available: {:?}", available);
+
+        Arc::new(artifact_keeper_backend::storage::StorageRegistry::new(
+            backends,
+            config.storage_backend.clone(),
+        ))
+    };
+
     // Initialize security scanner service
     let advisory_client = Arc::new(AdvisoryClient::new(std::env::var("GITHUB_TOKEN").ok()));
     let scan_result_service = Arc::new(ScanResultService::new(db_pool.clone()));
@@ -196,7 +254,7 @@ async fn main() -> Result<()> {
         scan_config_service,
         config.trivy_url.clone(),
         primary_storage.clone(),
-        config.storage_backend.clone(),
+        storage_registry.clone(),
         config.storage_path.clone(),
         config.scan_workspace_path.clone(),
         config.openscap_url.clone(),
@@ -209,6 +267,7 @@ async fn main() -> Result<()> {
         config.clone(),
         db_pool.clone(),
         primary_storage,
+        storage_registry.clone(),
         plugin_registry,
         wasm_plugin_service,
     );
@@ -260,7 +319,12 @@ async fn main() -> Result<()> {
     let state = Arc::new(app_state);
 
     // Spawn background schedulers (metrics snapshots, health monitor, lifecycle)
-    scheduler_service::spawn_all(db_pool.clone(), config.clone(), scheduler_storage);
+    scheduler_service::spawn_all(
+        db_pool.clone(),
+        config.clone(),
+        scheduler_storage,
+        storage_registry.clone(),
+    );
 
     // Spawn background sync worker for peer replication
     artifact_keeper_backend::services::sync_worker::spawn_sync_worker(db_pool).await;

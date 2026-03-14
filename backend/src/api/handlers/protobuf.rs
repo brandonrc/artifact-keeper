@@ -21,7 +21,7 @@ use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Extension;
 use axum::Router;
@@ -395,13 +395,23 @@ fn connect_error(status: StatusCode, code: &str, message: &str) -> Response {
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    storage_backend: String,
     repo_type: String,
     upstream_url: Option<String>,
 }
 
+impl RepoInfo {
+    fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
 async fn resolve_protobuf_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
     let row = sqlx::query(
-        r#"SELECT id, storage_path, format::text AS format, repo_type::text AS repo_type, upstream_url
+        r#"SELECT id, storage_backend, storage_path, format::text AS format, repo_type::text AS repo_type, upstream_url
         FROM repositories WHERE key = $1"#,
     )
     .bind(repo_key)
@@ -437,6 +447,7 @@ async fn resolve_protobuf_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, 
     Ok(RepoInfo {
         id: row.get("id"),
         storage_path: row.get("storage_path"),
+        storage_backend: row.get("storage_backend"),
         repo_type: row.get("repo_type"),
         upstream_url: row.get("upstream_url"),
     })
@@ -1119,7 +1130,9 @@ async fn upload(
 
         // Store via StorageBackend
         let storage_key = format!("modules/{}/commits/{}", module_name, commit_digest);
-        let storage = state.storage_for_repo(&repo.storage_path);
+        let storage = state
+            .storage_for_repo(&repo.storage_location())
+            .map_err(|e| e.into_response())?;
         storage.put(&storage_key, bundle_bytes).await.map_err(|e| {
             connect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1344,17 +1357,13 @@ async fn download(
                         state.proxy_service.as_deref(),
                         repo.id,
                         &upstream_path,
-                        |member_id, storage_path| {
+                        |member_id, location| {
                             let db = db.clone();
                             let state = state.clone();
                             let path = format!("modules/{}/commits/{}", mname, digest);
                             async move {
                                 proxy_helpers::local_fetch_by_path(
-                                    &db,
-                                    &state,
-                                    member_id,
-                                    &storage_path,
-                                    &path,
+                                    &db, &state, member_id, &location, &path,
                                 )
                                 .await
                             }
@@ -1387,7 +1396,9 @@ async fn download(
 
         // Read bundle from local storage
         let storage_key: String = artifact_row.get("storage_key");
-        let storage = state.storage_for_repo(&repo.storage_path);
+        let storage = state
+            .storage_for_repo(&repo.storage_location())
+            .map_err(|e| e.into_response())?;
         let bundle_data = storage.get(&storage_key).await.map_err(|e| {
             connect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

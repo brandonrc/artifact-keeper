@@ -173,6 +173,16 @@ pub struct Repository {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Repository {
+    /// Build a `StorageLocation` from this repository's configured backend and path.
+    pub fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
 /// Virtual repository member entity
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct VirtualRepoMember {

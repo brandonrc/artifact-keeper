@@ -93,16 +93,26 @@ pub fn router() -> Router<SharedState> {
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    storage_backend: String,
     repo_type: String,
     upstream_url: Option<String>,
 }
 
+impl RepoInfo {
+    fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
 async fn resolve_conan_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
-    let repo = sqlx::query!(
-        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
-        FROM repositories WHERE key = $1"#,
-        repo_key
+    use sqlx::Row;
+    let repo = sqlx::query(
+        "SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url FROM repositories WHERE key = $1",
     )
+    .bind(repo_key)
     .fetch_optional(db)
     .await
     .map_err(|e| {
@@ -114,7 +124,8 @@ async fn resolve_conan_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
 
-    let fmt = repo.format.to_lowercase();
+    let fmt: String = repo.try_get("format").unwrap_or_default();
+    let fmt = fmt.to_lowercase();
     if fmt != "conan" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -127,10 +138,11 @@ async fn resolve_conan_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
     }
 
     Ok(RepoInfo {
-        id: repo.id,
-        storage_path: repo.storage_path,
-        repo_type: repo.repo_type,
-        upstream_url: repo.upstream_url,
+        id: repo.try_get("id").unwrap_or_default(),
+        storage_path: repo.try_get("storage_path").unwrap_or_default(),
+        storage_backend: repo.try_get("storage_backend").unwrap_or_default(),
+        repo_type: repo.try_get("repo_type").unwrap_or_default(),
+        upstream_url: repo.try_get("upstream_url").ok(),
     })
 }
 
@@ -612,17 +624,13 @@ async fn recipe_file_download(
                     state.proxy_service.as_deref(),
                     repo.id,
                     &upstream_path,
-                    |member_id, storage_path| {
+                    |member_id, location| {
                         let db = db.clone();
                         let state = state.clone();
                         let vpath = vpath.clone();
                         async move {
                             proxy_helpers::local_fetch_by_path(
-                                &db,
-                                &state,
-                                member_id,
-                                &storage_path,
-                                &vpath,
+                                &db, &state, member_id, &location, &vpath,
                             )
                             .await
                         }
@@ -645,7 +653,9 @@ async fn recipe_file_download(
     };
 
     // Read from storage
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -738,7 +748,9 @@ async fn recipe_file_upload(
     super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
 
     // Store the file
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1074,17 +1086,13 @@ async fn package_file_download(
                         state.proxy_service.as_deref(),
                         repo.id,
                         &upstream_path,
-                        |member_id, storage_path| {
+                        |member_id, location| {
                             let db = db.clone();
                             let state = state.clone();
                             let vpath = vpath.clone();
                             async move {
                                 proxy_helpers::local_fetch_by_path(
-                                    &db,
-                                    &state,
-                                    member_id,
-                                    &storage_path,
-                                    &vpath,
+                                    &db, &state, member_id, &location, &vpath,
                                 )
                                 .await
                             }
@@ -1107,7 +1115,9 @@ async fn package_file_download(
         };
 
     // Read from storage
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1215,7 +1225,9 @@ async fn package_file_upload(
     }
 
     // Store the file
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     storage.put(&storage_key, body.clone()).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

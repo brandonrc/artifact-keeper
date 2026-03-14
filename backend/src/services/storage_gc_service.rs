@@ -10,7 +10,7 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use crate::error::Result;
-use crate::storage::StorageBackend;
+use crate::storage::{StorageBackend, StorageLocation, StorageRegistry};
 
 /// Result of a storage GC run.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -30,31 +30,23 @@ pub struct StorageGcResult {
 /// correct backend per repo using the repository's `storage_path`.
 pub struct StorageGcService {
     db: PgPool,
-    shared_storage: Arc<dyn StorageBackend>,
-    storage_backend_type: String,
+    storage_registry: Arc<StorageRegistry>,
 }
 
 impl StorageGcService {
-    pub fn new(
-        db: PgPool,
-        shared_storage: Arc<dyn StorageBackend>,
-        storage_backend_type: String,
-    ) -> Self {
+    pub fn new(db: PgPool, storage_registry: Arc<StorageRegistry>) -> Self {
         Self {
             db,
-            shared_storage,
-            storage_backend_type,
+            storage_registry,
         }
     }
 
-    /// Get the storage backend for a given repository path.
-    pub(crate) fn storage_for_path(&self, repo_storage_path: &str) -> Arc<dyn StorageBackend> {
-        match self.storage_backend_type.as_str() {
-            "s3" | "azure" | "gcs" => self.shared_storage.clone(),
-            _ => Arc::new(crate::storage::filesystem::FilesystemStorage::new(
-                repo_storage_path,
-            )),
-        }
+    /// Get the storage backend for a given storage location.
+    pub(crate) fn storage_for_location(
+        &self,
+        location: &StorageLocation,
+    ) -> Result<Arc<dyn StorageBackend>> {
+        self.storage_registry.backend_for(location)
     }
 
     /// Run garbage collection on orphaned storage keys.
@@ -68,7 +60,7 @@ impl StorageGcService {
         // each repo directory that held a copy of the content.
         let orphans = sqlx::query(
             r#"
-            SELECT a.storage_key, r.storage_path,
+            SELECT a.storage_key, r.storage_backend, r.storage_path,
                    SUM(a.size_bytes) as total_bytes,
                    COUNT(*) as artifact_count
             FROM artifacts a
@@ -79,7 +71,7 @@ impl StorageGcService {
                 WHERE a2.storage_key = a.storage_key
                   AND a2.is_deleted = false
               )
-            GROUP BY a.storage_key, r.storage_path
+            GROUP BY a.storage_key, r.storage_backend, r.storage_path
             "#,
         )
         .fetch_all(&self.db)
@@ -99,12 +91,25 @@ impl StorageGcService {
 
         for row in &orphans {
             let storage_key: String = row.try_get("storage_key").unwrap_or_default();
+            let storage_backend: String = row.try_get("storage_backend").unwrap_or_default();
             let storage_path: String = row.try_get("storage_path").unwrap_or_default();
             let bytes: i64 = row.try_get("total_bytes").unwrap_or(0);
             let count: i64 = row.try_get("artifact_count").unwrap_or(0);
 
-            // Resolve the correct storage backend for this repo's path
-            let storage = self.storage_for_path(&storage_path);
+            // Resolve the correct storage backend for this repo
+            let location = StorageLocation {
+                backend: storage_backend,
+                path: storage_path,
+            };
+            let storage = match self.storage_for_location(&location) {
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = format_gc_error("resolve storage", &storage_key, &e.to_string());
+                    tracing::warn!("{}", msg);
+                    result.errors.push(msg);
+                    continue;
+                }
+            };
 
             // Delete the physical file first
             if let Err(e) = storage.delete(&storage_key).await {
@@ -246,11 +251,18 @@ mod tests {
     }
 
     fn make_service(backend_type: &str) -> StorageGcService {
-        StorageGcService::new(
-            make_pool(),
-            Arc::new(MockStorage) as Arc<dyn crate::storage::StorageBackend>,
+        let mut backends = std::collections::HashMap::new();
+        if backend_type != "filesystem" {
+            backends.insert(
+                backend_type.to_string(),
+                Arc::new(MockStorage) as Arc<dyn crate::storage::StorageBackend>,
+            );
+        }
+        let registry = Arc::new(crate::storage::StorageRegistry::new(
+            backends,
             backend_type.to_string(),
-        )
+        ));
+        StorageGcService::new(make_pool(), registry)
     }
 
     // -----------------------------------------------------------------------
@@ -629,84 +641,80 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // StorageGcService::new and storage_for_path
+    // StorageGcService::new and storage_for_location
     // -----------------------------------------------------------------------
 
-    #[tokio::test]
-    async fn test_service_new_stores_backend_type() {
-        let service = make_service("s3");
-        assert_eq!(service.storage_backend_type, "s3");
+    fn loc(backend: &str, path: &str) -> StorageLocation {
+        StorageLocation {
+            backend: backend.to_string(),
+            path: path.to_string(),
+        }
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_s3_returns_shared() {
+    async fn test_storage_for_location_s3_returns_shared() {
         let service = make_service("s3");
-        let storage_a = service.storage_for_path("/repo/a");
-        let storage_b = service.storage_for_path("/repo/b");
+        let storage_a = service.storage_for_location(&loc("s3", "/repo/a")).unwrap();
+        let storage_b = service.storage_for_location(&loc("s3", "/repo/b")).unwrap();
 
         // Both should point to the same Arc allocation (the shared storage).
         assert!(Arc::ptr_eq(&storage_a, &storage_b));
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_azure_returns_shared() {
+    async fn test_storage_for_location_azure_returns_shared() {
         let service = make_service("azure");
-        let storage_a = service.storage_for_path("/data/repo1");
-        let storage_b = service.storage_for_path("/data/repo2");
+        let storage_a = service
+            .storage_for_location(&loc("azure", "/data/repo1"))
+            .unwrap();
+        let storage_b = service
+            .storage_for_location(&loc("azure", "/data/repo2"))
+            .unwrap();
 
         assert!(Arc::ptr_eq(&storage_a, &storage_b));
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_gcs_returns_shared() {
+    async fn test_storage_for_location_gcs_returns_shared() {
         let service = make_service("gcs");
-        let storage_a = service.storage_for_path("/bucket/path1");
-        let storage_b = service.storage_for_path("/bucket/path2");
+        let storage_a = service
+            .storage_for_location(&loc("gcs", "/bucket/path1"))
+            .unwrap();
+        let storage_b = service
+            .storage_for_location(&loc("gcs", "/bucket/path2"))
+            .unwrap();
 
         assert!(Arc::ptr_eq(&storage_a, &storage_b));
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_filesystem_creates_new() {
+    async fn test_storage_for_location_filesystem_creates_new() {
         let service = make_service("filesystem");
-        let storage_a = service.storage_for_path("/data/repo-a");
-        let storage_b = service.storage_for_path("/data/repo-b");
+        let storage_a = service
+            .storage_for_location(&loc("filesystem", "/data/repo-a"))
+            .unwrap();
+        let storage_b = service
+            .storage_for_location(&loc("filesystem", "/data/repo-b"))
+            .unwrap();
 
         // Filesystem backends should be distinct allocations per path.
         assert!(!Arc::ptr_eq(&storage_a, &storage_b));
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_filesystem_not_shared_with_mock() {
+    async fn test_storage_for_location_unknown_returns_error() {
         let service = make_service("filesystem");
-        let storage = service.storage_for_path("/some/path");
-
-        // The returned storage should NOT be the shared mock backend.
-        assert!(!Arc::ptr_eq(&storage, &service.shared_storage));
+        let result = service.storage_for_location(&loc("minio", "/local/path"));
+        assert!(result.is_err(), "Unknown backend should return error");
     }
 
     #[tokio::test]
-    async fn test_storage_for_path_unknown_backend_creates_filesystem() {
-        let service = make_service("minio");
-        let storage = service.storage_for_path("/local/path");
-
-        // Unknown types fall into the default match arm (filesystem).
-        assert!(!Arc::ptr_eq(&storage, &service.shared_storage));
-    }
-
-    #[tokio::test]
-    async fn test_storage_for_path_empty_backend_creates_filesystem() {
-        let service = make_service("");
-        let storage = service.storage_for_path("/local/path");
-
-        assert!(!Arc::ptr_eq(&storage, &service.shared_storage));
-    }
-
-    #[tokio::test]
-    async fn test_storage_for_path_cloud_ignores_path() {
+    async fn test_storage_for_location_cloud_ignores_path() {
         let service = make_service("s3");
-        let storage_root = service.storage_for_path("/");
-        let storage_deep = service.storage_for_path("/very/deep/nested/path/to/repo");
+        let storage_root = service.storage_for_location(&loc("s3", "/")).unwrap();
+        let storage_deep = service
+            .storage_for_location(&loc("s3", "/very/deep/nested/path/to/repo"))
+            .unwrap();
 
         // Cloud backends always return the same shared storage regardless of path.
         assert!(Arc::ptr_eq(&storage_root, &storage_deep));

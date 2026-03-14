@@ -53,11 +53,7 @@ pub async fn run_storage_gc(
         ));
     }
 
-    let service = StorageGcService::new(
-        state.db.clone(),
-        state.storage.clone(),
-        state.config.storage_backend.clone(),
-    );
+    let service = StorageGcService::new(state.db.clone(), state.storage_registry.clone());
     let result = service.run_gc(payload.dry_run).await?;
     Ok(Json(result))
 }

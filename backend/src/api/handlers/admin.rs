@@ -31,6 +31,29 @@ pub fn router() -> Router<SharedState> {
         .route("/stats", get(get_system_stats))
         .route("/cleanup", post(run_cleanup))
         .route("/reindex", post(trigger_reindex))
+        .route("/storage-backends", get(list_storage_backends))
+}
+
+/// List available storage backends.
+///
+/// Returns the names of all configured and available storage backends.
+/// Requires admin privileges.
+pub async fn list_storage_backends(
+    State(state): State<SharedState>,
+    Extension(auth): Extension<AuthExtension>,
+) -> Result<Json<Vec<String>>> {
+    if !auth.is_admin {
+        return Err(AppError::Authorization(
+            "Admin privileges required".to_string(),
+        ));
+    }
+    let mut backends = vec!["filesystem".to_string()];
+    for name in ["s3", "azure", "gcs"] {
+        if state.storage_registry.is_available(name) {
+            backends.push(name.to_string());
+        }
+    }
+    Ok(Json(backends))
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]

@@ -547,8 +547,8 @@ pub async fn approve_promotion(
     .ok_or_else(|| AppError::NotFound("Artifact not found in source repository".to_string()))?;
 
     // Copy storage content
-    let source_storage = state.storage_for_repo(&source_repo.storage_path);
-    let target_storage = state.storage_for_repo(&target_repo.storage_path);
+    let source_storage = state.storage_for_repo(&source_repo.storage_location())?;
+    let target_storage = state.storage_for_repo(&target_repo.storage_location())?;
 
     let content = source_storage
         .get(&artifact.storage_key)
@@ -1201,8 +1201,8 @@ mod tests {
             name: "Release Maven".to_string(),
             description: None,
             format: RepositoryFormat::Maven,
-            repo_type: RepositoryType::Local,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Local,
             storage_path: "/tmp/release".to_string(),
             upstream_url: None,
             is_public: true,
@@ -1231,8 +1231,8 @@ mod tests {
             name: "Local Maven".to_string(),
             description: None,
             format: RepositoryFormat::Maven,
-            repo_type: RepositoryType::Local,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Local,
             storage_path: "/tmp/local".to_string(),
             upstream_url: None,
             is_public: false,
@@ -1255,8 +1255,8 @@ mod tests {
             name: "Release Maven".to_string(),
             description: None,
             format: RepositoryFormat::Maven,
-            repo_type: RepositoryType::Local,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Local,
             storage_path: "/tmp/release".to_string(),
             upstream_url: None,
             is_public: true,
@@ -1288,8 +1288,8 @@ mod tests {
             name: "Staging Maven".to_string(),
             description: None,
             format: RepositoryFormat::Maven,
-            repo_type: RepositoryType::Staging,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Staging,
             storage_path: "/tmp/staging".to_string(),
             upstream_url: None,
             is_public: false,
@@ -1312,8 +1312,8 @@ mod tests {
             name: "Release NPM".to_string(),
             description: None,
             format: RepositoryFormat::Npm,
-            repo_type: RepositoryType::Local,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Local,
             storage_path: "/tmp/release".to_string(),
             upstream_url: None,
             is_public: true,

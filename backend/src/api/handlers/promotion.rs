@@ -311,8 +311,8 @@ pub async fn promote_artifact(
     }
 
     let new_artifact_id = Uuid::new_v4();
-    let source_storage = state.storage_for_repo(&source_repo.storage_path);
-    let target_storage = state.storage_for_repo(&target_repo.storage_path);
+    let source_storage = state.storage_for_repo(&source_repo.storage_location())?;
+    let target_storage = state.storage_for_repo(&target_repo.storage_location())?;
 
     let content = source_storage
         .get(&artifact.storage_key)
@@ -473,8 +473,8 @@ pub async fn promote_artifacts_bulk(
         let source_display = format!("{}/{}", repo_key, artifact.path);
         let target_display = format!("{}/{}", req.target_repository, artifact.path);
 
-        let source_storage = state.storage_for_repo(&source_repo.storage_path);
-        let target_storage = state.storage_for_repo(&target_repo.storage_path);
+        let source_storage = state.storage_for_repo(&source_repo.storage_location())?;
+        let target_storage = state.storage_for_repo(&target_repo.storage_location())?;
 
         let content = match source_storage.get(&artifact.storage_key).await {
             Ok(c) => c,

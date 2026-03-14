@@ -12,6 +12,7 @@ use crate::models::repository::{
     ReplicationPriority, Repository, RepositoryFormat, RepositoryType,
 };
 use crate::services::proxy_service::ProxyService;
+use crate::storage::StorageLocation;
 
 /// Reject write operations (publish/upload) on remote and virtual repositories.
 /// Returns 405 Method Not Allowed for remote repos, 400 for virtual repos.
@@ -79,7 +80,7 @@ pub async fn resolve_virtual_download<F, Fut>(
     local_fetch: F,
 ) -> Result<(Bytes, Option<String>), Response>
 where
-    F: Fn(Uuid, String) -> Fut,
+    F: Fn(Uuid, StorageLocation) -> Fut,
     Fut: std::future::Future<Output = Result<(Bytes, Option<String>), Response>>,
 {
     let members = fetch_virtual_members(db, virtual_repo_id).await?;
@@ -90,7 +91,7 @@ where
 
     for member in &members {
         // Try local storage first (works for Local, Staging, and cached Remote)
-        if let Ok(result) = local_fetch(member.id, member.storage_path.clone()).await {
+        if let Ok(result) = local_fetch(member.id, member.storage_location()).await {
             return Ok(result);
         }
 
@@ -283,7 +284,7 @@ pub async fn local_fetch_by_path(
     db: &PgPool,
     state: &AppState,
     repo_id: Uuid,
-    storage_path: &str,
+    location: &StorageLocation,
     artifact_path: &str,
 ) -> Result<(Bytes, Option<String>), Response> {
     let artifact = sqlx::query!(
@@ -305,7 +306,13 @@ pub async fn local_fetch_by_path(
     })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(storage_path);
+    let storage = state.storage_for_repo(location).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -323,7 +330,7 @@ pub async fn local_fetch_by_name_version(
     db: &PgPool,
     state: &AppState,
     repo_id: Uuid,
-    storage_path: &str,
+    location: &StorageLocation,
     name: &str,
     version: &str,
 ) -> Result<(Bytes, Option<String>), Response> {
@@ -347,7 +354,13 @@ pub async fn local_fetch_by_name_version(
     })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(storage_path);
+    let storage = state.storage_for_repo(location).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -365,7 +378,7 @@ pub async fn local_fetch_by_path_suffix(
     db: &PgPool,
     state: &AppState,
     repo_id: Uuid,
-    storage_path: &str,
+    location: &StorageLocation,
     path_suffix: &str,
 ) -> Result<(Bytes, Option<String>), Response> {
     let artifact = sqlx::query!(
@@ -387,7 +400,13 @@ pub async fn local_fetch_by_path_suffix(
     })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Artifact not found").into_response())?;
 
-    let storage = state.storage_for_repo(storage_path);
+    let storage = state.storage_for_repo(location).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Storage error: {}", e),
+        )
+            .into_response()
+    })?;
     let content = storage.get(&artifact.storage_key).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

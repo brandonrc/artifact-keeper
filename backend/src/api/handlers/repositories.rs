@@ -154,6 +154,10 @@ pub struct CreateRepositoryRequest {
     pub is_public: Option<bool>,
     pub upstream_url: Option<String>,
     pub quota_bytes: Option<i64>,
+    /// Override the default storage backend for this repository.
+    /// When omitted, the server's configured default is used.
+    /// Non-admin users may only use the default backend.
+    pub storage_backend: Option<String>,
     /// Custom format key for WASM plugin format handlers (e.g. "rpm-custom").
     pub format_key: Option<String>,
     /// Separate index host for Cargo registries that split index and download
@@ -537,8 +541,36 @@ pub async fn create_repository(
     let format = parse_format(&payload.format)?;
     let repo_type = parse_repo_type(&payload.repo_type)?;
 
-    // Generate storage path using the configured storage directory
-    let storage_path = format!("{}/{}", state.config.storage_path, payload.key);
+    // Resolve storage backend: use the requested one or fall back to the default.
+    let storage_backend = match &payload.storage_backend {
+        None => state.config.storage_backend.clone(),
+        Some(requested) if requested == &state.config.storage_backend => {
+            state.config.storage_backend.clone()
+        }
+        Some(requested) => {
+            // Non-admin users cannot choose a non-default backend
+            if !auth.is_admin {
+                return Err(AppError::Authorization(
+                    "Only admins can select a non-default storage backend".to_string(),
+                ));
+            }
+            // Validate the requested backend is available
+            if !state.storage_registry.is_available(requested) {
+                return Err(AppError::Validation(format!(
+                    "Storage backend '{}' is not available",
+                    requested
+                )));
+            }
+            requested.clone()
+        }
+    };
+
+    // Compute storage path: filesystem uses a subdirectory, cloud backends use the key directly
+    let storage_path = if storage_backend == "filesystem" {
+        format!("{}/{}", state.config.storage_path, payload.key)
+    } else {
+        payload.key.clone()
+    };
 
     let service = state.create_repository_service();
     let repo = service
@@ -548,7 +580,7 @@ pub async fn create_repository(
             description: payload.description,
             format,
             repo_type,
-            storage_backend: state.config.storage_backend.clone(),
+            storage_backend,
             storage_path,
             upstream_url: payload.upstream_url,
             is_public: payload.is_public.unwrap_or(false),
@@ -763,7 +795,7 @@ pub async fn list_artifacts(
     let repo = repo_service.get_by_key(&key).await?;
     require_visible(&repo, &auth)?;
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_location())?;
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
     let (artifacts, total) = artifact_service
@@ -832,7 +864,7 @@ pub async fn get_artifact_metadata(
     let repo = repo_service.get_by_key(&key).await?;
     require_visible(&repo, &auth)?;
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_location())?;
     let artifact_service = ArtifactService::new(state.db.clone(), storage);
 
     let artifact = sqlx::query_as!(
@@ -902,7 +934,7 @@ pub async fn upload_artifact(
     let repo = repo_service.get_by_key(&key).await?;
     require_repo_access(&auth, repo.id)?;
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_location())?;
     let artifact_service = state.create_artifact_service(storage);
 
     // Extract name from path
@@ -1087,7 +1119,7 @@ pub async fn download_artifact(
         .map(String::from);
 
     // Check if the storage backend supports redirect downloads (S3 with presigned URLs)
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_location())?;
     if storage.supports_redirect() {
         // Get artifact metadata first using query_as for runtime checking
         #[derive(sqlx::FromRow)]
@@ -1216,19 +1248,13 @@ pub async fn download_artifact(
                 state.proxy_service.as_deref(),
                 repo.id,
                 &path,
-                |member_id, storage_path| {
+                |member_id, location| {
                     let db = db.clone();
                     let state = state.clone();
                     let p = path_clone.clone();
                     async move {
-                        proxy_helpers::local_fetch_by_path(
-                            &db,
-                            &state,
-                            member_id,
-                            &storage_path,
-                            &p,
-                        )
-                        .await
+                        proxy_helpers::local_fetch_by_path(&db, &state, member_id, &location, &p)
+                            .await
                     }
                 },
             )
@@ -1289,7 +1315,7 @@ pub async fn delete_artifact(
     let repo = repo_service.get_by_key(&key).await?;
     require_repo_access(&auth, repo.id)?;
 
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state.storage_for_repo(&repo.storage_location())?;
     let artifact_service = state.create_artifact_service(storage);
 
     // Find the artifact
@@ -2510,8 +2536,8 @@ mod tests {
             name: "Docker Virtual".to_string(),
             description: Some("Aggregated Docker".to_string()),
             format: RepositoryFormat::Docker,
-            repo_type: RepositoryType::Virtual,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Virtual,
             storage_path: "/data/docker".to_string(),
             upstream_url: None,
             is_public: true,
@@ -2548,8 +2574,8 @@ mod tests {
             name: "Cargo Staging".to_string(),
             description: None,
             format: RepositoryFormat::Cargo,
-            repo_type: RepositoryType::Staging,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Staging,
             storage_path: "/data/cargo-staging".to_string(),
             upstream_url: None,
             is_public: false,
@@ -2656,8 +2682,8 @@ mod tests {
             name: "Test Repo".to_string(),
             description: None,
             format: RepositoryFormat::Pypi,
-            repo_type: RepositoryType::Local,
             storage_backend: "filesystem".to_string(),
+            repo_type: RepositoryType::Local,
             storage_path: "/data/test-repo".to_string(),
             upstream_url: None,
             is_public,

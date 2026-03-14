@@ -164,7 +164,11 @@ fn compute_sha256(data: &[u8]) -> String {
 
 /// Resolve the first path segment as a repository key and the rest as the
 /// image name within the repository.
-async fn resolve_repo(db: &PgPool, image_name: &str) -> Result<(Uuid, String, String), Response> {
+async fn resolve_repo(
+    db: &PgPool,
+    image_name: &str,
+) -> Result<(Uuid, crate::storage::StorageLocation, String), Response> {
+    use sqlx::Row;
     // Split: "test/python" → repo_key="test", image="python"
     // Or:    "myrepo/org/image" → repo_key="myrepo", image="org/image"
     let (repo_key, image) = match image_name.find('/') {
@@ -172,28 +176,36 @@ async fn resolve_repo(db: &PgPool, image_name: &str) -> Result<(Uuid, String, St
         None => (image_name, image_name),
     };
 
-    let repo = sqlx::query!(
-        "SELECT id, storage_path FROM repositories WHERE key = $1",
-        repo_key
-    )
-    .fetch_optional(db)
-    .await
-    .map_err(|e| {
-        oci_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "INTERNAL_ERROR",
-            &e.to_string(),
-        )
-    })?
-    .ok_or_else(|| {
-        oci_error(
-            StatusCode::NOT_FOUND,
-            "NAME_UNKNOWN",
-            &format!("repository not found: {}", repo_key),
-        )
-    })?;
+    let repo =
+        sqlx::query("SELECT id, storage_backend, storage_path FROM repositories WHERE key = $1")
+            .bind(repo_key)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                oci_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                )
+            })?
+            .ok_or_else(|| {
+                oci_error(
+                    StatusCode::NOT_FOUND,
+                    "NAME_UNKNOWN",
+                    &format!("repository not found: {}", repo_key),
+                )
+            })?;
 
-    Ok((repo.id, repo.storage_path, image.to_string()))
+    let location = crate::storage::StorageLocation {
+        backend: repo.try_get("storage_backend").unwrap_or_default(),
+        path: repo.try_get("storage_path").unwrap_or_default(),
+    };
+
+    Ok((
+        repo.try_get("id").unwrap_or_default(),
+        location,
+        image.to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +393,7 @@ async fn handle_head_blob(
     };
     let _ = claims;
 
-    let (repo_id, storage_path, _image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -397,7 +409,16 @@ async fn handle_head_blob(
 
     match blob {
         Ok(Some(b)) => {
-            let storage = state.storage_for_repo(&storage_path);
+            let storage = match state.storage_for_repo(&location) {
+                Ok(s) => s,
+                Err(e) => {
+                    return oci_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        &e.to_string(),
+                    )
+                }
+            };
             if storage.exists(&b.storage_key).await.unwrap_or(false) {
                 return Response::builder()
                     .status(StatusCode::OK)
@@ -430,7 +451,7 @@ async fn handle_get_blob(
     };
     let _ = claims;
 
-    let (repo_id, storage_path, _image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -445,7 +466,16 @@ async fn handle_get_blob(
 
     match blob {
         Ok(Some(b)) => {
-            let storage = state.storage_for_repo(&storage_path);
+            let storage = match state.storage_for_repo(&location) {
+                Ok(s) => s,
+                Err(e) => {
+                    return oci_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        &e.to_string(),
+                    )
+                }
+            };
             match storage.get(&b.storage_key).await {
                 Ok(data) => {
                     return Response::builder()
@@ -483,7 +513,7 @@ async fn handle_start_upload(
         Err(_) => return unauthorized_challenge(&host),
     };
 
-    let (repo_id, storage_path, _image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -503,7 +533,16 @@ async fn handle_start_upload(
                 );
             }
 
-            let storage = state.storage_for_repo(&storage_path);
+            let storage = match state.storage_for_repo(&location) {
+                Ok(s) => s,
+                Err(e) => {
+                    return oci_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "INTERNAL_ERROR",
+                        &e.to_string(),
+                    )
+                }
+            };
             let key = blob_storage_key(digest);
             if let Err(e) = storage.put(&key, body.clone()).await {
                 return oci_error(
@@ -537,7 +576,16 @@ async fn handle_start_upload(
 
     // If body is non-empty, store it as initial chunk
     if !body.is_empty() {
-        let storage = state.storage_for_repo(&storage_path);
+        let storage = match state.storage_for_repo(&location) {
+            Ok(s) => s,
+            Err(e) => {
+                return oci_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                )
+            }
+        };
         if let Err(e) = storage.put(&temp_key, body.clone()).await {
             return oci_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -615,12 +663,21 @@ async fn handle_patch_upload(
         Err(e) => return oci_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", &e.to_string()),
     };
 
-    let (_repo_id, storage_path, _image) = match resolve_repo(&state.db, image_name).await {
+    let (_repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let storage = state.storage_for_repo(&storage_path);
+    let storage = match state.storage_for_repo(&location) {
+        Ok(s) => s,
+        Err(e) => {
+            return oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &e.to_string(),
+            )
+        }
+    };
 
     // Read existing data and append
     let mut existing = match storage.get(&session.storage_temp_key).await {
@@ -724,12 +781,21 @@ async fn handle_complete_upload(
         }
     };
 
-    let (_repo_id, storage_path, _image) = match resolve_repo(&state.db, image_name).await {
+    let (_repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let storage = state.storage_for_repo(&storage_path);
+    let storage = match state.storage_for_repo(&location) {
+        Ok(s) => s,
+        Err(e) => {
+            return oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &e.to_string(),
+            )
+        }
+    };
 
     // Read accumulated data and append final chunk
     let mut data = match storage.get(&session.storage_temp_key).await {
@@ -809,7 +875,7 @@ async fn handle_head_manifest(
     };
     let _ = claims;
 
-    let (repo_id, storage_path, image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -841,7 +907,16 @@ async fn handle_head_manifest(
         }
     };
 
-    let storage = state.storage_for_repo(&storage_path);
+    let storage = match state.storage_for_repo(&location) {
+        Ok(s) => s,
+        Err(e) => {
+            return oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &e.to_string(),
+            )
+        }
+    };
     let manifest_key = manifest_storage_key(&manifest_digest);
 
     match storage.get(&manifest_key).await {
@@ -873,7 +948,7 @@ async fn handle_get_manifest(
     };
     let _ = claims;
 
-    let (repo_id, storage_path, image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -902,7 +977,16 @@ async fn handle_get_manifest(
         }
     };
 
-    let storage = state.storage_for_repo(&storage_path);
+    let storage = match state.storage_for_repo(&location) {
+        Ok(s) => s,
+        Err(e) => {
+            return oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &e.to_string(),
+            )
+        }
+    };
     let manifest_key = manifest_storage_key(&manifest_digest);
 
     match storage.get(&manifest_key).await {
@@ -934,7 +1018,7 @@ async fn handle_put_manifest(
         Err(_) => return unauthorized_challenge(&host),
     };
 
-    let (repo_id, storage_path, image) = match resolve_repo(&state.db, image_name).await {
+    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -950,7 +1034,16 @@ async fn handle_put_manifest(
     let manifest_key = manifest_storage_key(&digest);
 
     // Store manifest
-    let storage = state.storage_for_repo(&storage_path);
+    let storage = match state.storage_for_repo(&location) {
+        Ok(s) => s,
+        Err(e) => {
+            return oci_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                &e.to_string(),
+            )
+        }
+    };
     if let Err(e) = storage.put(&manifest_key, body.clone()).await {
         return oci_error(
             StatusCode::INTERNAL_SERVER_ERROR,

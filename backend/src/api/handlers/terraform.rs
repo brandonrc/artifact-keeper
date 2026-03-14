@@ -96,16 +96,26 @@ pub fn router() -> Router<SharedState> {
 struct RepoInfo {
     id: uuid::Uuid,
     storage_path: String,
+    storage_backend: String,
     repo_type: String,
     upstream_url: Option<String>,
 }
 
+impl RepoInfo {
+    fn storage_location(&self) -> crate::storage::StorageLocation {
+        crate::storage::StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
 async fn resolve_terraform_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
-    let repo = sqlx::query!(
-        r#"SELECT id, storage_path, format::text as "format!", repo_type::text as "repo_type!", upstream_url
-        FROM repositories WHERE key = $1"#,
-        repo_key
+    use sqlx::Row;
+    let repo = sqlx::query(
+        "SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url FROM repositories WHERE key = $1",
     )
+    .bind(repo_key)
     .fetch_optional(db)
     .await
     .map_err(|e| {
@@ -117,7 +127,8 @@ async fn resolve_terraform_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo,
     })?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
 
-    let fmt = repo.format.to_lowercase();
+    let fmt: String = repo.try_get("format").unwrap_or_default();
+    let fmt = fmt.to_lowercase();
     if fmt != "terraform" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -130,10 +141,11 @@ async fn resolve_terraform_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo,
     }
 
     Ok(RepoInfo {
-        id: repo.id,
-        storage_path: repo.storage_path,
-        repo_type: repo.repo_type,
-        upstream_url: repo.upstream_url,
+        id: repo.try_get("id").unwrap_or_default(),
+        storage_path: repo.try_get("storage_path").unwrap_or_default(),
+        storage_backend: repo.try_get("storage_backend").unwrap_or_default(),
+        repo_type: repo.try_get("repo_type").unwrap_or_default(),
+        upstream_url: repo.try_get("upstream_url").ok(),
     })
 }
 
@@ -301,19 +313,14 @@ async fn download_module(
                     state.proxy_service.as_deref(),
                     repo.id,
                     &upstream_path,
-                    |member_id, storage_path| {
+                    |member_id, location| {
                         let db = db.clone();
                         let state = state.clone();
                         let vname = vname.clone();
                         let vversion = vversion.clone();
                         async move {
                             proxy_helpers::local_fetch_by_name_version(
-                                &db,
-                                &state,
-                                member_id,
-                                &storage_path,
-                                &vname,
-                                &vversion,
+                                &db, &state, member_id, &location, &vname, &vversion,
                             )
                             .await
                         }
@@ -574,7 +581,9 @@ async fn upload_module(
     super::cleanup_soft_deleted_artifact(&state.db, repo.id, &artifact_path).await;
 
     // Store the file
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     storage.put(&storage_key, body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -853,19 +862,14 @@ async fn download_provider(
                     state.proxy_service.as_deref(),
                     repo.id,
                     &upstream_path,
-                    |member_id, storage_path| {
+                    |member_id, location| {
                         let db = db.clone();
                         let state = state.clone();
                         let vname = vname.clone();
                         let vversion = vversion.clone();
                         async move {
                             proxy_helpers::local_fetch_by_name_version(
-                                &db,
-                                &state,
-                                member_id,
-                                &storage_path,
-                                &vname,
-                                &vversion,
+                                &db, &state, member_id, &location, &vname, &vversion,
                             )
                             .await
                         }
@@ -991,7 +995,9 @@ async fn upload_provider(
     );
 
     // Store the file
-    let storage = state.storage_for_repo(&repo.storage_path);
+    let storage = state
+        .storage_for_repo(&repo.storage_location())
+        .map_err(|e| e.into_response())?;
     storage.put(&storage_key, body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1334,6 +1340,7 @@ mod tests {
         let info = RepoInfo {
             id,
             storage_path: "/data/terraform".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
             upstream_url: Some("https://registry.terraform.io".to_string()),
         };
@@ -1351,6 +1358,7 @@ mod tests {
         let info = RepoInfo {
             id: uuid::Uuid::new_v4(),
             storage_path: "/data/tf".to_string(),
+            storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
             upstream_url: None,
         };

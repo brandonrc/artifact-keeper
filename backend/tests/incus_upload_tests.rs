@@ -156,7 +156,16 @@ fn build_state(pool: PgPool, storage_path: &str) -> SharedState {
         std::sync::Arc::new(
             artifact_keeper_backend::storage::filesystem::FilesystemStorage::new(storage_path),
         );
-    Arc::new(AppState::new(test_config(storage_path), pool, storage))
+    let registry = Arc::new(artifact_keeper_backend::storage::StorageRegistry::new(
+        std::collections::HashMap::new(),
+        "filesystem".to_string(),
+    ));
+    Arc::new(AppState::new(
+        test_config(storage_path),
+        pool,
+        storage,
+        registry,
+    ))
 }
 
 /// Generate deterministic test data of a given size.

@@ -247,14 +247,15 @@ pub async fn get_content(
     Query(params): Query<ContentQuery>,
 ) -> Result<impl IntoResponse> {
     // Verify repository exists and check visibility
-    let repo_row: Option<(Uuid, bool, String)> =
-        sqlx::query_as("SELECT id, is_public, storage_path FROM repositories WHERE key = $1")
-            .bind(&params.repository_key)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| AppError::Database(e.to_string()))?;
+    let repo_row: Option<(Uuid, bool, String, String)> = sqlx::query_as(
+        "SELECT id, is_public, storage_backend, storage_path FROM repositories WHERE key = $1",
+    )
+    .bind(&params.repository_key)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Database(e.to_string()))?;
 
-    let (repo_id, is_public, storage_path) = repo_row.ok_or_else(|| {
+    let (repo_id, is_public, storage_backend, storage_path) = repo_row.ok_or_else(|| {
         AppError::NotFound(format!("Repository '{}' not found", params.repository_key))
     })?;
 
@@ -289,7 +290,11 @@ pub async fn get_content(
     .ok_or_else(|| AppError::NotFound(format!("Artifact '{}' not found", params.path)))?;
 
     // Fetch content from storage
-    let storage = state.storage_for_repo(&storage_path);
+    let location = crate::storage::StorageLocation {
+        backend: storage_backend,
+        path: storage_path,
+    };
+    let storage = state.storage_for_repo(&location)?;
     let content = storage.get(&artifact.storage_key).await?;
 
     // Truncate to max_bytes if specified
