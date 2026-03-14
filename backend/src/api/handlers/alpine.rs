@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::info;
 
-use crate::api::handlers::proxy_helpers;
+use crate::api::handlers::proxy_helpers::{self, RepoInfo};
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::models::repository::RepositoryType;
@@ -59,60 +59,8 @@ pub fn router() -> Router<SharedState> {
 // Repository resolution
 // ---------------------------------------------------------------------------
 
-struct RepoInfo {
-    id: uuid::Uuid,
-    storage_path: String,
-    storage_backend: String,
-    repo_type: String,
-    upstream_url: Option<String>,
-}
-
-impl RepoInfo {
-    fn storage_location(&self) -> crate::storage::StorageLocation {
-        crate::storage::StorageLocation {
-            backend: self.storage_backend.clone(),
-            path: self.storage_path.clone(),
-        }
-    }
-}
-
 async fn resolve_alpine_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
-    use sqlx::Row;
-    let repo = sqlx::query(
-        "SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url FROM repositories WHERE key = $1",
-    )
-    .bind(repo_key)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
-
-    let fmt: String = repo.try_get("format").unwrap_or_default();
-    let fmt = fmt.to_lowercase();
-    if fmt != "alpine" && fmt != "apk" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Repository '{}' is not an Alpine repository (format: {})",
-                repo_key, fmt
-            ),
-        )
-            .into_response());
-    }
-
-    Ok(RepoInfo {
-        id: repo.try_get("id").unwrap_or_default(),
-        storage_path: repo.try_get("storage_path").unwrap_or_default(),
-        storage_backend: repo.try_get("storage_backend").unwrap_or_default(),
-        repo_type: repo.try_get("repo_type").unwrap_or_default(),
-        upstream_url: repo.try_get("upstream_url").ok(),
-    })
+    proxy_helpers::resolve_repo_by_key(db, repo_key, &["alpine", "apk"], "an Alpine").await
 }
 
 // ---------------------------------------------------------------------------

@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use tracing::info;
 
-use crate::api::handlers::proxy_helpers;
+use crate::api::handlers::proxy_helpers::{self, RepoInfo};
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::models::repository::RepositoryType;
@@ -392,26 +392,10 @@ fn connect_error(status: StatusCode, code: &str, message: &str) -> Response {
 // Repository resolution
 // ---------------------------------------------------------------------------
 
-struct RepoInfo {
-    id: uuid::Uuid,
-    storage_path: String,
-    storage_backend: String,
-    repo_type: String,
-    upstream_url: Option<String>,
-}
-
-impl RepoInfo {
-    fn storage_location(&self) -> crate::storage::StorageLocation {
-        crate::storage::StorageLocation {
-            backend: self.storage_backend.clone(),
-            path: self.storage_path.clone(),
-        }
-    }
-}
-
 async fn resolve_protobuf_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
+    use sqlx::Row;
     let row = sqlx::query(
-        r#"SELECT id, storage_backend, storage_path, format::text AS format, repo_type::text AS repo_type, upstream_url
+        r#"SELECT id, key, storage_backend, storage_path, format::text AS format, repo_type::text AS repo_type, upstream_url
         FROM repositories WHERE key = $1"#,
     )
     .bind(repo_key)
@@ -446,6 +430,7 @@ async fn resolve_protobuf_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, 
 
     Ok(RepoInfo {
         id: row.get("id"),
+        key: row.get("key"),
         storage_path: row.get("storage_path"),
         storage_backend: row.get("storage_backend"),
         repo_type: row.get("repo_type"),

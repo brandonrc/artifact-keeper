@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use crate::api::handlers::proxy_helpers;
+use crate::api::handlers::proxy_helpers::{self, RepoInfo};
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::incus::IncusHandler;
@@ -371,27 +371,10 @@ async fn upsert_artifact(p: UpsertArtifactParams<'_>) -> Result<Uuid, Response> 
 // Repository resolution
 // ---------------------------------------------------------------------------
 
-struct RepoInfo {
-    id: Uuid,
-    storage_path: String,
-    storage_backend: String,
-    repo_type: String,
-    #[allow(dead_code)]
-    upstream_url: Option<String>,
-}
-
-impl RepoInfo {
-    fn storage_location(&self) -> crate::storage::StorageLocation {
-        crate::storage::StorageLocation {
-            backend: self.storage_backend.clone(),
-            path: self.storage_path.clone(),
-        }
-    }
-}
-
 async fn resolve_incus_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
+    use sqlx::Row;
     let repo = sqlx::query(
-        r#"SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url
+        r#"SELECT id, key, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url
         FROM repositories WHERE key = $1"#,
     )
     .bind(repo_key)
@@ -415,6 +398,7 @@ async fn resolve_incus_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Res
 
     Ok(RepoInfo {
         id: repo.get("id"),
+        key: repo.get("key"),
         storage_path: repo.get("storage_path"),
         storage_backend: repo.get("storage_backend"),
         repo_type: repo.get("repo_type"),
@@ -1567,6 +1551,7 @@ mod tests {
     fn test_repo_info_construction_hosted() {
         let info = RepoInfo {
             id: Uuid::new_v4(),
+            key: String::new(),
             storage_path: "/data/incus".to_string(),
             storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
@@ -1581,6 +1566,7 @@ mod tests {
     fn test_repo_info_construction_remote() {
         let info = RepoInfo {
             id: Uuid::new_v4(),
+            key: String::new(),
             storage_path: "/data/incus-remote".to_string(),
             storage_backend: "filesystem".to_string(),
             repo_type: "remote".to_string(),

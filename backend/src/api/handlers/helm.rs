@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use tracing::info;
 
-use crate::api::handlers::proxy_helpers;
+use crate::api::handlers::proxy_helpers::{self, RepoInfo};
 use crate::api::middleware::auth::{require_auth_basic, AuthExtension};
 use crate::api::SharedState;
 use crate::formats::helm::{generate_index_yaml, ChartYaml, HelmHandler, HelmIndex};
@@ -49,60 +49,8 @@ pub fn router() -> Router<SharedState> {
 // Repository resolution
 // ---------------------------------------------------------------------------
 
-struct RepoInfo {
-    id: uuid::Uuid,
-    storage_path: String,
-    storage_backend: String,
-    repo_type: String,
-    upstream_url: Option<String>,
-}
-
-impl RepoInfo {
-    fn storage_location(&self) -> crate::storage::StorageLocation {
-        crate::storage::StorageLocation {
-            backend: self.storage_backend.clone(),
-            path: self.storage_path.clone(),
-        }
-    }
-}
-
 async fn resolve_helm_repo(db: &PgPool, repo_key: &str) -> Result<RepoInfo, Response> {
-    use sqlx::Row;
-    let repo = sqlx::query(
-        "SELECT id, storage_backend, storage_path, format::text as format, repo_type::text as repo_type, upstream_url FROM repositories WHERE key = $1",
-    )
-    .bind(repo_key)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Database error: {}", e),
-        )
-            .into_response()
-    })?
-    .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
-
-    let fmt: String = repo.try_get("format").unwrap_or_default();
-    let fmt = fmt.to_lowercase();
-    if fmt != "helm" {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Repository '{}' is not a Helm repository (format: {})",
-                repo_key, fmt
-            ),
-        )
-            .into_response());
-    }
-
-    Ok(RepoInfo {
-        id: repo.try_get("id").unwrap_or_default(),
-        storage_path: repo.try_get("storage_path").unwrap_or_default(),
-        storage_backend: repo.try_get("storage_backend").unwrap_or_default(),
-        repo_type: repo.try_get("repo_type").unwrap_or_default(),
-        upstream_url: repo.try_get("upstream_url").ok(),
-    })
+    proxy_helpers::resolve_repo_by_key(db, repo_key, &["helm"], "a Helm").await
 }
 
 /// Query Helm chart artifacts from a repository and append chart entries to `out`.
@@ -724,6 +672,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let repo = RepoInfo {
             id,
+            key: String::new(),
             storage_path: "/data/helm".to_string(),
             storage_backend: "filesystem".to_string(),
             repo_type: "hosted".to_string(),
@@ -737,6 +686,7 @@ mod tests {
     fn test_repo_info_remote() {
         let repo = RepoInfo {
             id: uuid::Uuid::new_v4(),
+            key: String::new(),
             storage_path: "/cache/helm".to_string(),
             storage_backend: "filesystem".to_string(),
             repo_type: "remote".to_string(),

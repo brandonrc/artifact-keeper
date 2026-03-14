@@ -14,6 +14,88 @@ use crate::models::repository::{
 use crate::services::proxy_service::ProxyService;
 use crate::storage::StorageLocation;
 
+// ---------------------------------------------------------------------------
+// Shared RepoInfo
+// ---------------------------------------------------------------------------
+
+/// Lightweight repository descriptor returned by [`resolve_repo_by_key`].
+///
+/// Every format handler needs the same handful of fields after looking up a
+/// repository by its key. This struct avoids duplicating the definition in
+/// each handler module.
+pub struct RepoInfo {
+    pub id: Uuid,
+    pub key: String,
+    pub storage_path: String,
+    pub storage_backend: String,
+    pub repo_type: String,
+    pub upstream_url: Option<String>,
+}
+
+impl RepoInfo {
+    pub fn storage_location(&self) -> StorageLocation {
+        StorageLocation {
+            backend: self.storage_backend.clone(),
+            path: self.storage_path.clone(),
+        }
+    }
+}
+
+/// Look up a repository by key and verify that its format matches one of the
+/// `expected_formats` (compared case-insensitively).
+///
+/// `format_label` is used only in the error message when the format does not
+/// match (e.g. "an Alpine", "a Maven", "an npm").
+///
+/// Returns a [`RepoInfo`] on success or a plain-text error [`Response`].
+#[allow(clippy::result_large_err)]
+pub async fn resolve_repo_by_key(
+    db: &PgPool,
+    repo_key: &str,
+    expected_formats: &[&str],
+    format_label: &str,
+) -> Result<RepoInfo, Response> {
+    use sqlx::Row;
+    let repo = sqlx::query(
+        "SELECT id, key, storage_backend, storage_path, format::text as format, \
+         repo_type::text as repo_type, upstream_url \
+         FROM repositories WHERE key = $1",
+    )
+    .bind(repo_key)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database error: {}", e),
+        )
+            .into_response()
+    })?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "Repository not found").into_response())?;
+
+    let fmt: String = repo.try_get("format").unwrap_or_default();
+    let fmt_lower = fmt.to_lowercase();
+    if !expected_formats.iter().any(|f| *f == fmt_lower) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Repository '{}' is not {} repository (format: {})",
+                repo_key, format_label, fmt
+            ),
+        )
+            .into_response());
+    }
+
+    Ok(RepoInfo {
+        id: repo.try_get("id").unwrap_or_default(),
+        key: repo.try_get("key").unwrap_or_default(),
+        storage_path: repo.try_get("storage_path").unwrap_or_default(),
+        storage_backend: repo.try_get("storage_backend").unwrap_or_default(),
+        repo_type: repo.try_get("repo_type").unwrap_or_default(),
+        upstream_url: repo.try_get("upstream_url").ok(),
+    })
+}
+
 /// Map an error to a 500 Internal Server Error plain-text response.
 ///
 /// The `label` is prepended to the error message (e.g. "Storage", "Database").
