@@ -168,9 +168,10 @@ impl AppState {
         location: &StorageLocation,
     ) -> Result<Arc<dyn StorageBackend>, Response> {
         self.storage_for_repo(location).map_err(|e| {
+            tracing::error!("Storage backend resolution failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Storage error: {}", e),
+                "Storage operation failed",
             )
                 .into_response()
         })
