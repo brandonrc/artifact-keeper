@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use meilisearch_sdk::client::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
@@ -58,9 +59,10 @@ pub struct MeiliService {
 
 impl MeiliService {
     /// Create a new MeiliService connected to the given Meilisearch instance.
-    pub fn new(url: &str, api_key: &str) -> Self {
-        let client = Client::new(url, Some(api_key)).unwrap();
-        Self { client }
+    pub fn new(url: &str, api_key: &str) -> Result<Self> {
+        let client = Client::new(url, Some(api_key))
+            .map_err(|e| AppError::Config(format!("Failed to create Meilisearch client: {}", e)))?;
+        Ok(Self { client })
     }
 
     /// Configure indexes with appropriate searchable, filterable, and sortable attributes.
@@ -268,136 +270,192 @@ impl MeiliService {
 
     /// Reindex all artifacts from the database into Meilisearch.
     ///
-    /// Joins artifacts with repositories and download statistics to build
-    /// complete search documents. Processes in batches of 1000.
-    pub async fn full_reindex_artifacts(&self, db: &PgPool) -> Result<()> {
+    /// Uses cursor-based pagination to avoid loading all rows into memory.
+    /// Artifacts inserted concurrently during a reindex may be skipped;
+    /// they are indexed individually via [`index_artifact`] on creation.
+    pub async fn full_reindex_artifacts(&self, db: &PgPool) -> Result<usize> {
         tracing::info!("Starting full artifact reindex");
 
-        let rows = sqlx::query_as::<_, ArtifactRow>(
-            r#"
-            SELECT
-                a.id,
-                a.name,
-                a.path,
-                a.version,
-                a.content_type,
-                a.size_bytes,
-                a.created_at,
-                r.id AS repository_id,
-                r.key AS repository_key,
-                r.name AS repository_name,
-                r.format::text AS format,
-                COALESCE(ds.download_count, 0) AS download_count
-            FROM artifacts a
-            INNER JOIN repositories r ON a.repository_id = r.id
-            LEFT JOIN (
-                SELECT artifact_id, COUNT(*) AS download_count
-                FROM download_statistics
-                GROUP BY artifact_id
-            ) ds ON a.id = ds.artifact_id
-            WHERE a.is_deleted = false
-            ORDER BY a.id
-            "#,
-        )
-        .fetch_all(db)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to fetch artifacts for reindex: {}", e)))?;
-
-        let total = rows.len();
-        tracing::info!("Reindexing {} artifacts", total);
-
-        let documents: Vec<ArtifactDocument> = rows
-            .into_iter()
-            .map(|row| ArtifactDocument {
-                id: row.id.to_string(),
-                name: row.name,
-                path: row.path,
-                version: row.version,
-                format: row.format,
-                repository_id: row.repository_id.to_string(),
-                repository_key: row.repository_key,
-                repository_name: row.repository_name,
-                content_type: row.content_type,
-                size_bytes: row.size_bytes,
-                download_count: row.download_count,
-                created_at: row.created_at.timestamp(),
-            })
-            .collect();
-
         let index = self.client.index(ARTIFACTS_INDEX);
+        let page_size: i64 = BATCH_SIZE as i64;
+        let mut last_id: Option<Uuid> = None;
+        let mut total = 0usize;
 
-        for chunk in documents.chunks(BATCH_SIZE) {
-            index.add_documents(chunk, Some("id")).await.map_err(|e| {
-                AppError::Internal(format!("Failed to batch index artifacts: {}", e))
+        loop {
+            let rows = sqlx::query_as::<_, ArtifactRow>(
+                r#"
+                SELECT
+                    a.id,
+                    a.name,
+                    a.path,
+                    a.version,
+                    a.content_type,
+                    a.size_bytes,
+                    a.created_at,
+                    r.id AS repository_id,
+                    r.key AS repository_key,
+                    r.name AS repository_name,
+                    r.format::text AS format
+                FROM artifacts a
+                INNER JOIN repositories r ON a.repository_id = r.id
+                WHERE a.is_deleted = false
+                  AND ($1::uuid IS NULL OR a.id > $1)
+                ORDER BY a.id
+                LIMIT $2
+                "#,
+            )
+            .bind(last_id)
+            .bind(page_size)
+            .fetch_all(db)
+            .await
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "Failed to fetch artifacts for reindex (after {} documents): {}",
+                    total, e
+                ))
             })?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            let artifact_ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+            let download_counts: HashMap<Uuid, i64> =
+                sqlx::query_as::<_, ArtifactDownloadCountRow>(
+                    r#"
+                SELECT artifact_id, COUNT(*)::BIGINT AS download_count
+                FROM download_statistics
+                WHERE artifact_id = ANY($1)
+                GROUP BY artifact_id
+                "#,
+                )
+                .bind(&artifact_ids)
+                .fetch_all(db)
+                .await
+                .map_err(|e| {
+                    AppError::Database(format!(
+                        "Failed to fetch artifact download counts for reindex (after {} documents): {}",
+                        total, e
+                    ))
+                })?
+                .into_iter()
+                .map(|row| (row.artifact_id, row.download_count))
+                .collect();
+
+            last_id = rows.last().map(|row| row.id);
+            let documents: Vec<ArtifactDocument> = rows
+                .into_iter()
+                .map(|row| {
+                    // Artifacts with no download records default to 0,
+                    // matching the previous COALESCE(ds.download_count, 0) behavior.
+                    let download_count = download_counts.get(&row.id).copied().unwrap_or_default();
+                    artifact_document_from_row(row, download_count)
+                })
+                .collect();
+
+            total += documents.len();
+            index
+                .add_documents(&documents, Some("id"))
+                .await
+                .map_err(|e| {
+                    AppError::Internal(format!(
+                        "Failed to batch index artifacts (after {} documents): {}",
+                        total, e
+                    ))
+                })?;
+
+            tracing::info!(
+                batch = documents.len(),
+                total_so_far = total,
+                "Indexed artifact batch"
+            );
         }
 
         tracing::info!("Artifact reindex complete: {} documents indexed", total);
-        Ok(())
+        Ok(total)
     }
 
     /// Reindex all repositories from the database into Meilisearch.
     ///
-    /// Processes in batches of 1000.
-    pub async fn full_reindex_repositories(&self, db: &PgPool) -> Result<()> {
+    /// Uses cursor-based pagination to avoid loading all rows into memory.
+    /// Repositories inserted concurrently during a reindex may be skipped;
+    /// they are indexed individually via [`index_repository`] on creation.
+    pub async fn full_reindex_repositories(&self, db: &PgPool) -> Result<usize> {
         tracing::info!("Starting full repository reindex");
 
-        let rows = sqlx::query_as::<_, RepositoryRow>(
-            r#"
-            SELECT
-                id,
-                name,
-                key,
-                description,
-                format::text AS format,
-                repo_type::text AS repo_type,
-                is_public,
-                created_at
-            FROM repositories
-            ORDER BY id
-            "#,
-        )
-        .fetch_all(db)
-        .await
-        .map_err(|e| {
-            AppError::Database(format!("Failed to fetch repositories for reindex: {}", e))
-        })?;
-
-        let total = rows.len();
-        tracing::info!("Reindexing {} repositories", total);
-
-        let documents: Vec<RepositoryDocument> = rows
-            .into_iter()
-            .map(|row| RepositoryDocument {
-                id: row.id.to_string(),
-                name: row.name,
-                key: row.key,
-                description: row.description,
-                format: row.format,
-                repo_type: row.repo_type,
-                is_public: row.is_public,
-                created_at: row.created_at.timestamp(),
-            })
-            .collect();
-
         let index = self.client.index(REPOSITORIES_INDEX);
+        let page_size: i64 = BATCH_SIZE as i64;
+        let mut last_id: Option<Uuid> = None;
+        let mut total = 0usize;
 
-        for chunk in documents.chunks(BATCH_SIZE) {
-            index.add_documents(chunk, Some("id")).await.map_err(|e| {
-                AppError::Internal(format!("Failed to batch index repositories: {}", e))
+        loop {
+            let rows = sqlx::query_as::<_, RepositoryRow>(
+                r#"
+                SELECT
+                    id,
+                    name,
+                    key,
+                    description,
+                    format::text AS format,
+                    repo_type::text AS repo_type,
+                    is_public,
+                    created_at
+                FROM repositories
+                WHERE ($1::uuid IS NULL OR id > $1)
+                ORDER BY id
+                LIMIT $2
+                "#,
+            )
+            .bind(last_id)
+            .bind(page_size)
+            .fetch_all(db)
+            .await
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "Failed to fetch repositories for reindex (after {} documents): {}",
+                    total, e
+                ))
             })?;
+
+            if rows.is_empty() {
+                break;
+            }
+
+            last_id = rows.last().map(|row| row.id);
+            let documents: Vec<RepositoryDocument> =
+                rows.into_iter().map(repository_document_from_row).collect();
+
+            total += documents.len();
+            index
+                .add_documents(&documents, Some("id"))
+                .await
+                .map_err(|e| {
+                    AppError::Internal(format!(
+                        "Failed to batch index repositories (after {} documents): {}",
+                        total, e
+                    ))
+                })?;
+
+            tracing::info!(
+                batch = documents.len(),
+                total_so_far = total,
+                "Indexed repository batch"
+            );
         }
 
         tracing::info!("Repository reindex complete: {} documents indexed", total);
-        Ok(())
+        Ok(total)
     }
 
     /// Run a full reindex of both artifacts and repositories.
-    pub async fn full_reindex(&self, db: &PgPool) -> Result<()> {
-        self.full_reindex_artifacts(db).await?;
-        self.full_reindex_repositories(db).await?;
+    ///
+    /// Returns the count of (artifacts, repositories) indexed.
+    pub async fn full_reindex(&self, db: &PgPool) -> Result<(usize, usize)> {
+        let artifacts = self.full_reindex_artifacts(db).await?;
+        tracing::info!("Artifact reindex phase complete, proceeding to repositories");
+        let repositories = self.full_reindex_repositories(db).await?;
         tracing::info!("Full reindex complete");
-        Ok(())
+        Ok((artifacts, repositories))
     }
 }
 
@@ -415,7 +473,6 @@ struct ArtifactRow {
     repository_key: String,
     repository_name: String,
     format: String,
-    download_count: i64,
 }
 
 /// Internal row type for repository reindex queries.
@@ -431,11 +488,103 @@ struct RepositoryRow {
     created_at: DateTime<Utc>,
 }
 
+/// Internal row type for per-artifact download count aggregation.
+#[derive(Debug, sqlx::FromRow)]
+struct ArtifactDownloadCountRow {
+    artifact_id: Uuid,
+    download_count: i64,
+}
+
+fn artifact_document_from_row(row: ArtifactRow, download_count: i64) -> ArtifactDocument {
+    ArtifactDocument {
+        id: row.id.to_string(),
+        name: row.name,
+        path: row.path,
+        version: row.version,
+        format: row.format,
+        repository_id: row.repository_id.to_string(),
+        repository_key: row.repository_key,
+        repository_name: row.repository_name,
+        content_type: row.content_type,
+        size_bytes: row.size_bytes,
+        download_count,
+        created_at: row.created_at.timestamp(),
+    }
+}
+
+fn repository_document_from_row(row: RepositoryRow) -> RepositoryDocument {
+    RepositoryDocument {
+        id: row.id.to_string(),
+        name: row.name,
+        key: row.key,
+        description: row.description,
+        format: row.format,
+        repo_type: row.repo_type,
+        is_public: row.is_public,
+        created_at: row.created_at.timestamp(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[allow(unused_imports)]
     use serde_json::json;
+
+    fn meili_service_source() -> &'static str {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/services/meili_service.rs"
+        ))
+    }
+
+    fn function_source<'a>(source: &'a str, fn_name: &str) -> &'a str {
+        let needle = format!("fn {}(", fn_name);
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("failed to find function {fn_name}"));
+        let remainder = &source[start..];
+        // Find the next function definition or end of impl block as boundary
+        let end = remainder[1..]
+            .find("\n    pub ")
+            .or_else(|| remainder[1..].find("\n}"))
+            .map(|i| i + 1)
+            .unwrap_or(remainder.len());
+        &remainder[..end]
+    }
+
+    // -----------------------------------------------------------------------
+    // function_source helper tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_function_source_extracts_correct_boundary_for_last_method() {
+        // full_reindex is the last pub method in the impl block.
+        // function_source should not leak into structs/functions outside the impl.
+        let source = function_source(meili_service_source(), "full_reindex");
+        assert!(
+            source.contains("full_reindex_artifacts"),
+            "full_reindex body should reference full_reindex_artifacts"
+        );
+        assert!(
+            !source.contains("struct ArtifactRow"),
+            "full_reindex should not leak past the impl block into struct definitions"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Constructor tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_returns_result() {
+        // MeiliService::new should return Result, not panic on invalid input
+        let source = function_source(meili_service_source(), "new");
+        assert!(
+            source.contains("-> Result<Self>"),
+            "MeiliService::new should return Result<Self>"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Constants tests
@@ -446,6 +595,196 @@ mod tests {
         assert_eq!(ARTIFACTS_INDEX, "artifacts");
         assert_eq!(REPOSITORIES_INDEX, "repositories");
         assert_eq!(BATCH_SIZE, 1000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination page_size derived from BATCH_SIZE
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_batch_size_fits_i64_for_pagination() {
+        // full_reindex uses `BATCH_SIZE as i64` for query LIMIT params
+        let page_size: i64 = BATCH_SIZE as i64;
+        assert_eq!(page_size, 1000);
+        assert!(page_size > 0);
+    }
+
+    #[test]
+    fn test_full_reindex_artifacts_uses_cursor_pagination_without_offset() {
+        let source = function_source(meili_service_source(), "full_reindex_artifacts");
+
+        assert!(
+            source.contains("a.id > $1"),
+            "artifact reindex should paginate from the last indexed id"
+        );
+        assert!(
+            !source.contains("OFFSET"),
+            "artifact reindex should not use OFFSET pagination on a live table"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_repositories_uses_cursor_pagination_without_offset() {
+        let source = function_source(meili_service_source(), "full_reindex_repositories");
+
+        assert!(
+            source.contains("id > $1"),
+            "repository reindex should paginate from the last indexed id"
+        );
+        assert!(
+            !source.contains("OFFSET"),
+            "repository reindex should not use OFFSET pagination on a live table"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_artifacts_scopes_download_count_aggregation_to_batch() {
+        let source = function_source(meili_service_source(), "full_reindex_artifacts");
+
+        assert!(
+            source.contains("WHERE artifact_id = ANY($1)"),
+            "download counts should be aggregated only for the current artifact batch"
+        );
+        assert!(
+            !source.contains("LEFT JOIN ("),
+            "artifact reindex should not use a full-table subquery JOIN for download counts"
+        );
+    }
+
+    #[test]
+    fn test_artifact_document_from_row_zero_download_count() {
+        let now = Utc::now();
+        let row = ArtifactRow {
+            id: Uuid::new_v4(),
+            name: "no-downloads".to_string(),
+            path: "pkg/no-downloads".to_string(),
+            version: None,
+            content_type: "application/octet-stream".to_string(),
+            size_bytes: 64,
+            created_at: now,
+            repository_id: Uuid::new_v4(),
+            repository_key: "generic-local".to_string(),
+            repository_name: "Generic".to_string(),
+            format: "generic".to_string(),
+        };
+        let doc = artifact_document_from_row(row, 0);
+        assert_eq!(doc.download_count, 0);
+    }
+
+    #[test]
+    fn test_full_reindex_artifacts_errors_include_progress_context() {
+        let source = function_source(meili_service_source(), "full_reindex_artifacts");
+        assert!(
+            source.contains("after {} documents"),
+            "artifact reindex errors should include the count of documents indexed so far"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_repositories_errors_include_progress_context() {
+        let source = function_source(meili_service_source(), "full_reindex_repositories");
+        assert!(
+            source.contains("after {} documents"),
+            "repository reindex errors should include the count of documents indexed so far"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_artifacts_logs_batch_progress() {
+        let source = function_source(meili_service_source(), "full_reindex_artifacts");
+        assert!(
+            source.contains("Indexed artifact batch"),
+            "artifact reindex should log progress after each batch"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_repositories_logs_batch_progress() {
+        let source = function_source(meili_service_source(), "full_reindex_repositories");
+        assert!(
+            source.contains("Indexed repository batch"),
+            "repository reindex should log progress after each batch"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_artifacts_returns_count() {
+        let source = function_source(meili_service_source(), "full_reindex_artifacts");
+        assert!(
+            source.contains("Result<usize>"),
+            "full_reindex_artifacts should return Result<usize> with the count of indexed documents"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_repositories_returns_count() {
+        let source = function_source(meili_service_source(), "full_reindex_repositories");
+        assert!(
+            source.contains("Result<usize>"),
+            "full_reindex_repositories should return Result<usize> with the count of indexed documents"
+        );
+    }
+
+    #[test]
+    fn test_full_reindex_logs_phase_completion() {
+        let source = function_source(meili_service_source(), "full_reindex");
+        assert!(
+            source.contains("Artifact reindex phase complete"),
+            "full_reindex should log when the artifact phase completes before starting repositories"
+        );
+    }
+
+    #[test]
+    fn test_artifact_row_to_document_mapping_preserves_all_fields() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let repo_id = Uuid::new_v4();
+
+        let row = ArtifactRow {
+            id,
+            name: "lib".to_string(),
+            path: "org/lib/1.0/lib-1.0.jar".to_string(),
+            version: Some("1.0".to_string()),
+            content_type: "application/java-archive".to_string(),
+            size_bytes: 4096,
+            created_at: now,
+            repository_id: repo_id,
+            repository_key: "maven-local".to_string(),
+            repository_name: "Maven Local".to_string(),
+            format: "maven".to_string(),
+        };
+
+        let doc = artifact_document_from_row(row, 5);
+
+        assert_eq!(doc.id, id.to_string());
+        assert_eq!(doc.repository_id, repo_id.to_string());
+        assert_eq!(doc.size_bytes, 4096);
+        assert_eq!(doc.download_count, 5);
+        assert_eq!(doc.created_at, now.timestamp());
+    }
+
+    #[test]
+    fn test_repository_row_to_document_mapping_preserves_all_fields() {
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+
+        let row = RepositoryRow {
+            id,
+            name: "NPM Local".to_string(),
+            key: "npm-local".to_string(),
+            description: Some("Local NPM".to_string()),
+            format: "npm".to_string(),
+            repo_type: "local".to_string(),
+            is_public: false,
+            created_at: now,
+        };
+
+        let doc = repository_document_from_row(row);
+
+        assert_eq!(doc.id, id.to_string());
+        assert!(!doc.is_public);
+        assert_eq!(doc.description, Some("Local NPM".to_string()));
+        assert_eq!(doc.created_at, now.timestamp());
     }
 
     // -----------------------------------------------------------------------
@@ -712,7 +1051,6 @@ mod tests {
 
     #[test]
     fn test_artifact_row_to_document_conversion() {
-        // Mirrors the mapping in full_reindex_artifacts
         let now = Utc::now();
         let id = Uuid::new_v4();
         let repo_id = Uuid::new_v4();
@@ -729,23 +1067,9 @@ mod tests {
             repository_key: "maven-local".to_string(),
             repository_name: "Maven Local".to_string(),
             format: "maven".to_string(),
-            download_count: 7,
         };
 
-        let doc = ArtifactDocument {
-            id: row.id.to_string(),
-            name: row.name.clone(),
-            path: row.path.clone(),
-            version: row.version.clone(),
-            format: row.format.clone(),
-            repository_id: row.repository_id.to_string(),
-            repository_key: row.repository_key.clone(),
-            repository_name: row.repository_name.clone(),
-            content_type: row.content_type.clone(),
-            size_bytes: row.size_bytes,
-            download_count: row.download_count,
-            created_at: row.created_at.timestamp(),
-        };
+        let doc = artifact_document_from_row(row, 7);
 
         assert_eq!(doc.id, id.to_string());
         assert_eq!(doc.name, "my-lib");
@@ -775,16 +1099,7 @@ mod tests {
             created_at: now,
         };
 
-        let doc = RepositoryDocument {
-            id: row.id.to_string(),
-            name: row.name.clone(),
-            key: row.key.clone(),
-            description: row.description.clone(),
-            format: row.format.clone(),
-            repo_type: row.repo_type.clone(),
-            is_public: row.is_public,
-            created_at: row.created_at.timestamp(),
-        };
+        let doc = repository_document_from_row(row);
 
         assert_eq!(doc.id, id.to_string());
         assert_eq!(doc.name, "Docker Local");
