@@ -227,7 +227,7 @@ pub async fn create_user(
     };
 
     // Hash password
-    let password_hash = AuthService::hash_password(&password)?;
+    let password_hash = AuthService::hash_password(&password).await?;
 
     let user = sqlx::query_as!(
         User,
@@ -770,7 +770,7 @@ pub async fn change_password(
             AppError::Validation("Cannot change password for SSO users".to_string())
         })?;
 
-        if !AuthService::verify_password(&current_password, &hash)? {
+        if !AuthService::verify_password(&current_password, &hash).await? {
             return Err(AppError::Authentication(
                 "Current password is incorrect".to_string(),
             ));
@@ -783,7 +783,7 @@ pub async fn change_password(
     }
 
     // Hash new password
-    let new_hash = AuthService::hash_password(&payload.new_password)?;
+    let new_hash = AuthService::hash_password(&payload.new_password).await?;
 
     // Check if this user had must_change_password set (for setup mode unlock)
     let had_must_change: bool =
@@ -893,7 +893,7 @@ pub async fn reset_password(
 
     // Generate new temporary password
     let temp_password = generate_password();
-    let password_hash = AuthService::hash_password(&temp_password)?;
+    let password_hash = AuthService::hash_password(&temp_password).await?;
 
     // Update password and set must_change_password=true
     sqlx::query("UPDATE users SET password_hash = $1, must_change_password = true, updated_at = NOW() WHERE id = $2")

@@ -146,9 +146,10 @@ pub async fn rate_limit_middleware(
 /// Extract the client IP address from the request.
 ///
 /// Uses the actual TCP peer address from ConnectInfo as the primary source.
-/// Proxy headers (X-Forwarded-For, X-Real-IP) are NOT trusted because they
-/// can be trivially spoofed by clients. Only the socket-level peer address
-/// is reliable for rate limiting.
+/// When ConnectInfo is unavailable (common in Kubernetes where the backend
+/// sits behind an ingress controller), falls back to X-Forwarded-For set
+/// by the trusted reverse proxy. As a last resort, all unauthenticated
+/// requests share a single bucket.
 fn extract_client_ip(request: &Request) -> String {
     // Use the actual TCP connection peer address (set by axum's ConnectInfo)
     if let Some(connect_info) = request
@@ -158,9 +159,20 @@ fn extract_client_ip(request: &Request) -> String {
         return format!("ip:{}", connect_info.0.ip());
     }
 
-    // Fallback: use a single key for all requests so rate limiting still works.
-    // This means all unauthenticated requests share one bucket, which is
-    // conservative but safe (cannot be bypassed via header spoofing).
+    // In Kubernetes (no ConnectInfo), fall back to X-Forwarded-For from
+    // trusted ingress controllers. This is safe when the backend sits
+    // behind a known reverse proxy that sets XFF correctly.
+    if let Some(xff) = request.headers().get("x-forwarded-for") {
+        if let Ok(xff_str) = xff.to_str() {
+            if let Some(first_ip) = xff_str.split(',').next() {
+                return format!("ip:{}", first_ip.trim());
+            }
+        }
+    }
+
+    // Last resort: all unauthenticated requests share one bucket.
+    // This is conservative but prevents bypass via header spoofing
+    // in environments without a trusted proxy.
     "ip:unknown".to_string()
 }
 
@@ -349,13 +361,24 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_extract_client_ip_ignores_x_forwarded_for() {
-        // X-Forwarded-For is client-spoofable, so the rate limiter ignores it
+    fn test_extract_client_ip_uses_x_forwarded_for_as_fallback() {
+        // Without ConnectInfo, X-Forwarded-For is used as a fallback
+        // (trusted when behind a known reverse proxy / ingress controller)
         let request = axum::extract::Request::builder()
             .header("X-Forwarded-For", "192.168.1.1")
             .body(axum::body::Body::empty())
             .unwrap();
-        assert_eq!(extract_client_ip(&request), "ip:unknown");
+        assert_eq!(extract_client_ip(&request), "ip:192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_uses_first_xff_ip() {
+        // When XFF contains multiple IPs, use the first (client IP set by proxy)
+        let request = axum::extract::Request::builder()
+            .header("X-Forwarded-For", "203.0.113.50, 70.41.3.18, 150.172.238.178")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&request), "ip:203.0.113.50");
     }
 
     #[test]

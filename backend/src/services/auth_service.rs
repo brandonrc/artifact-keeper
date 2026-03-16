@@ -145,9 +145,7 @@ impl AuthService {
             .as_ref()
             .ok_or_else(|| AppError::Authentication("Invalid username or password".to_string()))?;
 
-        if !verify(password, password_hash)
-            .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))?
-        {
+        if !Self::verify_password(password, password_hash).await? {
             return Err(AppError::Authentication(
                 "Invalid username or password".to_string(),
             ));
@@ -257,15 +255,26 @@ impl AuthService {
     }
 
     /// Hash a password
-    pub fn hash_password(password: &str) -> Result<String> {
-        hash(password, DEFAULT_COST)
-            .map_err(|e| AppError::Internal(format!("Password hashing failed: {}", e)))
+    pub async fn hash_password(password: &str) -> Result<String> {
+        let pwd = password.to_string();
+        tokio::task::spawn_blocking(move || {
+            hash(&pwd, DEFAULT_COST)
+                .map_err(|e| AppError::Internal(format!("Password hashing failed: {}", e)))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {e}")))?
     }
 
     /// Verify a password against a hash
-    pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
-        verify(password, hash)
-            .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))
+    pub async fn verify_password(password: &str, hash: &str) -> Result<bool> {
+        let pwd = password.to_string();
+        let h = hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            verify(&pwd, &h)
+                .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("Blocking task failed: {e}")))?
     }
 
     /// Returns a dummy bcrypt hash (cost-12) generated once at runtime.
@@ -302,7 +311,7 @@ impl AuthService {
         let dummy = Self::dummy_bcrypt_hash();
         if token.len() < 8 {
             // Still must burn bcrypt time to avoid leaking token length info
-            let _ = Self::verify_password(token, dummy);
+            let _ = Self::verify_password(token, dummy).await;
             return Err(AppError::Authentication("Invalid API token".to_string()));
         }
 
@@ -333,7 +342,7 @@ impl AuthService {
         // Always run bcrypt verification regardless of token existence.
         // This is the constant-time core of the fix: an attacker cannot
         // distinguish "prefix not found" from "wrong secret" by timing.
-        let hash_matches = Self::verify_password(token, &hash_to_verify)?;
+        let hash_matches = Self::verify_password(token, &hash_to_verify).await?;
 
         // Check results only after bcrypt has completed
         check_token_validation_result(token_exists, is_revoked, hash_matches)?;
@@ -456,7 +465,7 @@ impl AuthService {
             Uuid::new_v4().to_string().replace("-", "")
         );
         let prefix = &token[..8];
-        let token_hash = Self::hash_password(&token)?;
+        let token_hash = Self::hash_password(&token).await?;
 
         let expires_at = expires_in_days.map(|days| {
             let clamped = days.clamp(1, 3650); // Cap at ~10 years
@@ -602,9 +611,7 @@ impl AuthService {
         // In production, LDAP bind verification would happen here
         // For development/testing, we check password if stored (hybrid mode)
         if let Some(ref hash) = user.password_hash {
-            if !verify(password, hash)
-                .map_err(|e| AppError::Internal(format!("Password verification failed: {}", e)))?
-            {
+            if !Self::verify_password(password, hash).await? {
                 return Err(AppError::Authentication("Invalid credentials".to_string()));
             }
         } else {
@@ -1046,56 +1053,56 @@ fn check_token_validation_result(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_password_hashing() {
+    #[tokio::test]
+    async fn test_password_hashing() {
         let password = "test_password_123";
-        let hash = AuthService::hash_password(password).unwrap();
-        assert!(AuthService::verify_password(password, &hash).unwrap());
-        assert!(!AuthService::verify_password("wrong_password", &hash).unwrap());
+        let hash = AuthService::hash_password(password).await.unwrap();
+        assert!(AuthService::verify_password(password, &hash).await.unwrap());
+        assert!(!AuthService::verify_password("wrong_password", &hash).await.unwrap());
     }
 
     // -----------------------------------------------------------------------
     // Password hashing edge cases
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_password_hashing_empty_string() {
-        let hash = AuthService::hash_password("").unwrap();
-        assert!(AuthService::verify_password("", &hash).unwrap());
-        assert!(!AuthService::verify_password("non-empty", &hash).unwrap());
+    #[tokio::test]
+    async fn test_password_hashing_empty_string() {
+        let hash = AuthService::hash_password("").await.unwrap();
+        assert!(AuthService::verify_password("", &hash).await.unwrap());
+        assert!(!AuthService::verify_password("non-empty", &hash).await.unwrap());
     }
 
-    #[test]
-    fn test_password_hashing_unicode() {
+    #[tokio::test]
+    async fn test_password_hashing_unicode() {
         let password = "\u{1F600}password\u{00E9}\u{00FC}";
-        let hash = AuthService::hash_password(password).unwrap();
-        assert!(AuthService::verify_password(password, &hash).unwrap());
+        let hash = AuthService::hash_password(password).await.unwrap();
+        assert!(AuthService::verify_password(password, &hash).await.unwrap());
     }
 
-    #[test]
-    fn test_password_hashing_long_password() {
+    #[tokio::test]
+    async fn test_password_hashing_long_password() {
         // bcrypt typically truncates at 72 bytes; verify the function works
         let password = "a".repeat(100);
-        let hash = AuthService::hash_password(&password).unwrap();
-        assert!(AuthService::verify_password(&password, &hash).unwrap());
+        let hash = AuthService::hash_password(&password).await.unwrap();
+        assert!(AuthService::verify_password(&password, &hash).await.unwrap());
     }
 
-    #[test]
-    fn test_password_hash_different_each_time() {
+    #[tokio::test]
+    async fn test_password_hash_different_each_time() {
         let password = "same_password";
-        let hash1 = AuthService::hash_password(password).unwrap();
-        let hash2 = AuthService::hash_password(password).unwrap();
+        let hash1 = AuthService::hash_password(password).await.unwrap();
+        let hash2 = AuthService::hash_password(password).await.unwrap();
         // bcrypt uses random salts, so hashes should differ
         assert_ne!(hash1, hash2);
         // But both should verify correctly
-        assert!(AuthService::verify_password(password, &hash1).unwrap());
-        assert!(AuthService::verify_password(password, &hash2).unwrap());
+        assert!(AuthService::verify_password(password, &hash1).await.unwrap());
+        assert!(AuthService::verify_password(password, &hash2).await.unwrap());
     }
 
-    #[test]
-    fn test_verify_password_invalid_hash() {
+    #[tokio::test]
+    async fn test_verify_password_invalid_hash() {
         // An invalid bcrypt hash should return an error, not panic
-        let result = AuthService::verify_password("password", "not-a-valid-hash");
+        let result = AuthService::verify_password("password", "not-a-valid-hash").await;
         assert!(result.is_err());
     }
 

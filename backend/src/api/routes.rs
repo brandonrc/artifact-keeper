@@ -116,9 +116,25 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         Arc::new(state.config.clone()),
     ));
 
-    // Rate limiters: strict for auth (30 req/min), general for API (1000 req/min)
-    let auth_rate_limiter = Arc::new(RateLimiter::new(30, 60));
-    let api_rate_limiter = Arc::new(RateLimiter::new(1000, 60));
+    // Rate limiters, configurable via environment variables:
+    //   RATE_LIMIT_AUTH_PER_MIN  - max auth requests per window (default: 120)
+    //   RATE_LIMIT_API_PER_MIN   - max API requests per window  (default: 5000)
+    //   RATE_LIMIT_WINDOW_SECS   - window duration in seconds   (default: 60)
+    let auth_rate_limit = std::env::var("RATE_LIMIT_AUTH_PER_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let api_rate_limit = std::env::var("RATE_LIMIT_API_PER_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5000);
+    let rate_limit_window = std::env::var("RATE_LIMIT_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60u64);
+
+    let auth_rate_limiter = Arc::new(RateLimiter::new(auth_rate_limit, rate_limit_window));
+    let api_rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, rate_limit_window));
 
     Router::new()
         // Setup status (public, no auth)
