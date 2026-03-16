@@ -219,6 +219,7 @@ Every CHANGELOG entry must include a **Thank You** section crediting external co
   - Use `gh issue` for issues
   - Use `gh workflow` for workflow operations
   - Do not use raw git commands for GitHub-specific features
+- **Always use the PR template** when creating PRs with `gh pr create`. The template is at `.github/PULL_REQUEST_TEMPLATE.md`. Since `gh` does not auto-fill it, read the template and structure the `--body` to match its sections (Summary, Test Checklist, API Changes). Fill in checkboxes based on actual work done.
 
 ## Recent Changes
 - 007-shared-dto: Added Rust 1.75+ + axum, serde, serde_json

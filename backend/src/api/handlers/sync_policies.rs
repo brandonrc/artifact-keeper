@@ -403,6 +403,14 @@ async fn create_policy(
 
     let service = SyncPolicyService::new(state.db.clone());
     let policy = service.create_policy(req).await?;
+
+    // Auto-evaluate so peer_repo_subscriptions are created immediately.
+    // Without this, uploads won't trigger sync tasks until a manual
+    // POST /api/v1/sync-policies/evaluate call.
+    if let Err(e) = service.evaluate_policies().await {
+        tracing::warn!("Post-create policy evaluation failed: {e}");
+    }
+
     Ok(Json(policy_to_response(policy)))
 }
 
@@ -483,6 +491,11 @@ async fn update_policy(
 
     let service = SyncPolicyService::new(state.db.clone());
     let policy = service.update_policy(id, req).await?;
+
+    if let Err(e) = service.evaluate_policies().await {
+        tracing::warn!("Post-update policy evaluation failed: {e}");
+    }
+
     Ok(Json(policy_to_response(policy)))
 }
 
@@ -509,6 +522,11 @@ async fn delete_policy(
 ) -> Result<axum::http::StatusCode> {
     let service = SyncPolicyService::new(state.db.clone());
     service.delete_policy(id).await?;
+
+    if let Err(e) = service.evaluate_policies().await {
+        tracing::warn!("Post-delete policy evaluation failed: {e}");
+    }
+
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -536,6 +554,11 @@ async fn toggle_policy(
 ) -> Result<Json<SyncPolicyResponse>> {
     let service = SyncPolicyService::new(state.db.clone());
     let policy = service.toggle_policy(id, payload.enabled).await?;
+
+    if let Err(e) = service.evaluate_policies().await {
+        tracing::warn!("Post-toggle policy evaluation failed: {e}");
+    }
+
     Ok(Json(policy_to_response(policy)))
 }
 
