@@ -788,7 +788,7 @@ async fn provision_admin_user(db: &sqlx::PgPool, storage_path: &str) -> Result<b
         }
     };
 
-    let password_hash = AuthService::hash_password(&password)?;
+    let password_hash = AuthService::hash_password(&password).await?;
 
     sqlx::query(
         r#"
