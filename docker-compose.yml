@@ -1,13 +1,36 @@
+# =============================================================================
+# Artifact Keeper - Getting Started Compose File
+# =============================================================================
+#
+# This file is a STARTING POINT for running Artifact Keeper locally or
+# evaluating it in a non-production setting. It is NOT a production-ready
+# deployment. Credentials are hardcoded, volumes use the local driver, and
+# no resource limits or redundancy are configured.
+#
+# For production deployments, use this as a reference and adapt it to your
+# environment: swap in managed databases, external object storage, real TLS
+# certificates, secrets management, and appropriate resource constraints.
+# See: https://artifactkeeper.com/docs/deployment/
+#
 # Container images are available from two registries:
 #   ghcr.io (default):  ghcr.io/artifact-keeper/artifact-keeper-{backend,web,openscap}
 #   Docker Hub:         artifactkeeper/{backend,web,openscap}
 #
 # To use Docker Hub instead, replace image references below. For example:
 #   ghcr.io/artifact-keeper/artifact-keeper-backend:latest  ->  artifactkeeper/backend:latest
+#
+# Pin a specific release by setting ARTIFACT_KEEPER_VERSION in a .env file
+# alongside this compose file (e.g. ARTIFACT_KEEPER_VERSION=1.1.0). Omit the
+# "v" prefix. If unset, "latest" is used.
+# =============================================================================
 
 services:
-  # Generate self-signed TLS certificates for PostgreSQL.
-  # Writes certs to the shared pg_certs volume; postgres waits for this.
+  # ---------------------------------------------------------------------------
+  # PostgreSQL TLS certificates (init container)
+  # ---------------------------------------------------------------------------
+  # Generates self-signed certs so the backend connects to Postgres over TLS.
+  # In production, replace this with certs issued by your internal CA or use a
+  # managed database service that handles TLS for you.
   pg-certs:
     image: alpine:3.20
     container_name: artifact-keeper-pg-certs
@@ -43,6 +66,13 @@ services:
       - pg_certs:/certs
     restart: "no"
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  # Stores all metadata (artifacts, repositories, users, tokens, etc.).
+  # In production, consider a managed Postgres service (RDS, Cloud SQL, etc.)
+  # with proper backups, replication, and connection pooling.
+  # Default credentials below are for local evaluation only.
   postgres:
     image: postgres:16-alpine
     container_name: artifact-keeper-db
@@ -67,8 +97,12 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Bootstrap Dependency-Track: change default password and extract API key.
-  # Writes the key to /shared/dtrack-api-key for the backend entrypoint wrapper.
+  # ---------------------------------------------------------------------------
+  # Dependency-Track bootstrap (init container)
+  # ---------------------------------------------------------------------------
+  # Changes the default Dependency-Track password and extracts an API key so
+  # the backend can submit SBOMs automatically. Writes the key to a shared
+  # volume that the backend reads at startup.
   dtrack-init:
     image: ghcr.io/artifact-keeper/artifact-keeper-backend:${ARTIFACT_KEEPER_VERSION:-latest}
     container_name: artifact-keeper-dtrack-init
@@ -83,6 +117,20 @@ services:
     entrypoint: ["/bin/sh", "/init-dtrack.sh"]
     restart: "no"
 
+  # ---------------------------------------------------------------------------
+  # Backend API server
+  # ---------------------------------------------------------------------------
+  # The core Artifact Keeper service. Handles all API requests, package format
+  # protocols, storage, and integrations with scanners.
+  #
+  # Key environment variables to review for your deployment:
+  #   JWT_SECRET        - MUST be changed for production (use a random 32+ char string)
+  #   ADMIN_PASSWORD    - if unset, a random password is generated on first boot
+  #   STORAGE_PATH      - where artifacts are stored on disk (or configure S3 below)
+  #   CORS_ORIGINS      - set to your actual domain(s) in production
+  #
+  # For S3-compatible object storage, set S3_BUCKET, S3_REGION, S3_ACCESS_KEY,
+  # S3_SECRET_KEY, and STORAGE_BACKEND=s3. See .env.example for all options.
   backend:
     image: ghcr.io/artifact-keeper/artifact-keeper-backend:latest  # or artifactkeeper/backend:latest
     container_name: artifact-keeper-backend
@@ -156,6 +204,12 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Meilisearch (full-text search engine)
+  # ---------------------------------------------------------------------------
+  # Powers artifact and package search in the UI and API. The default master
+  # key below is for local evaluation only. In production, set a strong
+  # MEILI_MASTER_KEY and match it in the backend's MEILISEARCH_API_KEY.
   meilisearch:
     image: getmeili/meilisearch:v1.12
     container_name: artifact-keeper-meilisearch
@@ -173,6 +227,12 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Trivy (vulnerability scanner)
+  # ---------------------------------------------------------------------------
+  # Scans uploaded artifacts for known vulnerabilities. Runs as a server that
+  # the backend calls on demand. Optional: remove this service and unset
+  # TRIVY_URL on the backend if you do not need vulnerability scanning.
   trivy:
     image: aquasec/trivy:latest
     container_name: artifact-keeper-trivy
@@ -184,6 +244,11 @@ services:
       - scan_workspace:/scan-workspace:ro
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # OpenSCAP (compliance scanner)
+  # ---------------------------------------------------------------------------
+  # Runs SCAP compliance checks against container images. Optional: remove
+  # this service and unset OPENSCAP_URL on the backend if not needed.
   openscap:
     image: ghcr.io/artifact-keeper/artifact-keeper-openscap:latest  # or artifactkeeper/openscap:latest
     container_name: artifact-keeper-openscap
@@ -198,7 +263,12 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # OWASP Dependency-Track for SBOM analysis and vulnerability tracking
+  # ---------------------------------------------------------------------------
+  # Dependency-Track API server (SBOM analysis)
+  # ---------------------------------------------------------------------------
+  # OWASP Dependency-Track provides SBOM ingestion, license analysis, and
+  # vulnerability tracking. Optional: set DEPENDENCY_TRACK_ENABLED=false on
+  # the backend and remove these services if you do not need SBOM analysis.
   # https://dependencytrack.org/
   dependency-track-apiserver:
     image: dependencytrack/apiserver:4.11.4
@@ -238,8 +308,10 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Optional: Dependency-Track native frontend (for debugging/admin)
-  # We integrate DT data into our own UI, but this is useful for direct access
+  # Dependency-Track native frontend (optional, for debugging/admin).
+  # Artifact Keeper integrates DT data into its own UI, so this is only
+  # useful for direct Dependency-Track access. Gated behind a profile:
+  #   docker compose --profile dtrack-ui up
   dependency-track-frontend:
     image: dependencytrack/frontend:4.11.4
     container_name: artifact-keeper-dtrack-frontend
@@ -254,6 +326,12 @@ services:
       - "8093:8080"
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Web UI (Next.js)
+  # ---------------------------------------------------------------------------
+  # The Artifact Keeper web frontend. Communicates with the backend over the
+  # internal Docker network. No ports are exposed directly; Caddy handles
+  # external access and routes requests to the appropriate service.
   web:
     image: ghcr.io/artifact-keeper/artifact-keeper-web:latest  # or artifactkeeper/web:latest
     container_name: artifact-keeper-web
@@ -264,6 +342,14 @@ services:
       BACKEND_URL: http://backend:8080
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Caddy (reverse proxy / TLS termination)
+  # ---------------------------------------------------------------------------
+  # Routes external traffic to the backend API and web UI. Automatically
+  # provisions TLS certificates via ACME when SITE_ADDRESS is set to a public
+  # domain. For local evaluation it defaults to localhost with a self-signed
+  # cert. In production, you may replace Caddy with your own reverse proxy
+  # (nginx, Traefik, a cloud load balancer, etc.).
   caddy:
     image: caddy:2-alpine
     container_name: artifact-keeper-caddy
@@ -296,6 +382,12 @@ services:
       - caddy_config:/config
     restart: unless-stopped
 
+# =============================================================================
+# Volumes
+# =============================================================================
+# All volumes use the local driver for simplicity. In production, consider
+# backing critical data (postgres_data, artifact_storage) with durable storage
+# or external services (managed databases, S3, etc.).
 volumes:
   postgres_data:
     driver: local
@@ -322,6 +414,12 @@ volumes:
   pg_certs:
     driver: local
 
+# =============================================================================
+# Network
+# =============================================================================
+# A single bridge network for all services. All inter-container communication
+# stays on this network; only Caddy (and optionally Postgres/Meilisearch for
+# debugging) expose ports to the host.
 networks:
   default:
     name: artifact-keeper-network
