@@ -612,11 +612,7 @@ pub async fn create_repository(
         if let Some(ref member_inputs) = payload.member_repos {
             for (idx, input) in member_inputs.iter().enumerate() {
                 let member_repo = service.get_by_key(&input.repo_key).await?;
-                let priority = if input.priority > 0 {
-                    input.priority
-                } else {
-                    (idx as i32) + 1
-                };
+                let priority = resolve_member_priority(input.priority, idx);
                 service
                     .add_virtual_member(repo.id, member_repo.id, priority)
                     .await?;
@@ -1707,6 +1703,16 @@ pub async fn update_virtual_members(
     ))
 )]
 pub struct RepositoriesApiDoc;
+
+/// Resolve the effective priority for a virtual member.
+/// Uses the explicit priority if > 0, otherwise assigns a 1-based index.
+fn resolve_member_priority(explicit: i32, index: usize) -> i32 {
+    if explicit > 0 {
+        explicit
+    } else {
+        (index as i32) + 1
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2887,9 +2893,7 @@ mod tests {
 
     #[test]
     fn test_virtual_members_list_response_empty() {
-        let resp = VirtualMembersListResponse {
-            members: vec![],
-        };
+        let resp = VirtualMembersListResponse { members: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"members":[]}"#);
     }
@@ -3011,5 +3015,28 @@ mod tests {
         let req: CreateRepositoryRequest = serde_json::from_str(json).unwrap();
         let members = req.member_repos.unwrap();
         assert_eq!(members[0].priority, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_member_priority
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_member_priority_explicit() {
+        assert_eq!(resolve_member_priority(5, 0), 5);
+        assert_eq!(resolve_member_priority(10, 3), 10);
+    }
+
+    #[test]
+    fn test_resolve_member_priority_zero_uses_index() {
+        assert_eq!(resolve_member_priority(0, 0), 1);
+        assert_eq!(resolve_member_priority(0, 1), 2);
+        assert_eq!(resolve_member_priority(0, 4), 5);
+    }
+
+    #[test]
+    fn test_resolve_member_priority_negative_uses_index() {
+        assert_eq!(resolve_member_priority(-1, 0), 1);
+        assert_eq!(resolve_member_priority(-5, 2), 3);
     }
 }

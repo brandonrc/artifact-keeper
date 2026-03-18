@@ -31,9 +31,9 @@ pub async fn load_upstream_auth(db: &PgPool, repo_id: Uuid) -> Result<Option<Ups
     .map_err(|e| AppError::Database(e.to_string()))?
     .flatten();
 
-    let auth_type = match auth_type {
-        Some(t) if !t.is_empty() && t != "none" => t,
-        _ => return Ok(None),
+    let auth_type = match filter_auth_type(auth_type) {
+        Some(t) => t,
+        None => return Ok(None),
     };
 
     // Load and decrypt credentials
@@ -59,15 +59,24 @@ pub async fn load_upstream_auth(db: &PgPool, repo_id: Uuid) -> Result<Option<Ups
     let creds: serde_json::Value = serde_json::from_str(&credentials_json)
         .map_err(|e| AppError::Internal(format!("Invalid upstream credentials JSON: {e}")))?;
 
-    match auth_type.as_str() {
+    parse_auth_credentials(&auth_type, &creds).map(Some)
+}
+
+/// Parse auth credentials from a JSON value given an auth type string.
+/// Returns the appropriate `UpstreamAuthType` variant.
+pub(crate) fn parse_auth_credentials(
+    auth_type: &str,
+    creds: &serde_json::Value,
+) -> Result<UpstreamAuthType> {
+    match auth_type {
         "basic" => {
             let username = creds["username"].as_str().unwrap_or_default().to_string();
             let password = creds["password"].as_str().unwrap_or_default().to_string();
-            Ok(Some(UpstreamAuthType::Basic { username, password }))
+            Ok(UpstreamAuthType::Basic { username, password })
         }
         "bearer" => {
             let token = creds["token"].as_str().unwrap_or_default().to_string();
-            Ok(Some(UpstreamAuthType::Bearer { token }))
+            Ok(UpstreamAuthType::Bearer { token })
         }
         other => Err(AppError::Config(format!(
             "Unknown upstream auth type: {other}"
@@ -149,15 +158,35 @@ pub async fn get_upstream_auth_type(db: &PgPool, repo_id: Uuid) -> Result<Option
     .map_err(|e| AppError::Database(e.to_string()))?
     .flatten();
 
+    Ok(filter_auth_type(val))
+}
+
+/// Filter an auth type value: returns None for empty, "none", or missing values.
+pub(crate) fn filter_auth_type(val: Option<String>) -> Option<String> {
     match val {
-        Some(t) if !t.is_empty() && t != "none" => Ok(Some(t)),
-        _ => Ok(None),
+        Some(t) if !t.is_empty() && t != "none" => Some(t),
+        _ => None,
+    }
+}
+
+/// Build the JSON credential payload for a given auth type.
+/// Used by save_upstream_auth callers to construct the right shape.
+pub fn build_credentials_json(auth: &UpstreamAuthType) -> String {
+    match auth {
+        UpstreamAuthType::Basic { username, password } => {
+            serde_json::json!({"username": username, "password": password}).to_string()
+        }
+        UpstreamAuthType::Bearer { token } => serde_json::json!({"token": token}).to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // apply_upstream_auth
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_apply_basic_auth() {
@@ -166,7 +195,6 @@ mod tests {
             username: "user".to_string(),
             password: "pass".to_string(),
         };
-        // Verify it builds without panic (reqwest doesn't expose headers on RequestBuilder)
         let _builder = apply_upstream_auth(client.get("http://example.com"), &auth);
     }
 
@@ -179,13 +207,251 @@ mod tests {
         let _builder = apply_upstream_auth(client.get("http://example.com"), &auth);
     }
 
+    // -----------------------------------------------------------------------
+    // encrypt / decrypt roundtrip
+    // -----------------------------------------------------------------------
+
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
-        // Use the existing encryption infrastructure
         let key = "test-secret-key";
         let creds = r#"{"username":"bot","password":"s3cret"}"#;
         let encrypted = encrypt_credentials(creds, key);
         let decrypted = decrypt_credentials(&encrypted, key).unwrap();
         assert_eq!(creds, decrypted);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_bearer_roundtrip() {
+        let key = "another-key-456";
+        let creds = r#"{"token":"ghp_abc123xyz"}"#;
+        let encrypted = encrypt_credentials(creds, key);
+        let decrypted = decrypt_credentials(&encrypted, key).unwrap();
+        assert_eq!(creds, decrypted);
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key_fails() {
+        let creds = r#"{"token":"secret"}"#;
+        let encrypted = encrypt_credentials(creds, "correct-key");
+        let result = decrypt_credentials(&encrypted, "wrong-key");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_auth_credentials
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_basic_credentials() {
+        let creds = serde_json::json!({"username": "admin", "password": "hunter2"});
+        let auth = parse_auth_credentials("basic", &creds).unwrap();
+        assert_eq!(
+            auth,
+            UpstreamAuthType::Basic {
+                username: "admin".to_string(),
+                password: "hunter2".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_bearer_credentials() {
+        let creds = serde_json::json!({"token": "ghp_abc123"});
+        let auth = parse_auth_credentials("bearer", &creds).unwrap();
+        assert_eq!(
+            auth,
+            UpstreamAuthType::Bearer {
+                token: "ghp_abc123".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_unknown_auth_type() {
+        let creds = serde_json::json!({"key": "value"});
+        let result = parse_auth_credentials("oauth2", &creds);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Unknown upstream auth type: oauth2"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_parse_basic_missing_fields_defaults_to_empty() {
+        let creds = serde_json::json!({});
+        let auth = parse_auth_credentials("basic", &creds).unwrap();
+        assert_eq!(
+            auth,
+            UpstreamAuthType::Basic {
+                username: "".to_string(),
+                password: "".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_bearer_missing_token_defaults_to_empty() {
+        let creds = serde_json::json!({});
+        let auth = parse_auth_credentials("bearer", &creds).unwrap();
+        assert_eq!(
+            auth,
+            UpstreamAuthType::Bearer {
+                token: "".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_basic_with_extra_fields_ignores_them() {
+        let creds = serde_json::json!({
+            "username": "bot",
+            "password": "pass",
+            "extra": "ignored"
+        });
+        let auth = parse_auth_credentials("basic", &creds).unwrap();
+        assert_eq!(
+            auth,
+            UpstreamAuthType::Basic {
+                username: "bot".to_string(),
+                password: "pass".to_string(),
+            }
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_auth_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_auth_type_basic() {
+        assert_eq!(
+            filter_auth_type(Some("basic".to_string())),
+            Some("basic".to_string())
+        );
+    }
+
+    #[test]
+    fn test_filter_auth_type_bearer() {
+        assert_eq!(
+            filter_auth_type(Some("bearer".to_string())),
+            Some("bearer".to_string())
+        );
+    }
+
+    #[test]
+    fn test_filter_auth_type_none_string() {
+        assert_eq!(filter_auth_type(Some("none".to_string())), None);
+    }
+
+    #[test]
+    fn test_filter_auth_type_empty_string() {
+        assert_eq!(filter_auth_type(Some("".to_string())), None);
+    }
+
+    #[test]
+    fn test_filter_auth_type_none_value() {
+        assert_eq!(filter_auth_type(None), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // build_credentials_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_credentials_json_basic() {
+        let auth = UpstreamAuthType::Basic {
+            username: "deploy".to_string(),
+            password: "s3cret".to_string(),
+        };
+        let json_str = build_credentials_json(&auth);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["username"], "deploy");
+        assert_eq!(parsed["password"], "s3cret");
+    }
+
+    #[test]
+    fn test_build_credentials_json_bearer() {
+        let auth = UpstreamAuthType::Bearer {
+            token: "ghp_xyz".to_string(),
+        };
+        let json_str = build_credentials_json(&auth);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed["token"], "ghp_xyz");
+    }
+
+    #[test]
+    fn test_build_then_parse_roundtrip_basic() {
+        let original = UpstreamAuthType::Basic {
+            username: "ci-bot".to_string(),
+            password: "p@ssw0rd!".to_string(),
+        };
+        let json_str = build_credentials_json(&original);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restored = parse_auth_credentials("basic", &parsed).unwrap();
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_build_then_parse_roundtrip_bearer() {
+        let original = UpstreamAuthType::Bearer {
+            token: "tok_abc123!@#".to_string(),
+        };
+        let json_str = build_credentials_json(&original);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let restored = parse_auth_credentials("bearer", &parsed).unwrap();
+        assert_eq!(original, restored);
+    }
+
+    // -----------------------------------------------------------------------
+    // UpstreamAuthType traits
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upstream_auth_type_clone() {
+        let auth = UpstreamAuthType::Basic {
+            username: "u".to_string(),
+            password: "p".to_string(),
+        };
+        let cloned = auth.clone();
+        assert_eq!(auth, cloned);
+    }
+
+    #[test]
+    fn test_upstream_auth_type_debug() {
+        let auth = UpstreamAuthType::Bearer {
+            token: "tok".to_string(),
+        };
+        let debug = format!("{:?}", auth);
+        assert!(debug.contains("Bearer"));
+        assert!(debug.contains("tok"));
+    }
+
+    #[test]
+    fn test_upstream_auth_type_inequality() {
+        let basic = UpstreamAuthType::Basic {
+            username: "a".to_string(),
+            password: "b".to_string(),
+        };
+        let bearer = UpstreamAuthType::Bearer {
+            token: "t".to_string(),
+        };
+        assert_ne!(basic, bearer);
+    }
+
+    #[test]
+    fn test_upstream_auth_type_basic_field_inequality() {
+        let a = UpstreamAuthType::Basic {
+            username: "user1".to_string(),
+            password: "pass".to_string(),
+        };
+        let b = UpstreamAuthType::Basic {
+            username: "user2".to_string(),
+            password: "pass".to_string(),
+        };
+        assert_ne!(a, b);
     }
 }
