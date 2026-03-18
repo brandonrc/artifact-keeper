@@ -1784,7 +1784,8 @@ mod tests {
             id: Uuid::nil(),
             name: "My SSO".to_string(),
             provider_type: "oidc".to_string(),
-            login_url: "/api/v1/auth/sso/oidc/00000000-0000-0000-0000-000000000000/login".to_string(),
+            login_url: "/api/v1/auth/sso/oidc/00000000-0000-0000-0000-000000000000/login"
+                .to_string(),
         };
         let json_str = serde_json::to_string(&info).unwrap();
         assert!(json_str.contains("\"provider_type\":\"oidc\""));
