@@ -3405,43 +3405,41 @@ mod tests {
         assert_eq!(parsed["token"], "tok_abc");
     }
 
+    /// Assert that `build_upstream_credentials` returns an error whose message
+    /// contains `expected_substr`.
+    fn assert_credentials_err(
+        auth_type: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+        expected_substr: &str,
+    ) {
+        let result = build_upstream_credentials(auth_type, username, password);
+        let err = result.expect_err("expected credential validation error");
+        assert!(
+            err.to_string().contains(expected_substr),
+            "error {:?} should contain {:?}",
+            err.to_string(),
+            expected_substr,
+        );
+    }
+
     #[test]
     fn test_build_upstream_credentials_basic_missing_username() {
-        let result = build_upstream_credentials("basic", None, Some("pass"));
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("username is required"));
+        assert_credentials_err("basic", None, Some("pass"), "username is required");
     }
 
     #[test]
     fn test_build_upstream_credentials_basic_missing_password() {
-        let result = build_upstream_credentials("basic", Some("user"), None);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("password is required"));
+        assert_credentials_err("basic", Some("user"), None, "password is required");
     }
 
     #[test]
     fn test_build_upstream_credentials_bearer_missing_token() {
-        let result = build_upstream_credentials("bearer", None, None);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("password is required"));
+        assert_credentials_err("bearer", None, None, "password is required");
     }
 
     #[test]
     fn test_build_upstream_credentials_invalid_type() {
-        let result = build_upstream_credentials("oauth2", Some("u"), Some("p"));
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid auth_type"));
+        assert_credentials_err("oauth2", Some("u"), Some("p"), "Invalid auth_type");
     }
 }
