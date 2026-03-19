@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Thank You
+- @pipelineRat for reporting virtual repo member creation and display issues (#461), and the SSO lockout problem (#443)
+- @Lerentis for continued testing and logs on the Maven S3 upload issue (#361)
+- @msegura501 for the Caddy proxy env var fix (#445)
+
+### Added
+- **Upstream authentication for remote repositories** (#451) - remote (proxy) repos can now authenticate against private upstream registries using Basic or Bearer credentials. Credentials are encrypted at rest with AES-256-GCM. Includes API endpoints for managing credentials and testing upstream connectivity, plus web UI fields in the repo create/edit dialogs.
+- **ALLOW_LOCAL_ADMIN_LOGIN env var** (#443) - break-glass recovery mechanism that allows the built-in admin account to log in with local credentials even when SSO is configured.
+- **Docker compose guide comments** (#448) - the docker-compose.yml now includes section headers and inline guidance explaining each service, what is optional, and what to change for production use.
+
+### Fixed
+- **S3 PUT errors now surface the actual S3 response** (#361) - when S3 rejects a PUT request (e.g. 403 AccessDenied), the response body is now included in both the error message and structured logs, making permission issues diagnosable without guessing.
+- **Virtual repo members not displayed in UI** (#455) - fixed member panel rendering and OpenAPI spec field mismatch (items vs members).
+- **Caddy proxy env var interference** (#445) - cleared inherited Docker daemon proxy env vars on the Caddy service to prevent broken inter-container routing in enterprise networks.
+- **OCI Basic Auth on /v2 endpoint** (#457) - the `/v2/` version check endpoint now accepts Basic Auth in addition to Bearer tokens.
+- **SSO login redirect URLs** (#454) - corrected OIDC/SAML callback URLs and added LDAP custom CA certificate support.
+
 ## [1.1.0-rc.8] - 2026-03-17
 
 ### Thank You
