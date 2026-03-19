@@ -21,7 +21,9 @@ pub struct LdapConfig {
     pub url: String,
     /// Base DN for user searches (e.g., dc=example,dc=com)
     pub base_dn: String,
-    /// User search filter pattern (default: (uid={username}))
+    /// User search filter pattern.
+    ///
+    /// Supports both `{0}` and `{username}` placeholders.
     pub user_filter: String,
     /// Bind DN for service account (optional, for search-then-bind)
     pub bind_dn: Option<String>,
@@ -111,7 +113,7 @@ impl LdapConfig {
 pub struct LdapUserInfo {
     /// Distinguished name of the user
     pub dn: String,
-    /// Username (uid)
+    /// Username (directory value for the configured username attribute)
     pub username: String,
     /// Email address
     pub email: String,
@@ -123,10 +125,7 @@ pub struct LdapUserInfo {
 
 /// LDAP authentication service
 ///
-/// This implementation uses a simple HTTP-based approach to communicate with
-/// LDAP servers that expose an HTTP API, or can be adapted to work with
-/// an LDAP proxy service. For production use with native LDAP protocol,
-/// consider adding the ldap3 crate as a dependency.
+/// Uses ldap3 for real LDAP/LDAPS bind and search operations.
 pub struct LdapService {
     db: PgPool,
     config: LdapConfig,
@@ -196,44 +195,56 @@ impl LdapService {
         }
     }
 
-    /// Authenticate user with username and password via LDAP
+    /// Authenticate a user against LDAP/Active Directory.
     ///
-    /// This performs a simple bind authentication:
-    /// 1. Optionally search for user DN using service account
-    /// 2. Attempt to bind with user's credentials
-    /// 3. If successful, extract user attributes
+    /// Behaviour:
+    /// 1. Validate that a username and password were provided.
+    /// 2. If a service account is configured, perform proper search-then-bind:
+    ///    - bind as the service account
+    ///    - resolve the user's actual LDAP entry
+    ///    - bind again as the resolved user DN with the submitted password
+    /// 3. If no service account is configured, fall back to direct bind using
+    ///    the submitted username as-is.
+    ///
+    /// Why this is necessary:
+    /// Many LDAP deployments, especially Active Directory, do not accept a
+    /// fabricated bind identity derived from `{username_attr}={username},{base_dn}`.
+    /// They expect either the user's real distinguished name (DN), or another
+    /// accepted login form such as UPN. The previous implementation constructed
+    /// a DN-like string and attempted to bind with that value, which can fail
+    /// even when:
+    /// - the service account can bind,
+    /// - the user can be found in LDAP, and
+    /// - the submitted password is valid.
+    ///
+    /// This implementation fixes that by using proper search-then-bind when a
+    /// service account is available.
     pub async fn authenticate(&self, username: &str, password: &str) -> Result<LdapUserInfo> {
-        // Validate inputs
         if username.is_empty() || password.is_empty() {
             return Err(AppError::Authentication(
                 "Username and password required".into(),
             ));
         }
 
-        // Sanitize username to prevent LDAP injection
         let sanitized_username = Self::sanitize_ldap_input(username);
 
-        // Build the user DN for simple bind
-        // In a typical setup, this would be something like:
-        // uid=username,ou=users,dc=example,dc=com
-        let user_dn = self.build_user_dn(&sanitized_username);
-
-        // Simulate LDAP bind authentication
-        // In a real implementation with ldap3, this would be:
-        // let (conn, mut ldap) = LdapConnAsync::new(&self.config.url).await?;
-        // ldap3::drive!(conn);
-        // ldap.simple_bind(&user_dn, password).await?.success()?;
-
-        // For this implementation, we validate the credentials format
-        // and return user info. In production, replace with actual LDAP bind.
-        self.validate_ldap_credentials(&user_dn, password).await?;
-
-        // Extract user information
-        let user_info = self.get_user_info(&sanitized_username, &user_dn).await?;
+        let user_info = if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
+            let user_info = self.search_user_entry(&sanitized_username).await?;
+            self.validate_ldap_credentials(&user_info.dn, password).await?;
+            user_info
+        } else {
+            // Fallback mode for deployments that intentionally rely on direct
+            // user binds without a service account. Use the submitted username
+            // directly instead of fabricating a DN.
+            self.validate_ldap_credentials(&sanitized_username, password)
+                .await?;
+            self.get_user_info(&sanitized_username, &sanitized_username)
+                .await?
+        };
 
         tracing::info!(
             username = %username,
-            dn = %user_dn,
+            dn = %user_info.dn,
             "LDAP authentication successful"
         );
 
@@ -368,10 +379,14 @@ impl LdapService {
         roles
     }
 
-    /// Build user DN from username
+    /// Build user DN from username.
+    ///
+    /// Note:
+    /// This helper is retained only for legacy/custom direct-bind scenarios.
+    /// It should not be used as the primary authentication path when a service
+    /// account is configured, because many LDAP/AD environments require the
+    /// user's real DN (resolved via search) rather than a constructed value.
     fn build_user_dn(&self, username: &str) -> String {
-        // Format: uid=username,base_dn
-        // This can be customized via LDAP_USER_DN_PATTERN env var
         let pattern = std::env::var("LDAP_USER_DN_PATTERN").unwrap_or_else(|_| {
             format!("{}={{}},{}", self.config.username_attr, self.config.base_dn)
         });
@@ -438,10 +453,121 @@ impl LdapService {
                 .build()
                 .map_err(|e| AppError::Config(format!("Failed to build TLS connector: {e}")))?;
             settings = settings.set_connector(connector);
-            tracing::info!(path = %ca_path, count = certs.len(), "Loaded custom CA certificate(s) for LDAP");
+            tracing::info!(
+                path = %ca_path,
+                count = certs.len(),
+                "Loaded custom CA certificate(s) for LDAP"
+            );
         }
 
         Ok(settings)
+    }
+
+    /// Search for the user's actual LDAP entry using the configured service account.
+    ///
+    /// This helper is used by the search-then-bind authentication path.
+    ///
+    /// Important behaviour:
+    /// - binds with the configured service account
+    /// - searches using the configured user filter
+    /// - supports both `{0}` and `{username}` placeholders
+    /// - returns the real DN and attributes from LDAP
+    ///
+    /// Why the placeholder support matters:
+    /// The UI/configuration path may produce filters using `{0}`, while older or
+    /// environment-based configurations may use `{username}`. Supporting both
+    /// forms keeps the runtime behaviour aligned with the configured provider
+    /// and avoids silent mismatches during user lookup.
+    async fn search_user_entry(&self, username: &str) -> Result<LdapUserInfo> {
+        use ldap3::{LdapConnAsync, Scope, SearchEntry};
+
+        let (bind_dn, bind_pw) = match (&self.config.bind_dn, &self.config.bind_password) {
+            (Some(dn), Some(pw)) => (dn, pw),
+            _ => {
+                return Err(AppError::Authentication(
+                    "LDAP bind_dn and bind_password are required for search-then-bind".into(),
+                ))
+            }
+        };
+
+        let settings = self.build_conn_settings()?;
+
+        let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &self.config.url)
+            .await
+            .map_err(|e| AppError::Authentication(format!("LDAP connection failed: {e}")))?;
+
+        ldap3::drive!(conn);
+
+        ldap.simple_bind(bind_dn, bind_pw)
+            .await
+            .map_err(|e| AppError::Authentication(format!("Service account bind failed: {e}")))?
+            .success()
+            .map_err(|e| AppError::Authentication(format!("Service account bind failed: {e}")))?;
+
+        let safe_username = Self::sanitize_ldap_input(username);
+
+        let search_filter = self
+            .config
+            .user_filter
+            .replace("{0}", &safe_username)
+            .replace("{username}", &safe_username);
+
+        let attrs = vec![
+            self.config.username_attr.as_str(),
+            self.config.email_attr.as_str(),
+            self.config.display_name_attr.as_str(),
+            self.config.groups_attr.as_str(),
+        ];
+
+        let (results, _) = ldap
+            .search(&self.config.base_dn, Scope::Subtree, &search_filter, attrs)
+            .await
+            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?
+            .success()
+            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?;
+
+        ldap.unbind().await.ok();
+
+        let entry = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Authentication("User not found in LDAP".into()))?;
+
+        let entry = SearchEntry::construct(entry);
+
+        let email = entry
+            .attrs
+            .get(&self.config.email_attr)
+            .and_then(|v| v.first())
+            .cloned()
+            .unwrap_or_else(|| format!("{}@unknown", username));
+
+        let display_name = entry
+            .attrs
+            .get(&self.config.display_name_attr)
+            .and_then(|v| v.first())
+            .cloned();
+
+        let groups = entry
+            .attrs
+            .get(&self.config.groups_attr)
+            .cloned()
+            .unwrap_or_default();
+
+        let resolved_username = entry
+            .attrs
+            .get(&self.config.username_attr)
+            .and_then(|v| v.first())
+            .cloned()
+            .unwrap_or_else(|| username.to_string());
+
+        Ok(LdapUserInfo {
+            dn: entry.dn,
+            username: resolved_username,
+            email,
+            display_name,
+            groups,
+        })
     }
 
     /// Validate LDAP credentials via real LDAP simple bind.
@@ -473,8 +599,8 @@ impl LdapService {
     async fn get_user_info(&self, username: &str, user_dn: &str) -> Result<LdapUserInfo> {
         use ldap3::{LdapConnAsync, Scope, SearchEntry};
 
-        // If we have a bind DN, use search-then-bind
-        // Otherwise return basic info from the DN
+        // If we have a bind DN, use search-then-bind search path.
+        // Otherwise return basic info from the supplied bind identity.
         if let (Some(bind_dn), Some(bind_pw)) = (&self.config.bind_dn, &self.config.bind_password) {
             let settings = self.build_conn_settings()?;
 
@@ -490,10 +616,13 @@ impl LdapService {
                 .success()
                 .map_err(|e| AppError::Internal(format!("Service account bind failed: {e}")))?;
 
+            let safe_username = Self::sanitize_ldap_input(username);
             let search_filter = self
                 .config
                 .user_filter
-                .replace("{username}", &Self::sanitize_ldap_input(username));
+                .replace("{0}", &safe_username)
+                .replace("{username}", &safe_username);
+
             let attrs = vec![
                 self.config.username_attr.as_str(),
                 self.config.email_attr.as_str(),
@@ -532,9 +661,16 @@ impl LdapService {
                     .cloned()
                     .unwrap_or_default();
 
+                let resolved_username = entry
+                    .attrs
+                    .get(&self.config.username_attr)
+                    .and_then(|v| v.first())
+                    .cloned()
+                    .unwrap_or_else(|| username.to_string());
+
                 return Ok(LdapUserInfo {
                     dn: entry.dn,
-                    username: username.to_string(),
+                    username: resolved_username,
                     email,
                     display_name,
                     groups,
@@ -542,7 +678,7 @@ impl LdapService {
             }
         }
 
-        // Fallback: construct basic info from the DN
+        // Fallback: construct basic info from the bind identity.
         Ok(LdapUserInfo {
             dn: user_dn.to_string(),
             username: username.to_string(),
@@ -751,7 +887,6 @@ mod tests {
     #[test]
     fn test_ldap_config_is_configured_true() {
         let config = make_test_ldap_config();
-        // Create an LdapConfig directly and check is_configured logic
         assert!(!config.url.is_empty());
         assert!(!config.base_dn.is_empty());
     }
@@ -760,7 +895,6 @@ mod tests {
     fn test_ldap_config_is_configured_empty_url() {
         let mut config = make_test_ldap_config();
         config.url = String::new();
-        // The is_configured check relies on url and base_dn being non-empty
         assert!(config.url.is_empty());
     }
 
@@ -886,7 +1020,6 @@ mod tests {
     #[test]
     fn test_parse_pem_multiple_certs() {
         let single = include_bytes!("../../tests/fixtures/test-ca.pem");
-        // Concatenate the same cert twice to simulate a bundle
         let mut bundle = single.to_vec();
         bundle.extend_from_slice(single);
         let certs =
@@ -912,13 +1045,11 @@ mod tests {
 
     #[test]
     fn test_parse_pem_partial_markers() {
-        // Has BEGIN but no END, so no cert block is captured
         let data = b"-----BEGIN CERTIFICATE-----\ngarbage";
         let result = LdapService::parse_pem_certificates(data, "partial.pem");
         assert!(result.is_err());
     }
 
-    /// Build conn settings from a config, asserting success or failure.
     fn assert_conn_settings_ok(config: LdapConfig) {
         let svc = make_test_service(config);
         assert!(svc.build_conn_settings().is_ok());
@@ -991,10 +1122,7 @@ mod tests {
 
     #[test]
     fn test_tls_from_env_defaults() {
-        // Without the env vars set, should return (None, false)
         let (ca, insecure) = LdapConfig::tls_from_env();
-        // We can't assert exact values since other tests or CI may set
-        // CUSTOM_CA_CERT_PATH, but we can assert the types are correct
         let _ = ca;
         assert!(!insecure || std::env::var("LDAP_INSECURE_TLS").is_ok());
     }
@@ -1017,9 +1145,7 @@ mod tests {
             Some("cn=admins,dc=example,dc=com"),
             false,
         );
-        // Verify TLS fields are populated from env (defaults)
         assert!(!svc.config.no_tls_verify || std::env::var("LDAP_INSECURE_TLS").is_ok());
-        // Verify non-TLS fields passed through
         assert_eq!(svc.config.url, "ldaps://ad.example.com:636");
         assert_eq!(svc.config.username_attr, "sAMAccountName");
         assert_eq!(
