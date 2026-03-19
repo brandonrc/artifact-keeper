@@ -226,10 +226,8 @@ impl LdapService {
             ));
         }
 
-        let sanitized_username = Self::sanitize_ldap_input(username);
-
         let user_info = if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
-            let user_info = self.search_user_entry(&sanitized_username).await?;
+            let user_info = self.search_user_entry(username).await?;
             self.validate_ldap_credentials(&user_info.dn, password)
                 .await?;
             user_info
@@ -237,10 +235,8 @@ impl LdapService {
             // Fallback mode for deployments that intentionally rely on direct
             // user binds without a service account. Use the submitted username
             // directly instead of fabricating a DN.
-            self.validate_ldap_credentials(&sanitized_username, password)
-                .await?;
-            self.get_user_info(&sanitized_username, &sanitized_username)
-                .await?
+            self.validate_ldap_credentials(username, password).await?;
+            self.get_user_info(username, username).await?
         };
 
         tracing::info!(
@@ -504,10 +500,11 @@ impl LdapService {
     /// Replaces both `{0}` and `{username}` placeholders in the configured
     /// user filter pattern.
     fn build_search_filter(&self, username: &str) -> String {
+        let safe = Self::sanitize_ldap_input(username);
         self.config
             .user_filter
-            .replace("{0}", username)
-            .replace("{username}", username)
+            .replace("{0}", &safe)
+            .replace("{username}", &safe)
     }
 
     /// Return the list of LDAP attributes to request during a user search.
@@ -1473,6 +1470,14 @@ mod tests {
         // that placeholder replacement works with pre-sanitized input.
         let filter = svc.build_search_filter("john.doe@example.com");
         assert_eq!(filter, "(uid=john.doe@example.com)");
+    }
+
+    #[tokio::test]
+    async fn test_build_search_filter_sanitizes_input() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let filter = svc.build_search_filter("DOMAIN\\user");
+        assert_eq!(filter, "(uid=DOMAIN\\5cuser)");
     }
 
     // --- user_search_attrs() tests ---
