@@ -134,6 +134,8 @@ pub struct LdapService {
 }
 
 impl LdapService {
+    const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
     /// Create a new LDAP service
     pub fn new(db: PgPool, app_config: Arc<Config>) -> Result<Self> {
         let config = LdapConfig::from_config(&app_config)
@@ -226,18 +228,22 @@ impl LdapService {
             ));
         }
 
-        let user_info = if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
-            let user_info = self.search_user_entry(username).await?;
-            self.validate_ldap_credentials(&user_info.dn, password)
-                .await?;
-            user_info
-        } else {
-            // Fallback mode for deployments that intentionally rely on direct
-            // user binds without a service account. Use the submitted username
-            // directly instead of fabricating a DN.
-            self.validate_ldap_credentials(username, password).await?;
-            self.get_user_info(username, username).await?
-        };
+        let user_info = tokio::time::timeout(Self::AUTH_TIMEOUT, async {
+            if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
+                let user_info = self.search_user_entry(username).await?;
+                self.validate_ldap_credentials(&user_info.dn, password)
+                    .await?;
+                Ok(user_info)
+            } else {
+                self.validate_ldap_credentials(username, password).await?;
+                self.get_user_info(username, username).await
+            }
+        })
+        .await
+        .map_err(|_| {
+            tracing::error!(username = %username, timeout = ?Self::AUTH_TIMEOUT, "LDAP authentication timed out");
+            AppError::Internal("LDAP authentication timed out".into())
+        })??;
 
         tracing::info!(
             username = %username,
