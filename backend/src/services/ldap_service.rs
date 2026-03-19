@@ -465,32 +465,13 @@ impl LdapService {
         Ok(settings)
     }
 
-    /// Search for the user's actual LDAP entry using the configured service account.
+    /// Connect to the LDAP server and bind with the given credentials.
     ///
-    /// This helper is used by the search-then-bind authentication path.
-    ///
-    /// Important behaviour:
-    /// - binds with the configured service account
-    /// - searches using the configured user filter
-    /// - supports both `{0}` and `{username}` placeholders
-    /// - returns the real DN and attributes from LDAP
-    ///
-    /// Why the placeholder support matters:
-    /// The UI/configuration path may produce filters using `{0}`, while older or
-    /// environment-based configurations may use `{username}`. Supporting both
-    /// forms keeps the runtime behaviour aligned with the configured provider
-    /// and avoids silent mismatches during user lookup.
-    async fn search_user_entry(&self, username: &str) -> Result<LdapUserInfo> {
-        use ldap3::{LdapConnAsync, Scope, SearchEntry};
-
-        let (bind_dn, bind_pw) = match (&self.config.bind_dn, &self.config.bind_password) {
-            (Some(dn), Some(pw)) => (dn, pw),
-            _ => {
-                return Err(AppError::Authentication(
-                    "LDAP bind_dn and bind_password are required for search-then-bind".into(),
-                ))
-            }
-        };
+    /// Builds connection settings (including TLS), opens the connection,
+    /// drives it on a background task, and performs a simple bind. Returns
+    /// the authenticated `ldap3::Ldap` handle on success.
+    async fn connect_and_bind(&self, bind_dn: &str, bind_password: &str) -> Result<ldap3::Ldap> {
+        use ldap3::LdapConnAsync;
 
         let settings = self.build_conn_settings()?;
 
@@ -500,41 +481,40 @@ impl LdapService {
 
         ldap3::drive!(conn);
 
-        ldap.simple_bind(bind_dn, bind_pw)
+        ldap.simple_bind(bind_dn, bind_password)
             .await
-            .map_err(|e| AppError::Authentication(format!("Service account bind failed: {e}")))?
+            .map_err(|e| AppError::Authentication(format!("LDAP bind failed: {e}")))?
             .success()
-            .map_err(|e| AppError::Authentication(format!("Service account bind failed: {e}")))?;
+            .map_err(|e| AppError::Authentication(format!("LDAP bind failed: {e}")))?;
 
-        let search_filter = self
-            .config
+        Ok(ldap)
+    }
+
+    /// Build the LDAP search filter for a given username.
+    ///
+    /// Replaces both `{0}` and `{username}` placeholders in the configured
+    /// user filter pattern.
+    fn build_search_filter(&self, username: &str) -> String {
+        self.config
             .user_filter
             .replace("{0}", username)
-            .replace("{username}", username);
+            .replace("{username}", username)
+    }
 
-        let attrs = vec![
+    /// Return the list of LDAP attributes to request during a user search.
+    fn user_search_attrs(&self) -> Vec<&str> {
+        vec![
             self.config.username_attr.as_str(),
             self.config.email_attr.as_str(),
             self.config.display_name_attr.as_str(),
             self.config.groups_attr.as_str(),
-        ];
+        ]
+    }
 
-        let (results, _) = ldap
-            .search(&self.config.base_dn, Scope::Subtree, &search_filter, attrs)
-            .await
-            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?
-            .success()
-            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?;
-
-        ldap.unbind().await.ok();
-
-        let entry = results
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::Authentication("User not found in LDAP".into()))?;
-
-        let entry = SearchEntry::construct(entry);
-
+    /// Extract user information from an already-constructed `SearchEntry`.
+    ///
+    /// Pure synchronous helper that maps LDAP attributes to an `LdapUserInfo`.
+    fn extract_user_from_entry(&self, entry: ldap3::SearchEntry, username: &str) -> LdapUserInfo {
         let email = entry
             .attrs
             .get(&self.config.email_attr)
@@ -561,35 +541,69 @@ impl LdapService {
             .cloned()
             .unwrap_or_else(|| username.to_string());
 
-        Ok(LdapUserInfo {
+        LdapUserInfo {
             dn: entry.dn,
             username: resolved_username,
             email,
             display_name,
             groups,
-        })
+        }
+    }
+
+    /// Search for the user's actual LDAP entry using the configured service account.
+    ///
+    /// This helper is used by the search-then-bind authentication path.
+    ///
+    /// Important behaviour:
+    /// - binds with the configured service account
+    /// - searches using the configured user filter
+    /// - supports both `{0}` and `{username}` placeholders
+    /// - returns the real DN and attributes from LDAP
+    ///
+    /// Why the placeholder support matters:
+    /// The UI/configuration path may produce filters using `{0}`, while older or
+    /// environment-based configurations may use `{username}`. Supporting both
+    /// forms keeps the runtime behaviour aligned with the configured provider
+    /// and avoids silent mismatches during user lookup.
+    async fn search_user_entry(&self, username: &str) -> Result<LdapUserInfo> {
+        use ldap3::{Scope, SearchEntry};
+
+        let (bind_dn, bind_pw) = match (&self.config.bind_dn, &self.config.bind_password) {
+            (Some(dn), Some(pw)) => (dn, pw),
+            _ => {
+                return Err(AppError::Authentication(
+                    "LDAP bind_dn and bind_password are required for search-then-bind".into(),
+                ))
+            }
+        };
+
+        let mut ldap = self.connect_and_bind(bind_dn, bind_pw).await?;
+
+        let search_filter = self.build_search_filter(username);
+        let attrs = self.user_search_attrs();
+
+        let (results, _) = ldap
+            .search(&self.config.base_dn, Scope::Subtree, &search_filter, attrs)
+            .await
+            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?
+            .success()
+            .map_err(|e| AppError::Authentication(format!("LDAP search failed: {e}")))?;
+
+        ldap.unbind().await.ok();
+
+        let entry = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Authentication("User not found in LDAP".into()))?;
+
+        let entry = SearchEntry::construct(entry);
+
+        Ok(self.extract_user_from_entry(entry, username))
     }
 
     /// Validate LDAP credentials via real LDAP simple bind.
     async fn validate_ldap_credentials(&self, user_dn: &str, password: &str) -> Result<()> {
-        use ldap3::LdapConnAsync;
-
-        let settings = self.build_conn_settings()?;
-
-        let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &self.config.url)
-            .await
-            .map_err(|e| AppError::Authentication(format!("LDAP connection failed: {e}")))?;
-
-        ldap3::drive!(conn);
-
-        let result = ldap
-            .simple_bind(user_dn, password)
-            .await
-            .map_err(|e| AppError::Authentication(format!("LDAP bind failed: {e}")))?;
-
-        if result.rc != 0 {
-            return Err(AppError::Authentication("Invalid credentials".into()));
-        }
+        let mut ldap = self.connect_and_bind(user_dn, password).await?;
 
         ldap.unbind().await.ok();
         Ok(())
@@ -1405,5 +1419,203 @@ mod tests {
         let svc = make_test_service(config);
         let groups = vec!["cn=admins,ou=groups,dc=example,dc=com".to_string()];
         assert!(!svc.is_admin_from_groups(&groups));
+    }
+
+    // --- build_search_filter() tests ---
+
+    #[tokio::test]
+    async fn test_build_search_filter_default_username_placeholder() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let filter = svc.build_search_filter("jdoe");
+        assert_eq!(filter, "(uid=jdoe)");
+    }
+
+    #[tokio::test]
+    async fn test_build_search_filter_zero_placeholder() {
+        let mut config = make_test_ldap_config();
+        config.user_filter = "(sAMAccountName={0})".to_string();
+        let svc = make_test_service(config);
+        let filter = svc.build_search_filter("alice");
+        assert_eq!(filter, "(sAMAccountName=alice)");
+    }
+
+    #[tokio::test]
+    async fn test_build_search_filter_both_placeholders() {
+        let mut config = make_test_ldap_config();
+        config.user_filter = "(|(uid={username})(cn={0}))".to_string();
+        let svc = make_test_service(config);
+        let filter = svc.build_search_filter("bob");
+        assert_eq!(filter, "(|(uid=bob)(cn=bob))");
+    }
+
+    #[tokio::test]
+    async fn test_build_search_filter_special_chars_in_username() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        // The method itself does not sanitize; it only replaces placeholders.
+        // Sanitization happens before calling this method. Here we just verify
+        // that placeholder replacement works with pre-sanitized input.
+        let filter = svc.build_search_filter("john.doe@example.com");
+        assert_eq!(filter, "(uid=john.doe@example.com)");
+    }
+
+    // --- user_search_attrs() tests ---
+
+    #[tokio::test]
+    async fn test_user_search_attrs_defaults() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let attrs = svc.user_search_attrs();
+        assert_eq!(attrs, vec!["uid", "mail", "cn", "memberOf"]);
+    }
+
+    #[tokio::test]
+    async fn test_user_search_attrs_custom() {
+        let mut config = make_test_ldap_config();
+        config.username_attr = "sAMAccountName".to_string();
+        config.email_attr = "userPrincipalName".to_string();
+        config.display_name_attr = "displayName".to_string();
+        config.groups_attr = "memberOf".to_string();
+        let svc = make_test_service(config);
+        let attrs = svc.user_search_attrs();
+        assert_eq!(
+            attrs,
+            vec![
+                "sAMAccountName",
+                "userPrincipalName",
+                "displayName",
+                "memberOf"
+            ]
+        );
+    }
+
+    // --- extract_user_from_entry() tests ---
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_full() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=testuser,dc=example,dc=com".to_string(),
+            attrs: HashMap::from([
+                ("uid".to_string(), vec!["testuser".to_string()]),
+                ("mail".to_string(), vec!["test@example.com".to_string()]),
+                ("cn".to_string(), vec!["Test User".to_string()]),
+                (
+                    "memberOf".to_string(),
+                    vec![
+                        "cn=developers,dc=example,dc=com".to_string(),
+                        "cn=admins,dc=example,dc=com".to_string(),
+                    ],
+                ),
+            ]),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "testuser");
+        assert_eq!(info.dn, "uid=testuser,dc=example,dc=com");
+        assert_eq!(info.username, "testuser");
+        assert_eq!(info.email, "test@example.com");
+        assert_eq!(info.display_name, Some("Test User".to_string()));
+        assert_eq!(info.groups.len(), 2);
+        assert_eq!(info.groups[0], "cn=developers,dc=example,dc=com");
+        assert_eq!(info.groups[1], "cn=admins,dc=example,dc=com");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_missing_email() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=nomail,dc=example,dc=com".to_string(),
+            attrs: HashMap::from([
+                ("uid".to_string(), vec!["nomail".to_string()]),
+                ("cn".to_string(), vec!["No Mail User".to_string()]),
+            ]),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "nomail");
+        assert_eq!(info.email, "nomail@unknown");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_missing_display_name() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=nodisplay,dc=example,dc=com".to_string(),
+            attrs: HashMap::from([
+                ("uid".to_string(), vec!["nodisplay".to_string()]),
+                (
+                    "mail".to_string(),
+                    vec!["nodisplay@example.com".to_string()],
+                ),
+            ]),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "nodisplay");
+        assert!(info.display_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_missing_groups() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=nogroups,dc=example,dc=com".to_string(),
+            attrs: HashMap::from([
+                ("uid".to_string(), vec!["nogroups".to_string()]),
+                ("mail".to_string(), vec!["nogroups@example.com".to_string()]),
+                ("cn".to_string(), vec!["No Groups".to_string()]),
+            ]),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "nogroups");
+        assert!(info.groups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_missing_username_attr() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=fallback,dc=example,dc=com".to_string(),
+            attrs: HashMap::from([
+                ("mail".to_string(), vec!["fallback@example.com".to_string()]),
+                ("cn".to_string(), vec!["Fallback User".to_string()]),
+            ]),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "input_username");
+        assert_eq!(info.username, "input_username");
+    }
+
+    #[tokio::test]
+    async fn test_extract_user_from_entry_empty_attrs() {
+        use std::collections::HashMap;
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let entry = ldap3::SearchEntry {
+            dn: "uid=empty,dc=example,dc=com".to_string(),
+            attrs: HashMap::new(),
+            bin_attrs: HashMap::new(),
+        };
+        let info = svc.extract_user_from_entry(entry, "fallback_user");
+        assert_eq!(info.dn, "uid=empty,dc=example,dc=com");
+        assert_eq!(info.username, "fallback_user");
+        assert_eq!(info.email, "fallback_user@unknown");
+        assert!(info.display_name.is_none());
+        assert!(info.groups.is_empty());
     }
 }
