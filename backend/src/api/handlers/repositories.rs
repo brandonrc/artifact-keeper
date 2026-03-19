@@ -622,13 +622,38 @@ pub async fn create_repository(
 
     // Add virtual repository members if provided
     if repo_type == RepositoryType::Virtual {
-        if let Some(ref member_inputs) = payload.member_repos {
-            for (idx, input) in member_inputs.iter().enumerate() {
-                let member_repo = service.get_by_key(&input.repo_key).await?;
-                let priority = resolve_member_priority(input.priority, idx);
-                service
-                    .add_virtual_member(repo.id, member_repo.id, priority)
-                    .await?;
+        match &payload.member_repos {
+            Some(member_inputs) if !member_inputs.is_empty() => {
+                tracing::info!(
+                    repo_key = %repo.key,
+                    member_count = member_inputs.len(),
+                    "Adding virtual repository members during creation"
+                );
+                for (idx, input) in member_inputs.iter().enumerate() {
+                    let member_repo = service.get_by_key(&input.repo_key).await?;
+                    let priority = resolve_member_priority(input.priority, idx);
+                    tracing::debug!(
+                        virtual_repo = %repo.key,
+                        member_key = %input.repo_key,
+                        priority = priority,
+                        "Adding virtual member"
+                    );
+                    service
+                        .add_virtual_member(repo.id, member_repo.id, priority)
+                        .await?;
+                }
+            }
+            Some(_empty) => {
+                tracing::debug!(
+                    repo_key = %repo.key,
+                    "Virtual repo created with empty member_repos array"
+                );
+            }
+            None => {
+                tracing::debug!(
+                    repo_key = %repo.key,
+                    "Virtual repo created without member_repos field"
+                );
             }
         }
     }
