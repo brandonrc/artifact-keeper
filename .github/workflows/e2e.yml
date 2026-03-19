@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build backend image (cached)
         uses: docker/build-push-action@v7
