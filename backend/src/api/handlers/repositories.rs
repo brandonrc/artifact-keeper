@@ -1897,13 +1897,16 @@ fn resolve_member_priority(explicit: i32, index: usize) -> i32 {
 }
 
 /// Build a JSON credential string from an upstream auth request.
-/// Validates that the required fields are present for the given auth type.
+/// Validates that the required fields are present for the given auth type,
+/// then delegates to `build_credentials_json` for serialization.
 fn build_upstream_credentials(
     auth_type: &str,
     username: Option<&str>,
     password: Option<&str>,
 ) -> crate::error::Result<String> {
-    match auth_type {
+    use crate::services::upstream_auth::{build_credentials_json, UpstreamAuthType};
+
+    let auth = match auth_type {
         "basic" => {
             let username = username.ok_or_else(|| {
                 AppError::Validation("username is required for basic auth".to_string())
@@ -1911,7 +1914,10 @@ fn build_upstream_credentials(
             let password = password.ok_or_else(|| {
                 AppError::Validation("password is required for basic auth".to_string())
             })?;
-            Ok(serde_json::json!({"username": username, "password": password}).to_string())
+            UpstreamAuthType::Basic {
+                username: username.to_string(),
+                password: password.to_string(),
+            }
         }
         "bearer" => {
             let token = password.ok_or_else(|| {
@@ -1919,12 +1925,18 @@ fn build_upstream_credentials(
                     "password is required for bearer auth (used as token)".to_string(),
                 )
             })?;
-            Ok(serde_json::json!({"token": token}).to_string())
+            UpstreamAuthType::Bearer {
+                token: token.to_string(),
+            }
         }
-        other => Err(AppError::Validation(format!(
-            "Invalid auth_type: {other}. Must be 'basic', 'bearer', or 'none'"
-        ))),
-    }
+        other => {
+            return Err(AppError::Validation(format!(
+                "Invalid auth_type: {other}. Must be 'basic', 'bearer', or 'none'"
+            )));
+        }
+    };
+
+    Ok(build_credentials_json(&auth))
 }
 
 /// Convert a VirtualMemberRow into a VirtualMemberResponse.
