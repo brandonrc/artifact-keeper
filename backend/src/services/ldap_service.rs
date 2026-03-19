@@ -684,6 +684,27 @@ impl LdapService {
     pub fn server_url(&self) -> &str {
         &self.config.url
     }
+
+    /// Probe LDAP connectivity by attempting a service-account bind.
+    ///
+    /// If a service account is configured, performs a real bind to verify
+    /// the LDAP server is reachable and credentials are valid. If no
+    /// service account is configured, just verifies the URL is non-empty.
+    pub async fn check_health(&self) -> Result<()> {
+        if self.config.url.is_empty() {
+            return Err(AppError::Config("LDAP URL not configured".into()));
+        }
+        if let (Some(bind_dn), Some(bind_pw)) = (&self.config.bind_dn, &self.config.bind_password) {
+            let mut ldap = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.connect_and_bind(bind_dn, bind_pw),
+            )
+            .await
+            .map_err(|_| AppError::Internal("LDAP health check timed out".into()))??;
+            ldap.unbind().await.ok();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

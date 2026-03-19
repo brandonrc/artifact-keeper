@@ -35,6 +35,8 @@ pub struct HealthChecks {
     pub security_scanner: Option<CheckStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meilisearch: Option<CheckStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ldap: Option<CheckStatus>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -142,6 +144,30 @@ pub async fn health_check(State(state): State<SharedState>) -> impl IntoResponse
         None => None,
     };
 
+    let ldap_check = if state.config.ldap_url.is_some() {
+        match crate::services::ldap_service::LdapService::new(
+            state.db.clone(),
+            std::sync::Arc::new(state.config.clone()),
+        ) {
+            Ok(svc) => match svc.check_health().await {
+                Ok(()) => Some(CheckStatus {
+                    status: "healthy".to_string(),
+                    message: None,
+                }),
+                Err(e) => Some(CheckStatus {
+                    status: "unhealthy".to_string(),
+                    message: Some(e.to_string()),
+                }),
+            },
+            Err(e) => Some(CheckStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("LDAP config error: {e}")),
+            }),
+        }
+    } else {
+        None
+    };
+
     let overall_status = if db_check.status == "healthy" {
         "healthy"
     } else {
@@ -172,6 +198,7 @@ pub async fn health_check(State(state): State<SharedState>) -> impl IntoResponse
             storage: storage_check,
             security_scanner: scanner_check,
             meilisearch: meili_check,
+            ldap: ldap_check,
         },
         db_pool: Some(pool_stats),
         commit,
@@ -448,6 +475,7 @@ mod tests {
                 },
                 security_scanner: None,
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: Some(sample_pool_stats()),
             commit: None,
@@ -479,6 +507,7 @@ mod tests {
                 storage: healthy_check(),
                 security_scanner: None,
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: None,
             commit: None,
@@ -500,6 +529,7 @@ mod tests {
                 storage: healthy_check(),
                 security_scanner: Some(healthy_check()),
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: None,
             commit: None,
@@ -541,6 +571,7 @@ mod tests {
                 storage: healthy_check(),
                 security_scanner: None,
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: None,
             commit: None,
@@ -662,6 +693,7 @@ mod tests {
                 storage: healthy_check(),
                 security_scanner: None,
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: None,
             commit: Some("abc1234def5678".to_string()),
@@ -684,6 +716,7 @@ mod tests {
                 storage: healthy_check(),
                 security_scanner: None,
                 meilisearch: None,
+                ldap: None,
             },
             db_pool: None,
             commit: None,
