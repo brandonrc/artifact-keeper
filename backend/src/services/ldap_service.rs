@@ -506,13 +506,11 @@ impl LdapService {
             .success()
             .map_err(|e| AppError::Authentication(format!("Service account bind failed: {e}")))?;
 
-        let safe_username = Self::sanitize_ldap_input(username);
-
         let search_filter = self
             .config
             .user_filter
-            .replace("{0}", &safe_username)
-            .replace("{username}", &safe_username);
+            .replace("{0}", username)
+            .replace("{username}", username);
 
         let attrs = vec![
             self.config.username_attr.as_str(),
@@ -598,85 +596,24 @@ impl LdapService {
     }
 
     /// Get user information from LDAP via real search.
+    ///
+    /// Delegates to [`search_user_entry`] when bind credentials are available,
+    /// falling back to basic synthesized info when the search fails or no
+    /// credentials are configured.
     async fn get_user_info(&self, username: &str, user_dn: &str) -> Result<LdapUserInfo> {
-        use ldap3::{LdapConnAsync, Scope, SearchEntry};
-
-        // If we have a bind DN, use search-then-bind search path.
-        // Otherwise return basic info from the supplied bind identity.
-        if let (Some(bind_dn), Some(bind_pw)) = (&self.config.bind_dn, &self.config.bind_password) {
-            let settings = self.build_conn_settings()?;
-
-            let (conn, mut ldap) = LdapConnAsync::with_settings(settings, &self.config.url)
-                .await
-                .map_err(|e| AppError::Internal(format!("LDAP connection failed: {e}")))?;
-
-            ldap3::drive!(conn);
-
-            ldap.simple_bind(bind_dn, bind_pw)
-                .await
-                .map_err(|e| AppError::Internal(format!("Service account bind failed: {e}")))?
-                .success()
-                .map_err(|e| AppError::Internal(format!("Service account bind failed: {e}")))?;
-
-            let safe_username = Self::sanitize_ldap_input(username);
-            let search_filter = self
-                .config
-                .user_filter
-                .replace("{0}", &safe_username)
-                .replace("{username}", &safe_username);
-
-            let attrs = vec![
-                self.config.username_attr.as_str(),
-                self.config.email_attr.as_str(),
-                self.config.display_name_attr.as_str(),
-                self.config.groups_attr.as_str(),
-            ];
-
-            let (results, _) = ldap
-                .search(&self.config.base_dn, Scope::Subtree, &search_filter, attrs)
-                .await
-                .map_err(|e| AppError::Internal(format!("LDAP search failed: {e}")))?
-                .success()
-                .map_err(|e| AppError::Internal(format!("LDAP search failed: {e}")))?;
-
-            ldap.unbind().await.ok();
-
-            if let Some(entry) = results.into_iter().next() {
-                let entry = SearchEntry::construct(entry);
-
-                let email = entry
-                    .attrs
-                    .get(&self.config.email_attr)
-                    .and_then(|v| v.first())
-                    .cloned()
-                    .unwrap_or_else(|| format!("{}@unknown", username));
-
-                let display_name = entry
-                    .attrs
-                    .get(&self.config.display_name_attr)
-                    .and_then(|v| v.first())
-                    .cloned();
-
-                let groups = entry
-                    .attrs
-                    .get(&self.config.groups_attr)
-                    .cloned()
-                    .unwrap_or_default();
-
-                let resolved_username = entry
-                    .attrs
-                    .get(&self.config.username_attr)
-                    .and_then(|v| v.first())
-                    .cloned()
-                    .unwrap_or_else(|| username.to_string());
-
-                return Ok(LdapUserInfo {
-                    dn: entry.dn,
-                    username: resolved_username,
-                    email,
-                    display_name,
-                    groups,
-                });
+        // If we have bind credentials, reuse the shared search logic.
+        // Fall through to the basic-info fallback on any error, since the
+        // caller expects best-effort results.
+        if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
+            match self.search_user_entry(username).await {
+                Ok(info) => return Ok(info),
+                Err(e) => {
+                    tracing::warn!(
+                        username = %username,
+                        error = %e,
+                        "LDAP user search failed, falling back to basic info"
+                    );
+                }
             }
         }
 
@@ -714,6 +651,9 @@ impl LdapService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mutex to serialize tests that read/write shared environment variables.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn make_test_config() -> Config {
         Config {
@@ -1170,5 +1110,300 @@ mod tests {
         let result = svc.build_conn_settings();
         assert!(result.is_err());
         std::fs::remove_file(&tmp).ok();
+    }
+
+    // --- is_configured() tests ---
+
+    #[tokio::test]
+    async fn test_is_configured_true() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        assert!(svc.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_is_configured_empty_url() {
+        let mut config = make_test_ldap_config();
+        config.url = String::new();
+        let svc = make_test_service(config);
+        assert!(!svc.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_is_configured_empty_base_dn() {
+        let mut config = make_test_ldap_config();
+        config.base_dn = String::new();
+        let svc = make_test_service(config);
+        assert!(!svc.is_configured());
+    }
+
+    #[tokio::test]
+    async fn test_is_configured_both_empty() {
+        let mut config = make_test_ldap_config();
+        config.url = String::new();
+        config.base_dn = String::new();
+        let svc = make_test_service(config);
+        assert!(!svc.is_configured());
+    }
+
+    // --- server_url() tests ---
+
+    #[tokio::test]
+    async fn test_server_url_returns_expected_value() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        assert_eq!(svc.server_url(), "ldap://ldap.example.com:389");
+    }
+
+    // --- extract_groups() tests ---
+
+    #[tokio::test]
+    async fn test_extract_groups_with_groups() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let user = LdapUserInfo {
+            dn: "uid=alice,dc=example,dc=com".to_string(),
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+            display_name: Some("Alice".to_string()),
+            groups: vec![
+                "cn=developers,ou=groups,dc=example,dc=com".to_string(),
+                "cn=admins,ou=groups,dc=example,dc=com".to_string(),
+            ],
+        };
+        let groups = svc.extract_groups(&user);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0], "cn=developers,ou=groups,dc=example,dc=com");
+        assert_eq!(groups[1], "cn=admins,ou=groups,dc=example,dc=com");
+    }
+
+    #[tokio::test]
+    async fn test_extract_groups_empty() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let user = LdapUserInfo {
+            dn: "uid=bob,dc=example,dc=com".to_string(),
+            username: "bob".to_string(),
+            email: "bob@example.com".to_string(),
+            display_name: None,
+            groups: vec![],
+        };
+        let groups = svc.extract_groups(&user);
+        assert!(groups.is_empty());
+    }
+
+    // --- map_groups_to_roles() tests ---
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_default_user_role() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::remove_var("LDAP_GROUP_ROLE_MAP");
+
+        let mut config = make_test_ldap_config();
+        config.admin_group_dn = None;
+        let svc = make_test_service(config);
+        let roles = svc.map_groups_to_roles(&[]);
+        assert_eq!(roles, vec!["user"]);
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_admin_group_match() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::remove_var("LDAP_GROUP_ROLE_MAP");
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec!["cn=admins,ou=groups,dc=example,dc=com".to_string()];
+        let roles = svc.map_groups_to_roles(&groups);
+        assert!(roles.contains(&"admin".to_string()));
+        assert!(roles.contains(&"user".to_string()));
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_admin_case_insensitive() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::remove_var("LDAP_GROUP_ROLE_MAP");
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec!["CN=Admins,OU=Groups,DC=Example,DC=Com".to_string()];
+        let roles = svc.map_groups_to_roles(&groups);
+        assert!(roles.contains(&"admin".to_string()));
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_with_env_mapping() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::set_var(
+            "LDAP_GROUP_ROLE_MAP",
+            "cn=developers,ou=groups,dc=example,dc=com:developer;cn=qa,ou=groups,dc=example,dc=com:tester",
+        );
+
+        let mut config = make_test_ldap_config();
+        config.admin_group_dn = None;
+        let svc = make_test_service(config);
+        let groups = vec![
+            "cn=developers,ou=groups,dc=example,dc=com".to_string(),
+            "cn=qa,ou=groups,dc=example,dc=com".to_string(),
+        ];
+        let roles = svc.map_groups_to_roles(&groups);
+        assert!(roles.contains(&"user".to_string()));
+        assert!(roles.contains(&"developer".to_string()));
+        assert!(roles.contains(&"tester".to_string()));
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_dedup() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::set_var(
+            "LDAP_GROUP_ROLE_MAP",
+            "cn=devs,dc=example:developer;cn=engineers,dc=example:developer",
+        );
+
+        let mut config = make_test_ldap_config();
+        config.admin_group_dn = None;
+        let svc = make_test_service(config);
+        let groups = vec![
+            "cn=devs,dc=example".to_string(),
+            "cn=engineers,dc=example".to_string(),
+        ];
+        let roles = svc.map_groups_to_roles(&groups);
+        let developer_count = roles.iter().filter(|r| *r == "developer").count();
+        assert_eq!(developer_count, 1, "developer role should appear only once");
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_map_groups_to_roles_sorted() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_GROUP_ROLE_MAP").ok();
+        std::env::set_var(
+            "LDAP_GROUP_ROLE_MAP",
+            "cn=devs,dc=example:zebra;cn=ops,dc=example:alpha",
+        );
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec![
+            "cn=devs,dc=example".to_string(),
+            "cn=ops,dc=example".to_string(),
+            "cn=admins,ou=groups,dc=example,dc=com".to_string(),
+        ];
+        let roles = svc.map_groups_to_roles(&groups);
+        let mut sorted = roles.clone();
+        sorted.sort();
+        assert_eq!(roles, sorted, "roles should be sorted alphabetically");
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_GROUP_ROLE_MAP", val),
+            None => std::env::remove_var("LDAP_GROUP_ROLE_MAP"),
+        }
+    }
+
+    // --- build_user_dn() tests ---
+
+    #[tokio::test]
+    async fn test_build_user_dn_default_pattern() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_USER_DN_PATTERN").ok();
+        std::env::remove_var("LDAP_USER_DN_PATTERN");
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let dn = svc.build_user_dn("jdoe");
+        assert_eq!(dn, "uid=jdoe,dc=example,dc=com");
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_USER_DN_PATTERN", val),
+            None => std::env::remove_var("LDAP_USER_DN_PATTERN"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_user_dn_custom_pattern() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let saved = std::env::var("LDAP_USER_DN_PATTERN").ok();
+        std::env::set_var("LDAP_USER_DN_PATTERN", "cn={},ou=people,dc=corp,dc=com");
+
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let dn = svc.build_user_dn("alice");
+        assert_eq!(dn, "cn=alice,ou=people,dc=corp,dc=com");
+
+        match saved {
+            Some(val) => std::env::set_var("LDAP_USER_DN_PATTERN", val),
+            None => std::env::remove_var("LDAP_USER_DN_PATTERN"),
+        }
+    }
+
+    // --- is_admin_from_groups() tests ---
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_matching() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec!["cn=admins,ou=groups,dc=example,dc=com".to_string()];
+        assert!(svc.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_case_insensitive() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec!["CN=ADMINS,OU=GROUPS,DC=EXAMPLE,DC=COM".to_string()];
+        assert!(svc.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_no_match() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        let groups = vec!["cn=developers,ou=groups,dc=example,dc=com".to_string()];
+        assert!(!svc.is_admin_from_groups(&groups));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_empty_groups() {
+        let config = make_test_ldap_config();
+        let svc = make_test_service(config);
+        assert!(!svc.is_admin_from_groups(&[]));
+    }
+
+    #[tokio::test]
+    async fn test_is_admin_from_groups_no_admin_group_configured() {
+        let mut config = make_test_ldap_config();
+        config.admin_group_dn = None;
+        let svc = make_test_service(config);
+        let groups = vec!["cn=admins,ou=groups,dc=example,dc=com".to_string()];
+        assert!(!svc.is_admin_from_groups(&groups));
     }
 }
