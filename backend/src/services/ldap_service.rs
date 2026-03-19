@@ -230,7 +230,8 @@ impl LdapService {
 
         let user_info = if self.config.bind_dn.is_some() && self.config.bind_password.is_some() {
             let user_info = self.search_user_entry(&sanitized_username).await?;
-            self.validate_ldap_credentials(&user_info.dn, password).await?;
+            self.validate_ldap_credentials(&user_info.dn, password)
+                .await?;
             user_info
         } else {
             // Fallback mode for deployments that intentionally rely on direct
@@ -386,6 +387,7 @@ impl LdapService {
     /// It should not be used as the primary authentication path when a service
     /// account is configured, because many LDAP/AD environments require the
     /// user's real DN (resolved via search) rather than a constructed value.
+    #[allow(dead_code)]
     fn build_user_dn(&self, username: &str) -> String {
         let pattern = std::env::var("LDAP_USER_DN_PATTERN").unwrap_or_else(|_| {
             format!("{}={{}},{}", self.config.username_attr, self.config.base_dn)
