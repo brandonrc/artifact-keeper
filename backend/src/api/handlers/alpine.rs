@@ -9,7 +9,7 @@
 //!   POST /alpine/{repo_key}/upload                                        - Upload package (alternative)
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -52,7 +52,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/:branch/keys/artifact-keeper.rsa.pub",
             get(public_key),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@
 //!   GET  /cocoapods/{repo_key}/all_specs                                 - List all specs
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,6 @@ pub fn router() -> Router<SharedState> {
         )
         // Download pod archive
         .route("/:repo_key/pods/*pod_file", get(download_pod))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 //!   GET  /swift/:repo_key/identifiers?url={package_url} - Lookup package identifiers
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/:scope/:name/*version_path",
             get(version_path_handler).put(publish_release_from_wildcard),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

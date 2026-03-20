@@ -13,7 +13,7 @@
 use std::io::Write as IoWrite;
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -56,7 +56,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/bin/macosx/contrib/:rversion/PACKAGES",
             get(binary_index),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

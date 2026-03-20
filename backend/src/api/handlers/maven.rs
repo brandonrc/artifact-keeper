@@ -8,7 +8,7 @@
 //!   PUT  /maven/{repo_key}/*path — Upload artifact (mvn deploy)
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -31,9 +31,7 @@ use crate::models::repository::RepositoryType;
 // ---------------------------------------------------------------------------
 
 pub fn router() -> Router<SharedState> {
-    Router::new()
-        .route("/:repo_key/*path", get(download).put(upload))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
+    Router::new().route("/:repo_key/*path", get(download).put(upload))
 }
 
 // ---------------------------------------------------------------------------

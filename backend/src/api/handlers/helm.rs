@@ -10,7 +10,7 @@
 //!   DELETE /helm/{repo_key}/api/charts/{name}/{version}    - Delete chart
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -42,7 +42,6 @@ pub fn router() -> Router<SharedState> {
         .route("/:repo_key/api/charts", post(upload_chart))
         // ChartMuseum-compatible delete
         .route("/:repo_key/api/charts/:name/:version", delete(delete_chart))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

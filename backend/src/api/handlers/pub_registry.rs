@@ -12,7 +12,7 @@
 //!   GET  /pub/{repo_key}/api/packages/versions/newUploadFinish     - Finalize upload
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -54,7 +54,6 @@ pub fn router() -> Router<SharedState> {
         )
         // Download archive - wildcard to capture name/versions/version.tar.gz
         .route("/:repo_key/packages/*archive_path", get(download_archive))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{
     ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, ETAG,
     IF_NONE_MATCH,
@@ -797,7 +797,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/:subdir/:filename/attestation",
             get(get_attestation).put(put_attestation),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 /// Router for token-authenticated conda endpoints.
@@ -862,7 +861,6 @@ pub fn token_router() -> Router<SharedState> {
             "/:token/:repo_key/:subdir/:filename/attestation",
             get(get_attestation_with_token).put(put_attestation_with_token),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
         // Token URLs embed secrets in the path. Prevent leakage via Referer
         // headers and ensure proxies don't cache token-authenticated responses.
         .layer(axum::middleware::map_response(

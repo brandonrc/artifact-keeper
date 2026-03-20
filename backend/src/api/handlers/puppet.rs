@@ -10,7 +10,7 @@
 //!   POST /puppet/{repo_key}/v3/releases                                - Publish module
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,6 @@ pub fn router() -> Router<SharedState> {
         )
         .route("/:repo_key/v3/files/*file_path", get(download_module))
         .route("/:repo_key/v3/releases", post(publish_module))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

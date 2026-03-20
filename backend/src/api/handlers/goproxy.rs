@@ -12,7 +12,7 @@
 //!   PUT  /go/{repo_key}/*module/@v/{version}.mod     - Upload go.mod
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -34,9 +34,7 @@ use crate::models::repository::RepositoryType;
 // ---------------------------------------------------------------------------
 
 pub fn router() -> Router<SharedState> {
-    Router::new()
-        .route("/:repo_key/*path", get(handle_get).put(handle_put))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
+    Router::new().route("/:repo_key/*path", get(handle_get).put(handle_put))
 }
 
 // ---------------------------------------------------------------------------

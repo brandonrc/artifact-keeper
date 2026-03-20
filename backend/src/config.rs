@@ -113,6 +113,10 @@ pub struct Config {
     /// How often (in seconds) the lifecycle scheduler checks for due policies.
     pub lifecycle_check_interval_secs: u64,
 
+    /// Maximum upload size in bytes for artifact uploads.
+    /// Defaults to 10 GB (10737418240 bytes). Set to 0 to disable the limit.
+    pub max_upload_size_bytes: u64,
+
     /// When true, the built-in admin account can log in with local credentials
     /// even when SSO providers are configured. Intended as a break-glass
     /// recovery mechanism when SSO is misconfigured.
@@ -171,6 +175,7 @@ impl Config {
                 .unwrap_or_else(|_| "artifact-keeper".into()),
             gc_schedule: env::var("GC_SCHEDULE").unwrap_or_else(|_| "0 0 * * * *".into()),
             lifecycle_check_interval_secs: env_parse("LIFECYCLE_CHECK_INTERVAL_SECS", 60),
+            max_upload_size_bytes: env_parse("MAX_UPLOAD_SIZE", 10_737_418_240_u64),
             allow_local_admin_login: matches!(
                 env::var("ALLOW_LOCAL_ADMIN_LOGIN").as_deref(),
                 Ok("true" | "1")
@@ -335,6 +340,7 @@ mod tests {
         assert_eq!(config.scan_workspace_path, "/scan-workspace");
         assert_eq!(config.peer_instance_name, "artifact-keeper-local");
         assert_eq!(config.peer_public_endpoint, "http://localhost:8080");
+        assert_eq!(config.max_upload_size_bytes, 10_737_418_240);
 
         // Restore
         if let Some(v) = saved_db {
@@ -668,6 +674,100 @@ mod tests {
             env::set_var("S3_ENDPOINT", v);
         } else {
             env::remove_var("S3_ENDPOINT");
+        }
+    }
+
+    #[test]
+    fn test_config_max_upload_size_default() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_max = env::var("MAX_UPLOAD_SIZE").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::remove_var("MAX_UPLOAD_SIZE");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.max_upload_size_bytes, 10_737_418_240); // 10 GB
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_max {
+            env::set_var("MAX_UPLOAD_SIZE", v);
+        }
+    }
+
+    #[test]
+    fn test_config_max_upload_size_custom() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_max = env::var("MAX_UPLOAD_SIZE").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::set_var("MAX_UPLOAD_SIZE", "1073741824"); // 1 GB
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.max_upload_size_bytes, 1_073_741_824);
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_max {
+            env::set_var("MAX_UPLOAD_SIZE", v);
+        } else {
+            env::remove_var("MAX_UPLOAD_SIZE");
+        }
+    }
+
+    #[test]
+    fn test_config_max_upload_size_zero_disables() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let saved_db = env::var("DATABASE_URL").ok();
+        let saved_jwt = env::var("JWT_SECRET").ok();
+        let saved_max = env::var("MAX_UPLOAD_SIZE").ok();
+
+        env::set_var("DATABASE_URL", "postgresql://localhost/testdb");
+        env::set_var("JWT_SECRET", "secret");
+        env::set_var("MAX_UPLOAD_SIZE", "0");
+
+        let config = Config::from_env().unwrap();
+        assert_eq!(config.max_upload_size_bytes, 0);
+
+        // Restore
+        if let Some(v) = saved_db {
+            env::set_var("DATABASE_URL", v);
+        } else {
+            env::remove_var("DATABASE_URL");
+        }
+        if let Some(v) = saved_jwt {
+            env::set_var("JWT_SECRET", v);
+        } else {
+            env::remove_var("JWT_SECRET");
+        }
+        if let Some(v) = saved_max {
+            env::set_var("MAX_UPLOAD_SIZE", v);
+        } else {
+            env::remove_var("MAX_UPLOAD_SIZE");
         }
     }
 }

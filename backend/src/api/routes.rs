@@ -36,6 +36,11 @@ pub fn create_router(state: SharedState) -> Router {
 
     // All native-protocol format handlers share the repo visibility
     // middleware: anonymous users can only access public repositories.
+    //
+    // The upload body limit is read from config (MAX_UPLOAD_SIZE env var,
+    // default 10 GB). A value of 0 disables the limit entirely.
+    let upload_limit = state.config.max_upload_size_bytes;
+
     let format_routes = Router::new()
         .nest("/npm", handlers::npm::router())
         .nest("/maven", handlers::maven::router())
@@ -73,6 +78,15 @@ pub fn create_router(state: SharedState) -> Router {
             vis_state,
             repo_visibility_middleware,
         ));
+
+    // Apply the configurable upload body limit to all format handler routes.
+    // Handlers that need a different limit (e.g. OCI, incus, Git LFS,
+    // protobuf) keep their own per-router layer which takes precedence.
+    let format_routes = if upload_limit == 0 {
+        format_routes.layer(DefaultBodyLimit::disable())
+    } else {
+        format_routes.layer(DefaultBodyLimit::max(upload_limit as usize))
+    };
 
     let mut router = Router::new()
         // Health endpoints (no auth required)
@@ -121,6 +135,8 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         state.db.clone(),
         Arc::new(state.config.clone()),
     ));
+
+    let upload_limit = state.config.max_upload_size_bytes;
 
     // Rate limiters, configurable via environment variables:
     //   RATE_LIMIT_AUTH_PER_MIN  - max auth requests per window (default: 120)
@@ -174,10 +190,16 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
         // (some endpoints require auth, others are optional - handlers will check)
         .nest(
             "/repositories",
-            handlers::repositories::router().layer(middleware::from_fn_with_state(
-                auth_service.clone(),
-                optional_auth_middleware,
-            )),
+            handlers::repositories::router()
+                .layer(if upload_limit == 0 {
+                    DefaultBodyLimit::disable()
+                } else {
+                    DefaultBodyLimit::max(upload_limit as usize)
+                })
+                .layer(middleware::from_fn_with_state(
+                    auth_service.clone(),
+                    optional_auth_middleware,
+                )),
         )
         // Artifact routes (standalone by ID) with optional auth
         .nest(

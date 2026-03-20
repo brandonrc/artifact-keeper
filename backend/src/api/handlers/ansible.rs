@@ -11,7 +11,7 @@
 //!   POST /ansible/{repo_key}/api/v3/artifacts/collections/                             - Upload collection
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -52,7 +52,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/api/v3/artifacts/collections/",
             post(upload_collection),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

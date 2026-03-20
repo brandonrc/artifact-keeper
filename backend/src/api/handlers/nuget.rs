@@ -15,7 +15,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -60,7 +60,6 @@ pub fn router() -> Router<SharedState> {
         )
         // Push package (dotnet nuget push)
         .route("/:repo_key/api/v2/package", put(push_package))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

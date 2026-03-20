@@ -21,7 +21,7 @@
 //!   PUT  /terraform/{repo_key}/v1/providers/{namespace}/{type}/{version}/{os}/{arch}
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -86,7 +86,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/v1/providers/:namespace/:type_name/:version/:os/:arch",
             put(upload_provider),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

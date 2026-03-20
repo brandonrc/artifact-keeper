@@ -12,7 +12,7 @@
 //!   GET  /gems/{repo_key}/api/v1/dependencies?gems={names}  - Dependency info
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -54,7 +54,6 @@ pub fn router() -> Router<SharedState> {
         .route("/:repo_key/latest_specs.4.8.gz", get(latest_specs_index))
         // Download gem - use a wildcard to capture name-version.gem
         .route("/:repo_key/gems/*gem_file", get(download_gem))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

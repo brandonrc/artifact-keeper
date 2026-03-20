@@ -11,7 +11,7 @@
 //!   PUT  /npm/{repo_key}/{@scope}/{package}           - Publish scoped package
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -49,7 +49,6 @@ pub fn router() -> Router<SharedState> {
         .route("/:repo_key/:package/-/:filename", get(download_tarball))
         // Unscoped package metadata / publish: GET/PUT /npm/{repo_key}/{package}
         .route("/:repo_key/:package", get(get_metadata).put(publish))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 use crate::api::middleware::auth::require_auth_with_bearer_fallback;

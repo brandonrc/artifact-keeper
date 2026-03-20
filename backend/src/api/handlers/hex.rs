@@ -10,7 +10,7 @@
 //!   GET  /hex/{repo_key}/versions                      - List all packages with versions
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,6 @@ pub fn router() -> Router<SharedState> {
         .route("/:repo_key/versions", get(list_versions))
         // Download tarball - use a wildcard to capture name-version.tar
         .route("/:repo_key/tarballs/*tarball_file", get(download_tarball))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@
 //!   GET  /huggingface/{repo_key}/api/models/{model_id}/tree/{revision}        - List files
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -52,7 +52,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/:model_id/resolve/:revision/*filename",
             get(download_file),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

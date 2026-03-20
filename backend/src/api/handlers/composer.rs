@@ -13,7 +13,7 @@
 //!   POST /composer/{repo_key}/api/packages                            - Upload/register package
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -52,7 +52,6 @@ pub fn router() -> Router<SharedState> {
         .route("/:repo_key/search.json", get(search))
         // Upload/register package (PUT and POST)
         .route("/:repo_key/api/packages", put(upload).post(upload))
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------

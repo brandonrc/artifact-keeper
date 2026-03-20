@@ -91,7 +91,6 @@ async fn upsert_index_upstream_url(
 
 /// Create repository routes
 pub fn router() -> Router<SharedState> {
-    use axum::extract::DefaultBodyLimit;
     use axum::routing::{delete, post, put};
 
     Router::new()
@@ -133,8 +132,6 @@ pub fn router() -> Router<SharedState> {
         .merge(super::security::repo_security_router())
         // Label routes nested under repository
         .merge(super::repository_labels::repo_labels_router())
-        // Allow up to 512MB uploads (matches format-specific handlers)
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]

@@ -11,7 +11,7 @@
 //!   POST /pypi/{repo_key}/                            - Twine upload
 
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -48,7 +48,6 @@ pub fn router() -> Router<SharedState> {
             "/:repo_key/simple/:project/:filename",
             get(download_or_metadata),
         )
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024)) // 512 MB
 }
 
 // ---------------------------------------------------------------------------
