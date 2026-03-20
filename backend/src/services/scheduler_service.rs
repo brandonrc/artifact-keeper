@@ -468,7 +468,7 @@ async fn run_curation_sync_cycle(
     }
 
     let curation = CurationService::new(db.clone());
-    let client = reqwest::Client::builder()
+    let client = crate::services::http_client::base_client_builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
 

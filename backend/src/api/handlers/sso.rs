@@ -94,7 +94,9 @@ pub async fn oidc_login(
         row.issuer_url.trim_end_matches('/')
     );
 
-    let http_client = reqwest::Client::new();
+    let http_client = crate::services::http_client::base_client_builder()
+        .build()
+        .unwrap_or_default();
     let discovery: serde_json::Value = http_client
         .get(&discovery_url)
         .send()
@@ -175,7 +177,9 @@ pub async fn oidc_callback(
         row.issuer_url.trim_end_matches('/')
     );
 
-    let http_client = reqwest::Client::new();
+    let http_client = crate::services::http_client::base_client_builder()
+        .build()
+        .unwrap_or_default();
     let discovery: serde_json::Value = http_client
         .get(&discovery_url)
         .send()

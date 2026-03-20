@@ -15,7 +15,42 @@ use reqwest::ClientBuilder;
 /// certificates. This is required for HTTPS connections to internal services
 /// (Artifactory, Nexus, remote repositories) that use certificates signed by
 /// a private CA.
+/// Log detected proxy environment variables once at startup so operators can
+/// confirm that `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` are (or are not)
+/// reaching the backend process.
+fn log_proxy_env() {
+    use std::sync::Once;
+    static LOG_ONCE: Once = Once::new();
+    LOG_ONCE.call_once(|| {
+        let https = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .ok();
+        let http = std::env::var("HTTP_PROXY")
+            .or_else(|_| std::env::var("http_proxy"))
+            .ok();
+        let all = std::env::var("ALL_PROXY")
+            .or_else(|_| std::env::var("all_proxy"))
+            .ok();
+        let no = std::env::var("NO_PROXY")
+            .or_else(|_| std::env::var("no_proxy"))
+            .ok();
+        if https.is_some() || http.is_some() || all.is_some() {
+            tracing::info!(
+                https_proxy = ?https,
+                http_proxy = ?http,
+                all_proxy = ?all,
+                no_proxy = ?no,
+                "HTTP proxy configuration detected"
+            );
+        } else {
+            tracing::debug!("No HTTP proxy environment variables set");
+        }
+    });
+}
+
 pub fn base_client_builder() -> ClientBuilder {
+    log_proxy_env();
+
     let mut builder = reqwest::Client::builder();
 
     if let Ok(ca_path) = std::env::var("CUSTOM_CA_CERT_PATH") {

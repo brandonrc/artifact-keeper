@@ -422,7 +422,9 @@ pub async fn test_webhook(
     validate_webhook_url(&webhook.url)?;
 
     // Send webhook
-    let client = reqwest::Client::new();
+    let client = crate::services::http_client::base_client_builder()
+        .build()
+        .unwrap_or_default();
     let mut request = client
         .post(&webhook.url)
         .header("Content-Type", "application/json")
@@ -623,7 +625,9 @@ pub async fn redeliver(
     validate_webhook_url(&webhook.url)?;
 
     // Send webhook
-    let client = reqwest::Client::new();
+    let client = crate::services::http_client::base_client_builder()
+        .build()
+        .unwrap_or_default();
     let mut request = client
         .post(&webhook.url)
         .header("Content-Type", "application/json")
