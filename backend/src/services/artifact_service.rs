@@ -230,6 +230,7 @@ impl ArtifactService {
                 content_type = EXCLUDED.content_type,
                 storage_key = EXCLUDED.storage_key,
                 uploaded_by = EXCLUDED.uploaded_by,
+                is_deleted = false,
                 updated_at = NOW()
             RETURNING
                 id, repository_id, path, name, version, size_bytes,
