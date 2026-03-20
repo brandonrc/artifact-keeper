@@ -20,7 +20,9 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::api::handlers::proxy_helpers;
 use crate::api::SharedState;
+use crate::models::repository::RepositoryType;
 use crate::services::auth_service::AuthService;
 
 // ---------------------------------------------------------------------------
@@ -162,12 +164,19 @@ fn compute_sha256(data: &[u8]) -> String {
 // Repository resolution
 // ---------------------------------------------------------------------------
 
+/// Resolved OCI repository descriptor.
+struct OciRepoInfo {
+    id: Uuid,
+    key: String,
+    location: crate::storage::StorageLocation,
+    repo_type: String,
+    upstream_url: Option<String>,
+    image: String,
+}
+
 /// Resolve the first path segment as a repository key and the rest as the
 /// image name within the repository.
-async fn resolve_repo(
-    db: &PgPool,
-    image_name: &str,
-) -> Result<(Uuid, crate::storage::StorageLocation, String), Response> {
+async fn resolve_repo(db: &PgPool, image_name: &str) -> Result<OciRepoInfo, Response> {
     use sqlx::Row;
     // Split: "test/python" → repo_key="test", image="python"
     // Or:    "myrepo/org/image" → repo_key="myrepo", image="org/image"
@@ -176,36 +185,41 @@ async fn resolve_repo(
         None => (image_name, image_name),
     };
 
-    let repo =
-        sqlx::query("SELECT id, storage_backend, storage_path FROM repositories WHERE key = $1")
-            .bind(repo_key)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                oci_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    &e.to_string(),
-                )
-            })?
-            .ok_or_else(|| {
-                oci_error(
-                    StatusCode::NOT_FOUND,
-                    "NAME_UNKNOWN",
-                    &format!("repository not found: {}", repo_key),
-                )
-            })?;
+    let repo = sqlx::query(
+        "SELECT id, key, storage_backend, storage_path, repo_type::text as repo_type, \
+         upstream_url FROM repositories WHERE key = $1",
+    )
+    .bind(repo_key)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        oci_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            &e.to_string(),
+        )
+    })?
+    .ok_or_else(|| {
+        oci_error(
+            StatusCode::NOT_FOUND,
+            "NAME_UNKNOWN",
+            &format!("repository not found: {}", repo_key),
+        )
+    })?;
 
     let location = crate::storage::StorageLocation {
         backend: repo.try_get("storage_backend").unwrap_or_default(),
         path: repo.try_get("storage_path").unwrap_or_default(),
     };
 
-    Ok((
-        repo.try_get("id").unwrap_or_default(),
+    Ok(OciRepoInfo {
+        id: repo.try_get("id").unwrap_or_default(),
+        key: repo.try_get("key").unwrap_or_default(),
         location,
-        image.to_string(),
-    ))
+        repo_type: repo.try_get("repo_type").unwrap_or_default(),
+        upstream_url: repo.try_get("upstream_url").ok(),
+        image: image.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +424,7 @@ async fn handle_head_blob(
     };
     let _ = claims;
 
-    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -418,7 +432,7 @@ async fn handle_head_blob(
     // Check oci_blobs table
     let blob = sqlx::query!(
         "SELECT size_bytes, storage_key FROM oci_blobs WHERE repository_id = $1 AND digest = $2",
-        repo_id,
+        repo.id,
         digest
     )
     .fetch_optional(&state.db)
@@ -426,7 +440,7 @@ async fn handle_head_blob(
 
     match blob {
         Ok(Some(b)) => {
-            let storage = match state.storage_for_repo(&location) {
+            let storage = match state.storage_for_repo(&repo.location) {
                 Ok(s) => s,
                 Err(e) => {
                     return oci_error(
@@ -452,6 +466,27 @@ async fn handle_head_blob(
         }
     }
 
+    // For remote repos, try fetching blob from upstream
+    if repo.repo_type == RepositoryType::Remote {
+        if let (Some(ref upstream_url), Some(ref proxy)) =
+            (&repo.upstream_url, &state.proxy_service)
+        {
+            let upstream_path = format!("v2/{}/blobs/{}", repo.image, digest);
+            if let Ok((content, _ct)) =
+                proxy_helpers::proxy_fetch(proxy, repo.id, &repo.key, upstream_url, &upstream_path)
+                    .await
+            {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Docker-Content-Digest", digest)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .header(CONTENT_TYPE, "application/octet-stream")
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        }
+    }
+
     oci_error(StatusCode::NOT_FOUND, "BLOB_UNKNOWN", "blob not found")
 }
 
@@ -468,14 +503,14 @@ async fn handle_get_blob(
     };
     let _ = claims;
 
-    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
     let blob = sqlx::query!(
         "SELECT size_bytes, storage_key FROM oci_blobs WHERE repository_id = $1 AND digest = $2",
-        repo_id,
+        repo.id,
         digest
     )
     .fetch_optional(&state.db)
@@ -483,7 +518,7 @@ async fn handle_get_blob(
 
     match blob {
         Ok(Some(b)) => {
-            let storage = match state.storage_for_repo(&location) {
+            let storage = match state.storage_for_repo(&repo.location) {
                 Ok(s) => s,
                 Err(e) => {
                     return oci_error(
@@ -514,6 +549,28 @@ async fn handle_get_blob(
         }
     }
 
+    // For remote repos, try fetching blob from upstream
+    if repo.repo_type == RepositoryType::Remote {
+        if let (Some(ref upstream_url), Some(ref proxy)) =
+            (&repo.upstream_url, &state.proxy_service)
+        {
+            let upstream_path = format!("v2/{}/blobs/{}", repo.image, digest);
+            if let Ok((content, content_type)) =
+                proxy_helpers::proxy_fetch(proxy, repo.id, &repo.key, upstream_url, &upstream_path)
+                    .await
+            {
+                let ct = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Docker-Content-Digest", digest)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .header(CONTENT_TYPE, ct)
+                    .body(Body::from(content))
+                    .unwrap();
+            }
+        }
+    }
+
     oci_error(StatusCode::NOT_FOUND, "BLOB_UNKNOWN", "blob not found")
 }
 
@@ -530,10 +587,12 @@ async fn handle_start_upload(
         Err(_) => return unauthorized_challenge(&host),
     };
 
-    let (repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
+    let repo_id = repo.id;
+    let location = repo.location;
 
     // Monolithic upload: if digest is provided and body is non-empty
     if let Some(digest) = query_digest {
@@ -680,12 +739,12 @@ async fn handle_patch_upload(
         Err(e) => return oci_error(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", &e.to_string()),
     };
 
-    let (_repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let storage = match state.storage_for_repo(&location) {
+    let storage = match state.storage_for_repo(&repo.location) {
         Ok(s) => s,
         Err(e) => {
             return oci_error(
@@ -798,12 +857,12 @@ async fn handle_complete_upload(
         }
     };
 
-    let (_repo_id, location, _image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let storage = match state.storage_for_repo(&location) {
+    let storage = match state.storage_for_repo(&repo.location) {
         Ok(s) => s,
         Err(e) => {
             return oci_error(
@@ -892,64 +951,87 @@ async fn handle_head_manifest(
     };
     let _ = claims;
 
-    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    // Reference can be a tag or a digest
-    let (manifest_digest, content_type) = if reference.starts_with("sha256:") {
-        // Look up by digest directly
-        match sqlx::query!(
+    // Reference can be a tag or a digest. Look up locally first.
+    let local_result: Option<(String, String)> = if reference.starts_with("sha256:") {
+        sqlx::query!(
             "SELECT manifest_digest, manifest_content_type FROM oci_tags WHERE repository_id = $1 AND manifest_digest = $2 LIMIT 1",
-            repo_id, reference
+            repo.id, reference
         )
         .fetch_optional(&state.db)
         .await
-        {
-            Ok(Some(t)) => (t.manifest_digest, t.manifest_content_type),
-            _ => return oci_error(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", "manifest not found"),
-        }
+        .ok()
+        .flatten()
+        .map(|t| (t.manifest_digest, t.manifest_content_type))
     } else {
-        // Look up by tag
-        match sqlx::query!(
+        sqlx::query!(
             "SELECT manifest_digest, manifest_content_type FROM oci_tags WHERE repository_id = $1 AND name = $2 AND tag = $3",
-            repo_id, image, reference
+            repo.id, repo.image, reference
         )
         .fetch_optional(&state.db)
         .await
-        {
-            Ok(Some(t)) => (t.manifest_digest, t.manifest_content_type),
-            _ => return oci_error(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", "manifest not found"),
-        }
+        .ok()
+        .flatten()
+        .map(|t| (t.manifest_digest, t.manifest_content_type))
     };
 
-    let storage = match state.storage_for_repo(&location) {
-        Ok(s) => s,
-        Err(e) => {
-            return oci_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                &e.to_string(),
-            )
-        }
-    };
-    let manifest_key = manifest_storage_key(&manifest_digest);
+    if let Some((manifest_digest, content_type)) = local_result {
+        let storage = match state.storage_for_repo(&repo.location) {
+            Ok(s) => s,
+            Err(e) => {
+                return oci_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                )
+            }
+        };
+        let manifest_key = manifest_storage_key(&manifest_digest);
 
-    match storage.get(&manifest_key).await {
-        Ok(data) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Docker-Content-Digest", &manifest_digest)
-            .header(CONTENT_LENGTH, data.len().to_string())
-            .header(CONTENT_TYPE, &content_type)
-            .body(Body::empty())
-            .unwrap(),
-        Err(_) => oci_error(
-            StatusCode::NOT_FOUND,
-            "MANIFEST_UNKNOWN",
-            "manifest not found",
-        ),
+        if let Ok(data) = storage.get(&manifest_key).await {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Docker-Content-Digest", &manifest_digest)
+                .header(CONTENT_LENGTH, data.len().to_string())
+                .header(CONTENT_TYPE, &content_type)
+                .body(Body::empty())
+                .unwrap();
+        }
     }
+
+    // For remote repos, try fetching manifest from upstream
+    if repo.repo_type == RepositoryType::Remote {
+        if let (Some(ref upstream_url), Some(ref proxy)) =
+            (&repo.upstream_url, &state.proxy_service)
+        {
+            let upstream_path = format!("v2/{}/manifests/{}", repo.image, reference);
+            if let Ok((content, content_type)) =
+                proxy_helpers::proxy_fetch(proxy, repo.id, &repo.key, upstream_url, &upstream_path)
+                    .await
+            {
+                let digest = compute_sha256(&content);
+                let ct = content_type
+                    .unwrap_or_else(|| "application/vnd.oci.image.manifest.v1+json".to_string());
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Docker-Content-Digest", digest)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .header(CONTENT_TYPE, ct)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        }
+    }
+
+    oci_error(
+        StatusCode::NOT_FOUND,
+        "MANIFEST_UNKNOWN",
+        "manifest not found",
+    )
 }
 
 async fn handle_get_manifest(
@@ -965,61 +1047,86 @@ async fn handle_get_manifest(
     };
     let _ = claims;
 
-    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let (manifest_digest, content_type) = if reference.starts_with("sha256:") {
-        match sqlx::query!(
+    let local_result: Option<(String, String)> = if reference.starts_with("sha256:") {
+        sqlx::query!(
             "SELECT manifest_digest, manifest_content_type FROM oci_tags WHERE repository_id = $1 AND manifest_digest = $2 LIMIT 1",
-            repo_id, reference
+            repo.id, reference
         )
         .fetch_optional(&state.db)
         .await
-        {
-            Ok(Some(t)) => (t.manifest_digest, t.manifest_content_type),
-            _ => return oci_error(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", "manifest not found"),
-        }
+        .ok()
+        .flatten()
+        .map(|t| (t.manifest_digest, t.manifest_content_type))
     } else {
-        match sqlx::query!(
+        sqlx::query!(
             "SELECT manifest_digest, manifest_content_type FROM oci_tags WHERE repository_id = $1 AND name = $2 AND tag = $3",
-            repo_id, image, reference
+            repo.id, repo.image, reference
         )
         .fetch_optional(&state.db)
         .await
-        {
-            Ok(Some(t)) => (t.manifest_digest, t.manifest_content_type),
-            _ => return oci_error(StatusCode::NOT_FOUND, "MANIFEST_UNKNOWN", "manifest not found"),
-        }
+        .ok()
+        .flatten()
+        .map(|t| (t.manifest_digest, t.manifest_content_type))
     };
 
-    let storage = match state.storage_for_repo(&location) {
-        Ok(s) => s,
-        Err(e) => {
-            return oci_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                &e.to_string(),
-            )
-        }
-    };
-    let manifest_key = manifest_storage_key(&manifest_digest);
+    if let Some((manifest_digest, content_type)) = local_result {
+        let storage = match state.storage_for_repo(&repo.location) {
+            Ok(s) => s,
+            Err(e) => {
+                return oci_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    &e.to_string(),
+                )
+            }
+        };
+        let manifest_key = manifest_storage_key(&manifest_digest);
 
-    match storage.get(&manifest_key).await {
-        Ok(data) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Docker-Content-Digest", &manifest_digest)
-            .header(CONTENT_LENGTH, data.len().to_string())
-            .header(CONTENT_TYPE, &content_type)
-            .body(Body::from(data))
-            .unwrap(),
-        Err(_) => oci_error(
-            StatusCode::NOT_FOUND,
-            "MANIFEST_UNKNOWN",
-            "manifest data not found",
-        ),
+        if let Ok(data) = storage.get(&manifest_key).await {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Docker-Content-Digest", &manifest_digest)
+                .header(CONTENT_LENGTH, data.len().to_string())
+                .header(CONTENT_TYPE, &content_type)
+                .body(Body::from(data))
+                .unwrap();
+        }
     }
+
+    // For remote repos, try fetching manifest from upstream
+    if repo.repo_type == RepositoryType::Remote {
+        if let (Some(ref upstream_url), Some(ref proxy)) =
+            (&repo.upstream_url, &state.proxy_service)
+        {
+            let upstream_path = format!("v2/{}/manifests/{}", repo.image, reference);
+            if let Ok((content, content_type)) =
+                proxy_helpers::proxy_fetch(proxy, repo.id, &repo.key, upstream_url, &upstream_path)
+                    .await
+            {
+                let digest = compute_sha256(&content);
+                let ct = content_type
+                    .unwrap_or_else(|| "application/vnd.oci.image.manifest.v1+json".to_string());
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Docker-Content-Digest", digest)
+                    .header(CONTENT_LENGTH, content.len().to_string())
+                    .header(CONTENT_TYPE, ct)
+                    .body(Body::from(content))
+                    .unwrap();
+            }
+        }
+    }
+
+    oci_error(
+        StatusCode::NOT_FOUND,
+        "MANIFEST_UNKNOWN",
+        "manifest not found",
+    )
 }
 
 async fn handle_put_manifest(
@@ -1035,10 +1142,12 @@ async fn handle_put_manifest(
         Err(_) => return unauthorized_challenge(&host),
     };
 
-    let (repo_id, location, image) = match resolve_repo(&state.db, image_name).await {
+    let repo = match resolve_repo(&state.db, image_name).await {
         Ok(r) => r,
         Err(e) => return e,
     };
+    let repo_id = repo.id;
+    let image = repo.image;
 
     let content_type = headers
         .get(CONTENT_TYPE)
@@ -1051,7 +1160,7 @@ async fn handle_put_manifest(
     let manifest_key = manifest_storage_key(&digest);
 
     // Store manifest
-    let storage = match state.storage_for_repo(&location) {
+    let storage = match state.storage_for_repo(&repo.location) {
         Ok(s) => s,
         Err(e) => {
             return oci_error(
@@ -1873,5 +1982,47 @@ mod tests {
         assert!(json.contains("\"access_token\":\"tok1\""));
         assert!(json.contains("\"expires_in\":3600"));
         assert!(json.contains("\"issued_at\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // OciRepoInfo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_oci_repo_info_remote_type() {
+        let info = OciRepoInfo {
+            id: Uuid::new_v4(),
+            key: "docker-hub".to_string(),
+            location: crate::storage::StorageLocation {
+                backend: "filesystem".to_string(),
+                path: "/data/docker".to_string(),
+            },
+            repo_type: "remote".to_string(),
+            upstream_url: Some("https://registry-1.docker.io".to_string()),
+            image: "library/nginx".to_string(),
+        };
+        assert_eq!(info.repo_type, RepositoryType::Remote);
+        assert_eq!(
+            info.upstream_url.as_deref(),
+            Some("https://registry-1.docker.io")
+        );
+        assert_eq!(info.image, "library/nginx");
+    }
+
+    #[test]
+    fn test_oci_repo_info_local_type() {
+        let info = OciRepoInfo {
+            id: Uuid::new_v4(),
+            key: "docker-local".to_string(),
+            location: crate::storage::StorageLocation {
+                backend: "filesystem".to_string(),
+                path: "/data/docker".to_string(),
+            },
+            repo_type: "local".to_string(),
+            upstream_url: None,
+            image: "myapp".to_string(),
+        };
+        assert_ne!(info.repo_type, RepositoryType::Remote);
+        assert!(info.upstream_url.is_none());
     }
 }
