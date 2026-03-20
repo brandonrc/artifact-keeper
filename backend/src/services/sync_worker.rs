@@ -145,6 +145,80 @@ struct TaskRow {
     max_retries: i32,
 }
 
+// ── Scored peer selection ────────────────────────────────────────────────────
+
+/// Resolve the best peer endpoint for a sync task using scored peer selection.
+///
+/// If the local peer instance is known and scored peers are available for the
+/// artifact, returns the highest-scoring peer's endpoint URL and API key.
+/// Otherwise returns `None`, signalling the caller to use the task's default peer.
+async fn resolve_scored_peer(
+    db: &PgPool,
+    local_peer_id: Option<Uuid>,
+    artifact_id: Uuid,
+    default_peer_name: &str,
+) -> Option<(String, String)> {
+    let local_id = local_peer_id?;
+
+    let peer_service = crate::services::peer_service::PeerService::new(db.clone());
+    let scored = match peer_service
+        .get_scored_peers_for_artifact(local_id, artifact_id)
+        .await
+    {
+        Ok(peers) => peers,
+        Err(e) => {
+            tracing::warn!(
+                "Scored peer lookup failed for artifact {}, falling back to default peer '{}': {e}",
+                artifact_id,
+                default_peer_name,
+            );
+            return None;
+        }
+    };
+
+    // Pick the peer with the highest score.
+    let best = scored.iter().max_by(|a, b| {
+        a.score
+            .partial_cmp(&b.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+
+    // Look up the API key for the scored peer.
+    let api_key: Option<String> =
+        sqlx::query_scalar("SELECT api_key FROM peer_instances WHERE id = $1")
+            .bind(best.node_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+    let api_key = api_key?;
+
+    tracing::debug!(
+        "Scored peer selection for artifact {}: chose peer {} (score={:.2}, latency={:?}ms, chunks={}) over default peer '{}'",
+        artifact_id,
+        best.node_id,
+        best.score,
+        best.latency_ms,
+        best.available_chunks,
+        default_peer_name,
+    );
+
+    Some((best.endpoint_url.clone(), api_key))
+}
+
+/// Look up the local peer instance ID.
+///
+/// Returns `None` if no local instance is configured (single-node deployments).
+/// The result is cached for the lifetime of a single `process_pending_tasks` tick.
+async fn get_local_peer_id(db: &PgPool) -> Option<Uuid> {
+    sqlx::query_scalar("SELECT id FROM peer_instances WHERE is_local = true LIMIT 1")
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+}
+
 // ── Core logic ──────────────────────────────────────────────────────────────
 
 /// Process all eligible peers and their pending sync tasks.
@@ -169,6 +243,10 @@ async fn process_pending_tasks(db: &PgPool, client: &reqwest::Client) -> Result<
     if peers.is_empty() {
         return Ok(());
     }
+
+    // Resolve the local peer instance ID once per tick. This is used for scored
+    // peer selection and is None on single-node deployments.
+    let local_peer_id = get_local_peer_id(db).await;
 
     // Reset retriable failed tasks for peers that have recovered (backoff expired).
     // This runs once per tick for all recovered peers in a single query.
@@ -304,10 +382,15 @@ async fn process_pending_tasks(db: &PgPool, client: &reqwest::Client) -> Result<
                 continue;
             }
 
+            // Attempt scored peer selection: if a better-scoring peer is available
+            // for this artifact, use its endpoint instead of the task's default.
+            let (peer_endpoint, peer_api_key) =
+                resolve_scored_peer(db, local_peer_id, task.artifact_id, &peer.name)
+                    .await
+                    .unwrap_or_else(|| (peer.endpoint_url.clone(), peer.api_key.clone()));
+
             let db = db.clone();
             let client = client.clone();
-            let peer_endpoint = peer.endpoint_url.clone();
-            let peer_api_key = peer.api_key.clone();
             let peer_name = peer.name.clone();
 
             tokio::spawn(async move {
