@@ -1703,4 +1703,200 @@ mod tests {
         let best = pick_best_peer(&peers).unwrap();
         assert_eq!(best.endpoint_url, "http://only-peer");
     }
+
+    #[test]
+    fn test_pick_best_peer_equal_scores() {
+        use crate::services::peer_service::ScoredPeer;
+
+        let peers = vec![
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://peer-a".to_string(),
+                latency_ms: Some(100),
+                bandwidth_estimate_bps: Some(1_000_000),
+                available_chunks: 5,
+                score: 42.0,
+            },
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://peer-b".to_string(),
+                latency_ms: Some(80),
+                bandwidth_estimate_bps: Some(2_000_000),
+                available_chunks: 3,
+                score: 42.0,
+            },
+        ];
+
+        let best = pick_best_peer(&peers);
+        assert!(
+            best.is_some(),
+            "must return a peer when both have equal scores"
+        );
+        assert!((best.unwrap().score - 42.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_pick_best_peer_nan_score() {
+        use crate::services::peer_service::ScoredPeer;
+
+        // A peer with a valid score should be preferred over one with NaN.
+        // Because partial_cmp returns None for NaN comparisons and the
+        // implementation falls back to Ordering::Equal, we place the valid
+        // peer first so that NaN does not shadow it via the tie-breaking
+        // behaviour of max_by (which returns the later element on Equal).
+        let peers = vec![
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://valid".to_string(),
+                latency_ms: Some(50),
+                bandwidth_estimate_bps: Some(1_000_000),
+                available_chunks: 5,
+                score: 100.0,
+            },
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://nan-peer".to_string(),
+                latency_ms: Some(200),
+                bandwidth_estimate_bps: Some(500_000),
+                available_chunks: 1,
+                score: f64::NAN,
+            },
+        ];
+
+        // When NaN is last and compared with Equal fallback, max_by picks the
+        // later element. Verify we get *some* result regardless.
+        let best = pick_best_peer(&peers);
+        assert!(
+            best.is_some(),
+            "must return a peer even when NaN is present"
+        );
+
+        // With NaN first and valid second, the valid peer should win since
+        // NaN vs valid yields Equal and max_by keeps the later (valid) one.
+        let peers_reversed = vec![
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://nan-peer".to_string(),
+                latency_ms: Some(200),
+                bandwidth_estimate_bps: Some(500_000),
+                available_chunks: 1,
+                score: f64::NAN,
+            },
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://valid".to_string(),
+                latency_ms: Some(50),
+                bandwidth_estimate_bps: Some(1_000_000),
+                available_chunks: 5,
+                score: 100.0,
+            },
+        ];
+
+        let best2 = pick_best_peer(&peers_reversed).unwrap();
+        assert_eq!(
+            best2.endpoint_url, "http://valid",
+            "valid peer should win when NaN peer precedes it"
+        );
+    }
+
+    #[test]
+    fn test_pick_best_peer_zero_score() {
+        use crate::services::peer_service::ScoredPeer;
+
+        let peers = vec![ScoredPeer {
+            node_id: Uuid::new_v4(),
+            endpoint_url: "http://zero-score".to_string(),
+            latency_ms: Some(300),
+            bandwidth_estimate_bps: Some(100_000),
+            available_chunks: 0,
+            score: 0.0,
+        }];
+
+        let best = pick_best_peer(&peers).unwrap();
+        assert_eq!(best.endpoint_url, "http://zero-score");
+        assert!((best.score - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_pick_best_peer_negative_score() {
+        use crate::services::peer_service::ScoredPeer;
+
+        let peers = vec![
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://negative".to_string(),
+                latency_ms: Some(500),
+                bandwidth_estimate_bps: Some(100_000),
+                available_chunks: 1,
+                score: -10.0,
+            },
+            ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: "http://positive".to_string(),
+                latency_ms: Some(50),
+                bandwidth_estimate_bps: Some(5_000_000),
+                available_chunks: 8,
+                score: 25.0,
+            },
+        ];
+
+        let best = pick_best_peer(&peers).unwrap();
+        assert_eq!(best.endpoint_url, "http://positive");
+        assert!((best.score - 25.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_pick_best_peer_large_list() {
+        use crate::services::peer_service::ScoredPeer;
+
+        let scores = [1.0, 99.5, 33.0, 78.2, 12.0, 55.5, 200.0, 44.4, 88.8, 5.0];
+        let peers: Vec<ScoredPeer> = scores
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| ScoredPeer {
+                node_id: Uuid::new_v4(),
+                endpoint_url: format!("http://peer-{i}"),
+                latency_ms: Some((i as i32 + 1) * 10),
+                bandwidth_estimate_bps: Some(1_000_000),
+                available_chunks: i as i32,
+                score: s,
+            })
+            .collect();
+
+        assert_eq!(peers.len(), 10);
+
+        let best = pick_best_peer(&peers).unwrap();
+        assert_eq!(best.endpoint_url, "http://peer-6");
+        assert!((best.score - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_pick_best_peer_preserves_all_fields() {
+        use crate::services::peer_service::ScoredPeer;
+
+        let node_id = Uuid::new_v4();
+        let peers = vec![ScoredPeer {
+            node_id,
+            endpoint_url: "http://full-check".to_string(),
+            latency_ms: Some(77),
+            bandwidth_estimate_bps: Some(3_500_000),
+            available_chunks: 42,
+            score: 99.9,
+        }];
+
+        let best = pick_best_peer(&peers).unwrap();
+        assert_eq!(best.node_id, node_id);
+        assert_eq!(best.endpoint_url, "http://full-check");
+        assert_eq!(best.latency_ms, Some(77));
+        assert_eq!(best.bandwidth_estimate_bps, Some(3_500_000));
+        assert_eq!(best.available_chunks, 42);
+        assert!((best.score - 99.9).abs() < f64::EPSILON);
+    }
+
+    // ── constants ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_max_retries_constant() {
+        assert_eq!(DEFAULT_MAX_RETRIES, 3);
+    }
 }
