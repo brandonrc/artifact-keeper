@@ -17,15 +17,11 @@ RUN mkdir -p /mnt/rootfs && \
         openscap-scanner \
         scap-security-guide \
         python3 \
-    && rpm --root /mnt/rootfs -e --nodeps python3-pip-wheel python3-setuptools-wheel \
-    && rm -rf /mnt/rootfs/usr/lib/python3.9/ensurepip \
-    && dnf --installroot /mnt/rootfs clean all \
-    && rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
-
-# Force-update python3 to pick up latest security patches
-RUN dnf update --installroot /mnt/rootfs --releasever 9 \
+    && dnf update --installroot /mnt/rootfs --releasever 9 \
         --setopt install_weak_deps=0 --nodocs --nogpgcheck -y \
         python3 \
+    && rpm --root /mnt/rootfs -e --nodeps python3-pip-wheel python3-setuptools-wheel \
+    && rm -rf /mnt/rootfs/usr/lib/python3.9/ensurepip \
     && dnf --installroot /mnt/rootfs clean all \
     && rm -rf /mnt/rootfs/var/cache/* /mnt/rootfs/var/log/* /mnt/rootfs/tmp/*
 
