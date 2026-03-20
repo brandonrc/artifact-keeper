@@ -38,7 +38,7 @@ hmac = "0.12"
 aes-gcm = "0.10"
 
 # S3 storage using rust-s3 crate (works with Rust 1.75+)
-rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls"] }
 
 # Logging/Tracing
 tracing = "0.1"
