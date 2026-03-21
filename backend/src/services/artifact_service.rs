@@ -1141,10 +1141,68 @@ mod tests {
     }
 
     #[test]
+    fn test_calculate_sha1_deterministic() {
+        assert_eq!(
+            ArtifactService::calculate_sha1(b"hello"),
+            ArtifactService::calculate_sha1(b"hello")
+        );
+        assert_ne!(
+            ArtifactService::calculate_sha1(b"hello"),
+            ArtifactService::calculate_sha1(b"world")
+        );
+    }
+
+    #[test]
+    fn test_calculate_sha1_empty_data() {
+        let hash = ArtifactService::calculate_sha1(b"");
+        assert_eq!(hash.len(), 40);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // SHA-1 of empty input is a well-known constant
+        assert_eq!(hash, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    }
+
+    #[test]
+    fn test_calculate_sha1_binary_data() {
+        let data: Vec<u8> = (0..=255).collect();
+        let hash = ArtifactService::calculate_sha1(&data);
+        assert_eq!(hash.len(), 40);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
     fn test_calculate_md5_known_value() {
         let hash = ArtifactService::calculate_md5(b"test data");
         assert_eq!(hash.len(), 32);
         assert_eq!(hash, "eb733a00c0c9d336e65691a37ab54293");
+    }
+
+    #[test]
+    fn test_calculate_md5_deterministic() {
+        assert_eq!(
+            ArtifactService::calculate_md5(b"hello"),
+            ArtifactService::calculate_md5(b"hello")
+        );
+        assert_ne!(
+            ArtifactService::calculate_md5(b"hello"),
+            ArtifactService::calculate_md5(b"world")
+        );
+    }
+
+    #[test]
+    fn test_calculate_md5_empty_data() {
+        let hash = ArtifactService::calculate_md5(b"");
+        assert_eq!(hash.len(), 32);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // MD5 of empty input is a well-known constant
+        assert_eq!(hash, "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    #[test]
+    fn test_calculate_md5_binary_data() {
+        let data: Vec<u8> = (0..=255).collect();
+        let hash = ArtifactService::calculate_md5(&data);
+        assert_eq!(hash.len(), 32);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     // -----------------------------------------------------------------------
@@ -1264,6 +1322,77 @@ mod tests {
         let result =
             ArtifactService::verify_checksums(data, Some(&sha256), Some(&sha1), Some(&md5));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_sha256_and_sha1_correct() {
+        let data = b"dual check";
+        let sha256 = ArtifactService::calculate_sha256(data);
+        let sha1 = ArtifactService::calculate_sha1(data);
+        let result = ArtifactService::verify_checksums(data, Some(&sha256), Some(&sha1), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_sha1_and_md5_correct() {
+        let data = b"sha1 md5 pair";
+        let sha1 = ArtifactService::calculate_sha1(data);
+        let md5 = ArtifactService::calculate_md5(data);
+        let result = ArtifactService::verify_checksums(data, None, Some(&sha1), Some(&md5));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_sha256_correct_md5_wrong() {
+        let data = b"partial md5 fail";
+        let sha256 = ArtifactService::calculate_sha256(data);
+        let result = ArtifactService::verify_checksums(
+            data,
+            Some(&sha256),
+            None,
+            Some("00000000000000000000000000000000"),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("MD5 checksum mismatch"));
+    }
+
+    #[test]
+    fn test_verify_checksums_sha1_case_insensitive() {
+        let data = b"sha1 case";
+        let sha1 = ArtifactService::calculate_sha1(data).to_uppercase();
+        let result = ArtifactService::verify_checksums(data, None, Some(&sha1), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_md5_case_insensitive() {
+        let data = b"md5 case";
+        let md5 = ArtifactService::calculate_md5(data).to_uppercase();
+        let result = ArtifactService::verify_checksums(data, None, None, Some(&md5));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_large_data() {
+        let data = vec![0xABu8; 100_000];
+        let sha256 = ArtifactService::calculate_sha256(&data);
+        let sha1 = ArtifactService::calculate_sha1(&data);
+        let md5 = ArtifactService::calculate_md5(&data);
+        let result =
+            ArtifactService::verify_checksums(&data, Some(&sha256), Some(&sha1), Some(&md5));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_checksums_error_message_includes_both_hashes() {
+        let data = b"message test";
+        let actual_sha256 = ArtifactService::calculate_sha256(data);
+        let declared = "aaaa";
+        let result = ArtifactService::verify_checksums(data, Some(declared), None, None);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains(declared));
+        assert!(err.contains(&actual_sha256));
     }
 
     // -----------------------------------------------------------------------
