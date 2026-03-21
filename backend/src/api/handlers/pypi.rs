@@ -906,21 +906,24 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Rewrite absolute download URLs in upstream PyPI simple index HTML to route
-/// through Artifact Keeper's proxy endpoint.
+/// Rewrite download URLs in upstream PyPI simple index HTML to route through
+/// Artifact Keeper's proxy endpoint.
 ///
-/// Upstream PyPI returns `<a href="https://files.pythonhosted.org/packages/...">`,
-/// which causes pip to download directly from upstream, bypassing the cache.
-/// This function rewrites those URLs to relative paths like
-/// `/pypi/{repo_key}/simple/{project}/{filename}#sha256=...` so downloads
-/// go through Artifact Keeper and get cached.
+/// Upstream sources return links that would bypass the cache:
+///   - External PyPI: `<a href="https://files.pythonhosted.org/packages/...">`
+///   - Local AK repos: `<a href="/pypi/upstream-key/simple/pkg/file#hash">`
 ///
-/// Only absolute URLs (starting with `http://` or `https://`) are rewritten.
-/// Relative URLs and anchors are left unchanged.
+/// This function rewrites both forms to paths under the current (remote) repo:
+/// `/pypi/{repo_key}/simple/{project}/{filename}#sha256=...` so downloads go
+/// through Artifact Keeper and get cached.
+///
+/// Absolute URLs (`http://`, `https://`) and root-relative paths starting with
+/// `/pypi/` are rewritten. Plain relative URLs and anchors are left unchanged.
 fn rewrite_upstream_urls(html: &str, repo_key: &str, project: &str) -> String {
-    // Match <a href="https://..."> or <a href="http://..."> patterns.
-    // Captures the full URL (possibly with fragment) inside the href attribute.
-    let re = Regex::new(r#"<a\s+([^>]*?)href="(https?://[^"]+)"([^>]*)>"#).unwrap();
+    // Match <a href="..."> patterns where the URL is either:
+    //   1. An absolute URL (http:// or https://)
+    //   2. A root-relative path starting with /pypi/ (from a local upstream repo)
+    let re = Regex::new(r#"<a\s+([^>]*?)href="(https?://[^"]+|/pypi/[^"]+)"([^>]*)>"#).unwrap();
     let normalized = PypiHandler::normalize_name(project);
 
     re.replace_all(html, |caps: &regex::Captures| {
@@ -1150,6 +1153,92 @@ mod tests {
             r#"<a href="https://example.com/pkg-1.0.tar.gz#md5=deadbeef">pkg-1.0.tar.gz</a>"#;
         let result = rewrite_upstream_urls(html, "repo", "pkg");
         assert!(result.contains(r#"href="/pypi/repo/simple/pkg/pkg-1.0.tar.gz#md5=deadbeef""#));
+    }
+
+    #[test]
+    fn test_rewrite_local_upstream_root_relative_url() {
+        // When a remote repo proxies a local AK repo, the simple index contains
+        // root-relative paths like /pypi/upstream-key/simple/pkg/file#hash
+        let html = r#"<a href="/pypi/upstream-local/simple/numpy/numpy-1.3.0.tar.gz#sha256=abc123">numpy-1.3.0.tar.gz</a>"#;
+        let result = rewrite_upstream_urls(html, "pypi-remote", "numpy");
+        assert_eq!(
+            result,
+            r#"<a href="/pypi/pypi-remote/simple/numpy/numpy-1.3.0.tar.gz#sha256=abc123">numpy-1.3.0.tar.gz</a>"#
+        );
+    }
+
+    #[test]
+    fn test_rewrite_local_upstream_without_hash() {
+        let html = r#"<a href="/pypi/upstream-local/simple/pkg/pkg-2.0.whl">pkg-2.0.whl</a>"#;
+        let result = rewrite_upstream_urls(html, "remote-repo", "pkg");
+        assert_eq!(
+            result,
+            r#"<a href="/pypi/remote-repo/simple/pkg/pkg-2.0.whl">pkg-2.0.whl</a>"#
+        );
+    }
+
+    #[test]
+    fn test_rewrite_local_upstream_with_data_attr() {
+        let html = r#"<a href="/pypi/upstream/simple/numpy/numpy-2.0.0-cp312-cp312-manylinux_2_17_x86_64.whl#sha256=bbb" data-requires-python="&gt;=3.9">numpy-2.0.0-cp312-cp312-manylinux_2_17_x86_64.whl</a>"#;
+        let result = rewrite_upstream_urls(html, "my-remote", "numpy");
+        assert!(result.contains(
+            r#"href="/pypi/my-remote/simple/numpy/numpy-2.0.0-cp312-cp312-manylinux_2_17_x86_64.whl#sha256=bbb""#
+        ));
+        assert!(result.contains(r#"data-requires-python="&gt;=3.9""#));
+    }
+
+    #[test]
+    fn test_rewrite_mixed_absolute_and_local_relative() {
+        let html = concat!(
+            r#"<a href="https://files.pythonhosted.org/packages/numpy-1.3.0.tar.gz#sha256=aaa">numpy-1.3.0.tar.gz</a>"#,
+            "\n",
+            r#"<a href="/pypi/local-repo/simple/numpy/numpy-2.0.0.tar.gz#sha256=bbb">numpy-2.0.0.tar.gz</a>"#,
+            "\n",
+            r#"<a href="numpy-3.0.0.tar.gz#sha256=ccc">numpy-3.0.0.tar.gz</a>"#,
+        );
+        let result = rewrite_upstream_urls(html, "remote", "numpy");
+        // Absolute URL is rewritten
+        assert!(
+            result.contains(r#"href="/pypi/remote/simple/numpy/numpy-1.3.0.tar.gz#sha256=aaa""#)
+        );
+        // Root-relative /pypi/ URL is rewritten
+        assert!(
+            result.contains(r#"href="/pypi/remote/simple/numpy/numpy-2.0.0.tar.gz#sha256=bbb""#)
+        );
+        // Plain relative URL is left unchanged
+        assert!(result.contains(r#"href="numpy-3.0.0.tar.gz#sha256=ccc""#));
+    }
+
+    #[test]
+    fn test_rewrite_full_local_upstream_index() {
+        // Simulates the full HTML generated by a local AK PyPI repo
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+<meta name="pypi:repository-version" content="1.0"/>
+<title>Links for mypackage</title>
+</head>
+<body>
+<h1>Links for mypackage</h1>
+<a href="/pypi/local-pypi/simple/mypackage/mypackage-1.0.0.tar.gz#sha256=aaa111">mypackage-1.0.0.tar.gz</a><br/>
+<a href="/pypi/local-pypi/simple/mypackage/mypackage-1.0.0-py3-none-any.whl#sha256=bbb222" data-requires-python="&gt;=3.8">mypackage-1.0.0-py3-none-any.whl</a><br/>
+</body>
+</html>
+"#;
+        let result = rewrite_upstream_urls(html, "remote-pypi", "mypackage");
+
+        // Local upstream URLs should be rewritten to use the remote repo key
+        assert!(!result.contains("local-pypi"));
+        assert!(result.contains(
+            r#"href="/pypi/remote-pypi/simple/mypackage/mypackage-1.0.0.tar.gz#sha256=aaa111""#
+        ));
+        assert!(result.contains(
+            r#"href="/pypi/remote-pypi/simple/mypackage/mypackage-1.0.0-py3-none-any.whl#sha256=bbb222""#
+        ));
+
+        // data-requires-python and other structure should be preserved
+        assert!(result.contains("data-requires-python"));
+        assert!(result.contains("<h1>Links for mypackage</h1>"));
     }
 
     // -----------------------------------------------------------------------
