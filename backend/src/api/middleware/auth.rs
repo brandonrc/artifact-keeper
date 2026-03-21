@@ -1245,9 +1245,50 @@ mod tests {
     }
 
     #[test]
+    fn test_unauthorized_response_has_www_authenticate_headers() {
+        let resp = unauthorized_response();
+        let www_auth_values: Vec<&str> = resp
+            .headers()
+            .get_all("WWW-Authenticate")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        // Must include both Basic and Bearer challenges so package-manager
+        // clients know which auth scheme to retry with.
+        assert!(
+            www_auth_values.iter().any(|v| v.starts_with("Basic")),
+            "expected a Basic WWW-Authenticate challenge"
+        );
+        assert!(
+            www_auth_values.iter().any(|v| v.starts_with("Bearer")),
+            "expected a Bearer WWW-Authenticate challenge"
+        );
+    }
+
+    #[test]
+    fn test_unauthorized_response_content_type() {
+        let resp = unauthorized_response();
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("Content-Type header must be present");
+        assert_eq!(ct.to_str().unwrap(), "text/plain");
+    }
+
+    #[test]
     fn test_forbidden_repo_response_status() {
         let resp = forbidden_repo_response();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_forbidden_repo_response_content_type() {
+        let resp = forbidden_repo_response();
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("Content-Type header must be present");
+        assert_eq!(ct.to_str().unwrap(), "text/plain");
     }
 
     // -----------------------------------------------------------------------
@@ -1260,6 +1301,40 @@ mod tests {
         let ext = make_api_token_ext(vec!["*".to_string()], Some(vec![]));
         // An empty allowed list means no repos are permitted.
         assert!(!ext.can_access_repo(Uuid::new_v4()));
+    }
+
+    #[test]
+    fn test_can_access_repo_with_matching_id() {
+        let target_repo = Uuid::new_v4();
+        let ext = make_api_token_ext(
+            vec!["*".to_string()],
+            Some(vec![Uuid::new_v4(), target_repo, Uuid::new_v4()]),
+        );
+        assert!(
+            ext.can_access_repo(target_repo),
+            "token with target repo in allowed_repo_ids should have access"
+        );
+    }
+
+    #[test]
+    fn test_can_access_repo_with_non_matching_id() {
+        let allowed = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let ext = make_api_token_ext(vec!["*".to_string()], Some(allowed));
+        let unrelated_repo = Uuid::new_v4();
+        assert!(
+            !ext.can_access_repo(unrelated_repo),
+            "token should not access a repo outside its allowed_repo_ids"
+        );
+    }
+
+    #[test]
+    fn test_can_access_repo_with_no_restrictions() {
+        // allowed_repo_ids = None means the token is unrestricted.
+        let ext = make_api_token_ext(vec!["*".to_string()], None);
+        assert!(
+            ext.can_access_repo(Uuid::new_v4()),
+            "unrestricted token (allowed_repo_ids = None) should access any repo"
+        );
     }
 
     #[test]
