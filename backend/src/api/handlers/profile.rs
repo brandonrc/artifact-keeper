@@ -42,7 +42,7 @@ async fn list_access_tokens(
         r#"
         SELECT id, name, token_prefix, scopes, expires_at, last_used_at, created_at
         FROM api_tokens
-        WHERE user_id = $1
+        WHERE user_id = $1 AND revoked_at IS NULL
         ORDER BY created_at DESC
         "#,
         auth.user_id

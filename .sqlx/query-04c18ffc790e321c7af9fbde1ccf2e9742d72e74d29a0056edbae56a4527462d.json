@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, name, token_prefix, scopes, expires_at, last_used_at, created_at\n        FROM api_tokens\n        WHERE user_id = $1\n        ORDER BY created_at DESC\n        ",
+  "query": "\n        SELECT id, name, token_prefix, scopes, expires_at, last_used_at, created_at\n        FROM api_tokens\n        WHERE user_id = $1 AND revoked_at IS NULL\n        ORDER BY created_at DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -54,5 +54,5 @@
       false
     ]
   },
-  "hash": "39bccdd40b46f8d0aa18676cc862192f856b2491d0a16bf66721484ddb572fe7"
+  "hash": "04c18ffc790e321c7af9fbde1ccf2e9742d72e74d29a0056edbae56a4527462d"
 }
