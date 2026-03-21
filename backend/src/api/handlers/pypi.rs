@@ -1389,9 +1389,7 @@ mod tests {
         let result = find_upstream_url_for_file(raw_upstream_html, "six-1.16.0.tar.gz");
         assert_eq!(
             result,
-            Some(
-                "https://files.pythonhosted.org/packages/94/e7/six-1.16.0.tar.gz".to_string()
-            )
+            Some("https://files.pythonhosted.org/packages/94/e7/six-1.16.0.tar.gz".to_string())
         );
     }
 
@@ -1410,8 +1408,7 @@ mod tests {
 </body>
 </html>
 "#;
-        let result =
-            find_upstream_url_for_file(rewritten_html, "six-1.16.0-py2.py3-none-any.whl");
+        let result = find_upstream_url_for_file(rewritten_html, "six-1.16.0-py2.py3-none-any.whl");
         assert_eq!(result, None);
     }
 

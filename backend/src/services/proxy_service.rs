@@ -192,8 +192,7 @@ impl ProxyService {
         })?;
 
         let full_url = Self::build_upstream_url(upstream_url, path);
-        let (content, content_type, _etag) =
-            self.fetch_from_upstream(&full_url, repo.id).await?;
+        let (content, content_type, _etag) = self.fetch_from_upstream(&full_url, repo.id).await?;
         Ok((content, content_type))
     }
 
