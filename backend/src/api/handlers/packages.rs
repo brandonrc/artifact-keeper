@@ -39,6 +39,7 @@ pub struct ListPackagesQuery {
     pub per_page: Option<u32>,
     pub repository_key: Option<String>,
     pub format: Option<String>,
+    #[serde(alias = "q")]
     pub search: Option<String>,
 }
 
@@ -514,6 +515,15 @@ mod tests {
         assert_eq!(query.repository_key.as_deref(), Some("main-repo"));
         assert_eq!(query.format.as_deref(), Some("maven"));
         assert_eq!(query.search.as_deref(), Some("spring"));
+    }
+
+    #[test]
+    fn test_list_packages_query_q_alias() {
+        let json = serde_json::json!({
+            "q": "shared-pkg"
+        });
+        let query: ListPackagesQuery = serde_json::from_value(json).unwrap();
+        assert_eq!(query.search.as_deref(), Some("shared-pkg"));
     }
 
     // -----------------------------------------------------------------------
