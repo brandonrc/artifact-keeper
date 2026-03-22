@@ -1097,13 +1097,25 @@ pub async fn upload_artifact(
         }
     }
 
-    // Use WASM-extracted metadata if available
-    let version = wasm_metadata.as_ref().and_then(|m| m.version.clone());
+    // Use WASM-extracted metadata if available, otherwise try to derive
+    // name and version from the path segments (e.g. "pkg/v1/file.txt").
+    let (name, version) = if let Some(ref meta) = wasm_metadata {
+        (name, meta.version.clone())
+    } else {
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.len() >= 3 {
+            // Path follows {package_name}/{version}/{filename...} convention
+            (segments[0].to_string(), Some(segments[1].to_string()))
+        } else {
+            (name, None)
+        }
+    };
+
     let content_type = wasm_metadata
         .as_ref()
         .map(|m| m.content_type.clone())
         .unwrap_or_else(|| {
-            mime_guess::from_path(&name)
+            mime_guess::from_path(&path)
                 .first_or_octet_stream()
                 .to_string()
         });
@@ -2062,6 +2074,18 @@ mod tests {
     /// Build a Content-Disposition attachment header value.
     fn content_disposition_attachment(filename: &str) -> String {
         format!("attachment; filename=\"{}\"", filename)
+    }
+
+    /// Extract (package_name, version) from a generic artifact path.
+    /// Paths with 3+ segments follow {name}/{version}/{filename...} convention.
+    fn extract_name_version_from_path(path: &str) -> (String, Option<String>) {
+        let segments: Vec<&str> = path.split('/').collect();
+        if segments.len() >= 3 {
+            (segments[0].to_string(), Some(segments[1].to_string()))
+        } else {
+            let name = segments.last().unwrap_or(&path).to_string();
+            (name, None)
+        }
     }
 
     /// Extract the download filename from an artifact path.
@@ -3529,5 +3553,37 @@ mod tests {
     #[test]
     fn test_build_upstream_credentials_invalid_type() {
         assert_credentials_err("oauth2", Some("u"), Some("p"), "Invalid auth_type");
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_name_version_from_path (generic artifact path parsing)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_name_version_three_segments() {
+        let (name, version) = extract_name_version_from_path("shared-pkg/v1/file.txt");
+        assert_eq!(name, "shared-pkg");
+        assert_eq!(version.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn test_extract_name_version_four_segments() {
+        let (name, version) = extract_name_version_from_path("my-lib/2.0.0/dist/archive.tar.gz");
+        assert_eq!(name, "my-lib");
+        assert_eq!(version.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_extract_name_version_two_segments() {
+        let (name, version) = extract_name_version_from_path("shared-pkg/file.txt");
+        assert_eq!(name, "file.txt");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_name_version_single_segment() {
+        let (name, version) = extract_name_version_from_path("file.txt");
+        assert_eq!(name, "file.txt");
+        assert!(version.is_none());
     }
 }
