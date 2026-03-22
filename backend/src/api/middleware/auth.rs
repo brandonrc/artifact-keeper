@@ -385,12 +385,20 @@ async fn try_resolve_auth(
     match extracted {
         ExtractedToken::Bearer(token) => {
             if let Ok(claims) = auth_service.validate_access_token(token) {
-                Some(AuthExtension::from(claims))
-            } else {
-                validate_api_token_with_scopes(auth_service, token)
-                    .await
-                    .ok()
+                return Some(AuthExtension::from(claims));
             }
+            if let Ok(ext) = validate_api_token_with_scopes(auth_service, token).await {
+                return Some(ext);
+            }
+            // Some package managers (npm, cargo, goproxy) send Bearer tokens
+            // that are base64-encoded `username:password` rather than JWTs or
+            // API keys. Try decoding as credentials before giving up.
+            if let Some((username, password)) = decode_basic_credentials(token) {
+                if let Ok((user, _)) = auth_service.authenticate(&username, &password).await {
+                    return Some(AuthExtension::from(user));
+                }
+            }
+            None
         }
         ExtractedToken::ApiKey(token) => validate_api_token_with_scopes(auth_service, token)
             .await
