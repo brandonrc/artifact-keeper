@@ -15,7 +15,7 @@ use axum::{
     extract::{Request, State},
     http::{
         header::{AUTHORIZATION, COOKIE},
-        HeaderMap, HeaderName, StatusCode,
+        HeaderMap, HeaderName, Method, StatusCode,
     },
     middleware::Next,
     response::{IntoResponse, Response},
@@ -519,16 +519,62 @@ pub(crate) fn should_allow_repo_access(is_public: bool, has_auth: bool) -> bool 
     is_public || has_auth
 }
 
+/// Return true when the HTTP method is a write operation (POST, PUT, PATCH,
+/// DELETE). Used by [`repo_visibility_middleware`] to require authentication
+/// for uploads and mutations even on public repositories.
+fn is_write_method(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    )
+}
+
+/// Build a 401 response with `WWW-Authenticate` challenges for both Basic
+/// and Bearer schemes.  Package manager clients use the challenge to decide
+/// how to retry with credentials.
+fn unauthorized_response() -> Response {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("WWW-Authenticate", "Basic realm=\"artifact-keeper\"")
+        .header(
+            "WWW-Authenticate",
+            "Bearer realm=\"artifact-keeper\", charset=\"UTF-8\"",
+        )
+        .header(axum::http::header::CONTENT_TYPE, "text/plain")
+        .body(axum::body::Body::from("Authentication required"))
+        .unwrap()
+}
+
+/// Build a 403 response for API tokens that lack access to the requested
+/// repository.
+fn forbidden_repo_response() -> Response {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(axum::http::header::CONTENT_TYPE, "text/plain")
+        .body(axum::body::Body::from(
+            "Token does not have access to this repository",
+        ))
+        .unwrap()
+}
+
 /// Middleware that enforces repository visibility on format handler routes.
 ///
 /// For routes whose first path segment is a repository key, this middleware
 /// checks whether the repository is public. If it is not public, the request
-/// must carry a valid authentication token; otherwise a 404 is returned (to
-/// avoid leaking the existence of private repos).
+/// must carry a valid authentication token; otherwise a 401 is returned so
+/// that package manager clients can retry with credentials.
 ///
-/// This provides defence-in-depth: even if individual format handlers forget
-/// to check visibility, this middleware blocks anonymous access to private
-/// repository content.
+/// Additionally, this middleware enforces two policies that individual format
+/// handlers must not need to remember:
+///
+/// 1. **Write operations require authentication** regardless of repository
+///    visibility. Even public repos must not accept anonymous uploads, deletes,
+///    or mutations. (Fixes #508)
+///
+/// 2. **API token repo scope is enforced**: when the authenticated token
+///    carries `allowed_repo_ids`, the target repository must be in that set.
+///    Without this check, a token scoped to repo A could access repo B.
+///    (Fixes #504)
 pub async fn repo_visibility_middleware(
     State(vis_state): State<RepoVisibilityState>,
     mut request: Request,
@@ -605,6 +651,7 @@ pub async fn repo_visibility_middleware(
     };
 
     let is_public = repo.is_public;
+    let is_write = is_write_method(request.method());
 
     // Perform optional auth (shared with optional_auth_middleware).
     let extracted = extract_token(&request);
@@ -613,25 +660,29 @@ pub async fn repo_visibility_middleware(
     // Insert auth extension for downstream handlers.
     request.extensions_mut().insert(auth_ext.clone());
 
-    // Check visibility: public repos are open, private repos need auth.
-    if should_allow_repo_access(is_public, auth_ext.is_some()) {
-        return next.run(request).await;
+    // #508: Write operations (PUT, POST, PATCH, DELETE) always require
+    // authentication, even on public repositories. Without this, unauthenticated
+    // upload requests to public repos fall through to the handler which returns
+    // 404 (misleading) instead of 401.
+    if is_write && auth_ext.is_none() {
+        return unauthorized_response();
     }
 
-    // Return 401 with WWW-Authenticate challenges so that package manager
-    // clients can retry with credentials.  Include both Basic (for Maven,
-    // pip, npm, etc.) and Bearer (for Cargo sparse-registry credential
-    // provider which only injects a Bearer token after receiving a 401).
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("WWW-Authenticate", "Basic realm=\"artifact-keeper\"")
-        .header(
-            "WWW-Authenticate",
-            "Bearer realm=\"artifact-keeper\", charset=\"UTF-8\"",
-        )
-        .header(axum::http::header::CONTENT_TYPE, "text/plain")
-        .body(axum::body::Body::from("Authentication required"))
-        .unwrap()
+    // Check visibility: public repos are open for reads, private repos need auth.
+    if !should_allow_repo_access(is_public, auth_ext.is_some()) {
+        return unauthorized_response();
+    }
+
+    // #504: Enforce API token repository scope. If the token carries an
+    // allowed_repo_ids restriction, the target repository must be in that set.
+    // Without this, a token scoped to repo A could read/write repo B.
+    if let Some(ref ext) = auth_ext {
+        if !ext.can_access_repo(repo.id) {
+            return forbidden_repo_response();
+        }
+    }
+
+    next.run(request).await
 }
 
 #[cfg(test)]
@@ -1142,5 +1193,163 @@ mod tests {
         );
         let result = extract_bearer_credentials(&headers);
         assert_eq!(result, Some(("user".to_string(), "p:a:s:s".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_write_method
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_write_method_post() {
+        assert!(is_write_method(&Method::POST));
+    }
+
+    #[test]
+    fn test_is_write_method_put() {
+        assert!(is_write_method(&Method::PUT));
+    }
+
+    #[test]
+    fn test_is_write_method_patch() {
+        assert!(is_write_method(&Method::PATCH));
+    }
+
+    #[test]
+    fn test_is_write_method_delete() {
+        assert!(is_write_method(&Method::DELETE));
+    }
+
+    #[test]
+    fn test_is_write_method_get_is_not_write() {
+        assert!(!is_write_method(&Method::GET));
+    }
+
+    #[test]
+    fn test_is_write_method_head_is_not_write() {
+        assert!(!is_write_method(&Method::HEAD));
+    }
+
+    #[test]
+    fn test_is_write_method_options_is_not_write() {
+        assert!(!is_write_method(&Method::OPTIONS));
+    }
+
+    // -----------------------------------------------------------------------
+    // unauthorized_response / forbidden_repo_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unauthorized_response_status() {
+        let resp = unauthorized_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_unauthorized_response_has_www_authenticate_headers() {
+        let resp = unauthorized_response();
+        let www_auth_values: Vec<&str> = resp
+            .headers()
+            .get_all("WWW-Authenticate")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        // Must include both Basic and Bearer challenges so package-manager
+        // clients know which auth scheme to retry with.
+        assert!(
+            www_auth_values.iter().any(|v| v.starts_with("Basic")),
+            "expected a Basic WWW-Authenticate challenge"
+        );
+        assert!(
+            www_auth_values.iter().any(|v| v.starts_with("Bearer")),
+            "expected a Bearer WWW-Authenticate challenge"
+        );
+    }
+
+    #[test]
+    fn test_unauthorized_response_content_type() {
+        let resp = unauthorized_response();
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("Content-Type header must be present");
+        assert_eq!(ct.to_str().unwrap(), "text/plain");
+    }
+
+    #[test]
+    fn test_forbidden_repo_response_status() {
+        let resp = forbidden_repo_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_forbidden_repo_response_content_type() {
+        let resp = forbidden_repo_response();
+        let ct = resp
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("Content-Type header must be present");
+        assert_eq!(ct.to_str().unwrap(), "text/plain");
+    }
+
+    // -----------------------------------------------------------------------
+    // can_access_repo enforcement (unit-level: verify the helper blocks
+    // tokens scoped to a different repo)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_can_access_repo_with_empty_allowed_list() {
+        let ext = make_api_token_ext(vec!["*".to_string()], Some(vec![]));
+        // An empty allowed list means no repos are permitted.
+        assert!(!ext.can_access_repo(Uuid::new_v4()));
+    }
+
+    #[test]
+    fn test_can_access_repo_with_matching_id() {
+        let target_repo = Uuid::new_v4();
+        let ext = make_api_token_ext(
+            vec!["*".to_string()],
+            Some(vec![Uuid::new_v4(), target_repo, Uuid::new_v4()]),
+        );
+        assert!(
+            ext.can_access_repo(target_repo),
+            "token with target repo in allowed_repo_ids should have access"
+        );
+    }
+
+    #[test]
+    fn test_can_access_repo_with_non_matching_id() {
+        let allowed = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let ext = make_api_token_ext(vec!["*".to_string()], Some(allowed));
+        let unrelated_repo = Uuid::new_v4();
+        assert!(
+            !ext.can_access_repo(unrelated_repo),
+            "token should not access a repo outside its allowed_repo_ids"
+        );
+    }
+
+    #[test]
+    fn test_can_access_repo_with_no_restrictions() {
+        // allowed_repo_ids = None means the token is unrestricted.
+        let ext = make_api_token_ext(vec!["*".to_string()], None);
+        assert!(
+            ext.can_access_repo(Uuid::new_v4()),
+            "unrestricted token (allowed_repo_ids = None) should access any repo"
+        );
+    }
+
+    #[test]
+    fn test_can_access_repo_jwt_always_unrestricted() {
+        let ext = AuthExtension {
+            user_id: Uuid::new_v4(),
+            username: "jwtuser".to_string(),
+            email: "jwt@example.com".to_string(),
+            is_admin: false,
+            is_api_token: false,
+            is_service_account: false,
+            scopes: None,
+            allowed_repo_ids: None,
+        };
+        // JWT sessions have no repo restrictions (allowed_repo_ids is None).
+        assert!(ext.can_access_repo(Uuid::new_v4()));
     }
 }
