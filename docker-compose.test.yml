@@ -94,6 +94,10 @@ services:
     volumes:
       - ./scripts/e2e-setup.sh:/setup.sh:ro
     command: ["sh", "/setup.sh"]
+    environment:
+      REGISTRY_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: E2eTest!Secure#2026
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/.setup-done"]
       interval: 2s
@@ -151,6 +155,8 @@ services:
         condition: service_healthy
     environment:
       REGISTRY_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: E2eTest!Secure#2026
       CA_CERT: /pki/ca.crt
     volumes:
       - ./scripts/native-tests:/scripts:ro
@@ -171,6 +177,8 @@ services:
         condition: service_healthy
     environment:
       REGISTRY_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: E2eTest!Secure#2026
       CA_CERT: /pki/ca.crt
     volumes:
       - ./scripts/native-tests:/scripts:ro
@@ -191,6 +199,8 @@ services:
         condition: service_healthy
     environment:
       REGISTRY_URL: http://backend:8080
+      ADMIN_USER: admin
+      ADMIN_PASS: E2eTest!Secure#2026
       CA_CERT: /pki/ca.crt
     volumes:
       - ./scripts/native-tests:/scripts:ro
