@@ -168,6 +168,21 @@ fn api_v1_routes(state: SharedState) -> Router<SharedState> {
     let auth_rate_limiter = Arc::new(RateLimiter::new(auth_rate_limit, rate_limit_window));
     let api_rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, rate_limit_window));
 
+    // Spawn periodic cleanup of expired rate-limiter entries to prevent
+    // unbounded HashMap growth from unique client IPs over time.
+    {
+        let auth_cleanup = Arc::clone(&auth_rate_limiter);
+        let api_cleanup = Arc::clone(&api_rate_limiter);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                auth_cleanup.cleanup_expired().await;
+                api_cleanup.cleanup_expired().await;
+            }
+        });
+    }
+
     Router::new()
         // Setup status (public, no auth)
         .nest("/setup", handlers::auth::setup_router())
