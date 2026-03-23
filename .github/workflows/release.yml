@@ -73,6 +73,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: artifact-keeper-darwin-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: artifact-keeper-windows-amd64
 
     steps:
       - name: Checkout
@@ -97,6 +100,12 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
+      - name: Install build dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
@@ -108,7 +117,8 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }} --features vendored-openssl
 
-      - name: Package binary
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/artifact-keeper dist/${{ matrix.name }}
@@ -121,11 +131,22 @@ jobs:
             shasum -a 256 ${{ matrix.name }}.tar.gz > ${{ matrix.name }}.tar.gz.sha256
           fi
 
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/artifact-keeper.exe dist/${{ matrix.name }}.exe
+          cd dist
+          sha256sum ${{ matrix.name }}.exe > ${{ matrix.name }}.exe.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}.tar.gz*
+          path: |
+            dist/${{ matrix.name }}.tar.gz*
+            dist/${{ matrix.name }}.exe*
 
   # ════════════════════════════════════════════════════════════════════════════
   # CREATE RELEASE
@@ -177,6 +198,7 @@ jobs:
         run: |
           mkdir -p release-assets
           find artifacts -name "*.tar.gz*" -exec cp {} release-assets/ \;
+          find artifacts -name "*.exe*" -exec cp {} release-assets/ \;
           ls -la release-assets/
 
       - name: Create Release
@@ -189,6 +211,15 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           files: release-assets/*
           fail_on_unmatched_files: true
+
+      - name: Notify Windows MSI build
+        if: steps.gates.outputs.all_passed == 'true'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.WINDOWS_REPO_PAT }}
+          repository: artifact-keeper/artifact-keeper-windows
+          event-type: backend-release
+          client-payload: '{"version": "${{ steps.version.outputs.version }}", "tag": "${{ steps.version.outputs.tag }}"}'
 
   # ════════════════════════════════════════════════════════════════════════════
   # PUBLISH DOCKER IMAGES (only when gates pass, release is not draft)
