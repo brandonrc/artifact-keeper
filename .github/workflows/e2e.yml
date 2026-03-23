@@ -64,7 +64,7 @@ jobs:
     name: 🔐 Setup PKI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install dependencies
         run: |
@@ -93,7 +93,7 @@ jobs:
         run: tar -cvf pki-assets.tar .pki/
 
       - name: Upload PKI artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: pki-assets
           path: pki-assets.tar
@@ -110,12 +110,12 @@ jobs:
     needs: [setup-pki]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
 
       - name: Build backend image (cached)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
           file: docker/Dockerfile.backend
@@ -125,7 +125,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Download PKI assets
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: pki-assets
 
@@ -167,7 +167,7 @@ jobs:
     if: ${{ inputs.include_stress == true || inputs.include_stress == 'true' }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Start services
         run: |
@@ -204,7 +204,7 @@ jobs:
     if: ${{ inputs.include_failure == true || inputs.include_failure == 'true' }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Start services
         run: |
