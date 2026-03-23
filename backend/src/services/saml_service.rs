@@ -1257,7 +1257,7 @@ mod tests {
     fn make_test_saml_service() -> SamlService {
         let config = make_test_saml_config();
         SamlService::with_config(
-            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
         )
     }
@@ -1636,7 +1636,7 @@ mod tests {
         config.require_signed_assertions = true;
         config.idp_certificate = None;
         let service = SamlService::with_config(
-            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
         );
         let response = SamlResponse {
@@ -1660,7 +1660,7 @@ mod tests {
         config.require_signed_assertions = false;
         config.idp_certificate = None;
         let service = SamlService::with_config(
-            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
         );
         let response = SamlResponse {
@@ -1723,7 +1723,7 @@ mod tests {
         config.username_attr = "uid".to_string();
 
         let service = SamlService {
-            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            db: PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
             http_client: Client::new(),
         };
@@ -1755,7 +1755,7 @@ mod tests {
         config.username_attr = "nonexistent".to_string();
 
         let service = SamlService {
-            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            db: PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
             http_client: Client::new(),
         };
@@ -1905,7 +1905,7 @@ mod tests {
         config.admin_group = None;
 
         let service = SamlService {
-            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            db: PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
             http_client: Client::new(),
         };
@@ -2010,7 +2010,7 @@ mod tests {
         config.idp_sso_url = String::new();
 
         let service = SamlService {
-            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            db: PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
             http_client: Client::new(),
         };
@@ -2024,7 +2024,7 @@ mod tests {
         config.idp_issuer = String::new();
 
         let service = SamlService {
-            db: PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            db: PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             config,
             http_client: Client::new(),
         };
@@ -2128,7 +2128,7 @@ mod tests {
         });
 
         let service = SamlService::from_db_config(
-            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             "https://idp.example.com",
             "https://idp.example.com/sso",
             Some("https://idp.example.com/slo"),
@@ -2158,7 +2158,7 @@ mod tests {
         let attr_mapping = serde_json::json!({});
 
         let service = SamlService::from_db_config(
-            PgPool::connect_lazy("postgres://invalid:invalid@localhost/invalid").unwrap(),
+            PgPool::connect_lazy("postgres://test:test@localhost/test").unwrap(), // NOSONAR - dummy test pool, never connects
             "https://idp.example.com",
             "https://idp.example.com/sso",
             None,

@@ -244,6 +244,7 @@ impl Config {
         }
 
         const KNOWN_PLACEHOLDERS: &[&str] = &[
+            // NOSONAR - these are values we explicitly reject, not credentials
             "change-me-in-production-please",
             "change-this-in-production-use-at-least-32-bytes",
         ];
