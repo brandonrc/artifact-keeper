@@ -170,10 +170,7 @@ pub struct TokenListResponse {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn require_admin(auth: &AuthExtension) -> Result<()> {
-    if !auth.is_admin {
-        return Err(AppError::Authorization("Admin access required".to_string()));
-    }
-    Ok(())
+    auth.require_admin()
 }
 
 pub(crate) fn validate_create_token_exclusivity(

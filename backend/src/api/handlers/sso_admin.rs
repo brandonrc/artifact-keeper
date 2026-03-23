@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::api::middleware::auth::AuthExtension;
 use crate::api::SharedState;
-use crate::error::{AppError, Result};
+use crate::error::Result;
 use crate::services::auth_config_service::{
     AuthConfigService, CreateLdapConfigRequest, CreateOidcConfigRequest, CreateSamlConfigRequest,
     LdapConfigResponse, LdapTestResult, OidcConfigResponse, SamlConfigResponse, SsoProviderInfo,
@@ -53,10 +53,7 @@ pub fn router() -> Router<SharedState> {
 // ---------------------------------------------------------------------------
 
 fn require_admin(auth: &AuthExtension) -> Result<()> {
-    if !auth.is_admin {
-        return Err(AppError::Unauthorized("Admin required".into()));
-    }
-    Ok(())
+    auth.require_admin()
 }
 
 // ---------------------------------------------------------------------------
@@ -658,8 +655,8 @@ mod tests {
         };
         let err = require_admin(&auth).unwrap_err();
         assert!(
-            format!("{}", err).contains("Admin required"),
-            "Expected 'Admin required' in error: {}",
+            format!("{}", err).contains("Admin access required"),
+            "Expected 'Admin access required' in error: {}",
             err
         );
     }

@@ -86,6 +86,17 @@ impl AuthExtension {
             )))
         }
     }
+
+    /// Return a 403 Forbidden error if the caller is not an admin.
+    pub fn require_admin(&self) -> crate::error::Result<()> {
+        if self.is_admin {
+            Ok(())
+        } else {
+            Err(AppError::Authorization(
+                "Admin access required".to_string(),
+            ))
+        }
+    }
 }
 
 impl From<Claims> for AuthExtension {

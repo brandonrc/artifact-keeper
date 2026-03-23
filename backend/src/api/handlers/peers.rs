@@ -120,12 +120,7 @@ pub struct IdentityResponse {
 }
 
 fn require_admin(auth: &AuthExtension) -> Result<()> {
-    if !auth.is_admin {
-        return Err(AppError::Unauthorized(
-            "Admin privileges required".to_string(),
-        ));
-    }
-    Ok(())
+    auth.require_admin()
 }
 
 fn parse_status(s: &str) -> Option<InstanceStatus> {
@@ -1091,8 +1086,8 @@ mod tests {
         };
         let err = require_admin(&auth).unwrap_err();
         assert!(
-            format!("{}", err).contains("Admin privileges required"),
-            "Expected 'Admin privileges required' in error: {}",
+            format!("{}", err).contains("Admin access required"),
+            "Expected 'Admin access required' in error: {}",
             err
         );
     }
