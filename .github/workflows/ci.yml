@@ -506,3 +506,62 @@ jobs:
           fi
 
           echo "✅ **CI Passed**" >> $GITHUB_STEP_SUMMARY
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # WINDOWS DEV BUILD (main push only)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  build-windows-dev:
+    name: 🪟 Windows Dev Build
+    runs-on: windows-latest
+    needs: [lint-rust, test-backend-unit]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Windows binary
+        env:
+          SQLX_OFFLINE: true
+          CARGO_TERM_COLOR: always
+        run: cargo build --release --target x86_64-pc-windows-msvc --features vendored-openssl
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/artifact-keeper.exe dist/artifact-keeper-windows-amd64.exe
+          cd dist
+          sha256sum artifact-keeper-windows-amd64.exe > artifact-keeper-windows-amd64.exe.sha256
+          echo "Built: $(ls -lh artifact-keeper-windows-amd64.exe | awk '{print $5}')"
+
+      - name: Upload dev binary to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # Create or update the windows-dev release
+          if gh release view windows-dev > /dev/null 2>&1; then
+            gh release delete-asset windows-dev artifact-keeper-windows-amd64.exe --yes || true
+            gh release delete-asset windows-dev artifact-keeper-windows-amd64.exe.sha256 --yes || true
+            gh release upload windows-dev dist/artifact-keeper-windows-amd64.exe dist/artifact-keeper-windows-amd64.exe.sha256 --clobber
+          else
+            gh release create windows-dev dist/artifact-keeper-windows-amd64.exe dist/artifact-keeper-windows-amd64.exe.sha256 \
+              --title "Windows Dev Build" \
+              --notes "Rolling dev build of the Windows binary from main. Updated on every push to main. Not for production use." \
+              --prerelease
+          fi
