@@ -358,7 +358,47 @@ impl CurationService {
         Ok(rows)
     }
 
+    /// Evaluate a package against a pre-fetched rule set in memory (no DB call).
+    fn evaluate_package_in_memory(
+        rules: &[CurationRule],
+        default_action: &str,
+        package_name: &str,
+        version: &str,
+        architecture: Option<&str>,
+    ) -> RuleEvaluation {
+        for rule in rules {
+            if !Self::pattern_matches(&rule.package_pattern, package_name) {
+                continue;
+            }
+            if !Self::version_matches(&rule.version_constraint, version) {
+                continue;
+            }
+            if rule.architecture != "*" {
+                if let Some(arch) = architecture {
+                    if rule.architecture != arch {
+                        continue;
+                    }
+                }
+            }
+
+            return RuleEvaluation {
+                action: rule.action.clone(),
+                reason: rule.reason.clone(),
+                rule_id: Some(rule.id),
+            };
+        }
+
+        RuleEvaluation {
+            action: default_action.to_string(),
+            reason: format!("No matching rule; default action: {default_action}"),
+            rule_id: None,
+        }
+    }
+
     /// Evaluate all pending packages against current rules and update their status.
+    ///
+    /// Fetches rules once, evaluates each package in memory, then batches the
+    /// status updates to avoid N+1 query overhead.
     pub async fn re_evaluate_pending(
         &self,
         staging_repo_id: Uuid,
@@ -371,17 +411,33 @@ impl CurationService {
         .fetch_all(&self.db)
         .await?;
 
-        let mut updated = 0u64;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // Fetch all applicable rules once
+        let rules: Vec<CurationRule> = sqlx::query_as(
+            r#"SELECT * FROM curation_rules
+               WHERE enabled = true
+                 AND (staging_repo_id = $1 OR staging_repo_id IS NULL)
+               ORDER BY priority ASC, created_at ASC"#,
+        )
+        .bind(staging_repo_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        // Group packages by (status, reason, rule_id) for batch updates
+        let mut groups: std::collections::HashMap<(String, String, Option<Uuid>), Vec<Uuid>> =
+            std::collections::HashMap::new();
+
         for pkg in &pending {
-            let eval = self
-                .evaluate_package(
-                    staging_repo_id,
-                    default_action,
-                    &pkg.package_name,
-                    &pkg.version,
-                    pkg.architecture.as_deref(),
-                )
-                .await?;
+            let eval = Self::evaluate_package_in_memory(
+                &rules,
+                default_action,
+                &pkg.package_name,
+                &pkg.version,
+                pkg.architecture.as_deref(),
+            );
 
             let new_status = match eval.action.as_str() {
                 "allow" => "approved",
@@ -389,9 +445,28 @@ impl CurationService {
                 _ => "review",
             };
 
-            self.set_package_status(pkg.id, new_status, &eval.reason, None, eval.rule_id)
-                .await?;
-            updated += 1;
+            groups
+                .entry((new_status.to_string(), eval.reason, eval.rule_id))
+                .or_default()
+                .push(pkg.id);
+        }
+
+        // Batch update each group
+        let mut updated = 0u64;
+        for ((status, reason, rule_id), ids) in &groups {
+            let result = sqlx::query(
+                r#"UPDATE curation_packages SET
+                   status = $2, evaluation_reason = $3, evaluated_by = NULL,
+                   rule_id = $4, evaluated_at = now()
+                   WHERE id = ANY($1)"#,
+            )
+            .bind(ids)
+            .bind(status)
+            .bind(reason)
+            .bind(rule_id)
+            .execute(&self.db)
+            .await?;
+            updated += result.rows_affected();
         }
         Ok(updated)
     }
