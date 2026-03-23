@@ -420,7 +420,6 @@ jobs:
 
       - name: Audit Rust dependencies
         run: cargo audit
-        continue-on-error: true
 
   # ════════════════════════════════════════════════════════════════════════════
   # FINAL STATUS
@@ -494,11 +493,12 @@ jobs:
             echo "⚠️ coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
           fi
 
-          # Security audit (non-blocking)
+          # Security audit (blocking)
           if [[ "${{ needs.security-audit.result }}" == "success" ]]; then
             echo "✅ security-audit" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ security-audit: ${{ needs.security-audit.result }}" >> $GITHUB_STEP_SUMMARY
+            echo "❌ security-audit: ${{ needs.security-audit.result }}" >> $GITHUB_STEP_SUMMARY
+            tier1_pass=false
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
