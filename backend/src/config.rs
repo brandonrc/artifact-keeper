@@ -164,7 +164,7 @@ redacted_debug!(Config {
 impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
-        Ok(Self {
+        let config = Self {
             database_url: env::var("DATABASE_URL")
                 .map_err(|_| AppError::Config("DATABASE_URL not set".into()))?,
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
@@ -228,7 +228,42 @@ impl Config {
                 env::var("ALLOW_LOCAL_ADMIN_LOGIN").as_deref(),
                 Ok("true" | "1")
             ),
-        })
+        };
+
+        config.validate_jwt_secret()?;
+
+        Ok(config)
+    }
+
+    /// Validate that JWT_SECRET meets minimum security requirements in production.
+    /// Validation is enforced only when ENVIRONMENT is explicitly set to "production".
+    fn validate_jwt_secret(&self) -> Result<()> {
+        let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".into());
+        if environment != "production" {
+            return Ok(());
+        }
+
+        const KNOWN_PLACEHOLDERS: &[&str] = &[
+            "change-me-in-production-please",
+            "change-this-in-production-use-at-least-32-bytes",
+        ];
+
+        if self.jwt_secret.len() < 32 {
+            return Err(AppError::Config(
+                "JWT_SECRET must be at least 32 characters when ENVIRONMENT=production"
+                    .into(),
+            ));
+        }
+
+        if KNOWN_PLACEHOLDERS.contains(&self.jwt_secret.as_str()) {
+            return Err(AppError::Config(
+                "JWT_SECRET is set to a known placeholder value. \
+                 Generate a secure random secret for production use."
+                    .into(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
