@@ -357,7 +357,7 @@ async fn token(
     };
 
     let auth_service = AuthService::new(state.db.clone(), Arc::new(state.config.clone()));
-    let (_user, tokens) = match auth_service
+    let (user, tokens) = match auth_service
         .authenticate(&credentials.0, &credentials.1)
         .await
     {
@@ -370,6 +370,18 @@ async fn token(
             )
         }
     };
+
+    // Block password-based OCI token requests when the user has TOTP 2FA
+    // enabled. Docker CLI cannot perform a TOTP challenge, so the user
+    // must create an API token (which bypasses TOTP) instead.
+    if user.totp_enabled {
+        return oci_error(
+            StatusCode::UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "TOTP 2FA is enabled on this account. \
+             Create a personal access token and use it as your Docker password instead.",
+        );
+    }
 
     let resp = TokenResponse {
         token: tokens.access_token.clone(),
