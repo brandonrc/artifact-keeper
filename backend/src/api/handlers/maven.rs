@@ -375,7 +375,6 @@ async fn generate_metadata_for_artifact(
           AND am.metadata->>'groupId' = $2
           AND am.metadata->>'artifactId' = $3
           AND a.version IS NOT NULL
-        ORDER BY a.version
         "#,
         repo_id,
         group_id,
@@ -391,8 +390,19 @@ async fn generate_metadata_for_artifact(
         return Err(AppError::NotFound("No versions found".to_string()).into_response());
     }
 
-    let latest = versions.last().unwrap().clone();
-    let xml = generate_metadata_xml(group_id, artifact_id, &versions, &latest, Some(&latest));
+    use crate::formats::maven_version;
+
+    let sorted = maven_version::sort_maven_versions(&versions);
+    let latest = sorted.last().unwrap().clone();
+    let release = maven_version::latest_release(&sorted).cloned();
+
+    let xml = generate_metadata_xml(
+        group_id,
+        artifact_id,
+        &sorted,
+        &latest,
+        release.as_deref(),
+    );
 
     Ok(xml)
 }
