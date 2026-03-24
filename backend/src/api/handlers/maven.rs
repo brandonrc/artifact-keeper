@@ -309,6 +309,82 @@ async fn download(
             }
         }
 
+        // Virtual repo: merge metadata from all members
+        if repo.repo_type == RepositoryType::Virtual {
+            if let Some((group_id, artifact_id)) = parse_metadata_path(&path) {
+                let mut all_versions: Vec<String> = Vec::new();
+
+                let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+                for member in &members {
+                    // Try generating metadata from this member's artifacts
+                    if let Ok(xml) = generate_metadata_for_artifact(
+                        &state.db,
+                        member.id,
+                        &group_id,
+                        &artifact_id,
+                    )
+                    .await
+                    {
+                        if let Some((_, _, versions)) =
+                            crate::formats::maven::parse_metadata_versions(&xml)
+                        {
+                            all_versions.extend(versions);
+                        }
+                    }
+
+                    // For remote members, also try proxying metadata from upstream
+                    if member.repo_type == RepositoryType::Remote {
+                        if let (Some(upstream_url), Some(ref proxy)) =
+                            (member.upstream_url.as_deref(), &state.proxy_service)
+                        {
+                            if let Ok((content, _)) = proxy_helpers::proxy_fetch(
+                                proxy,
+                                member.id,
+                                &member.key,
+                                upstream_url,
+                                &path,
+                            )
+                            .await
+                            {
+                                if let Ok(xml_str) = std::str::from_utf8(&content) {
+                                    if let Some((_, _, versions)) =
+                                        crate::formats::maven::parse_metadata_versions(xml_str)
+                                    {
+                                        all_versions.extend(versions);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !all_versions.is_empty() {
+                    all_versions.sort();
+                    all_versions.dedup();
+
+                    use crate::formats::maven_version;
+                    let sorted = maven_version::sort_maven_versions(&all_versions);
+                    let latest = sorted.last().unwrap().clone();
+                    let release = maven_version::latest_release(&sorted).cloned();
+
+                    let xml = generate_metadata_xml(
+                        &group_id,
+                        &artifact_id,
+                        &sorted,
+                        &latest,
+                        release.as_deref(),
+                    );
+
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "text/xml")
+                        .header(CONTENT_LENGTH, xml.len().to_string())
+                        .body(Body::from(xml))
+                        .unwrap());
+                }
+            }
+        }
+
         // Metadata not found anywhere
         return Err(AppError::NotFound("Metadata not found".to_string()).into_response());
     }

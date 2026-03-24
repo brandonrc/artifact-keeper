@@ -377,6 +377,39 @@ pub fn generate_metadata_xml(
     )
 }
 
+/// Parse a maven-metadata.xml to extract the version list.
+/// Returns (groupId, artifactId, versions).
+pub fn parse_metadata_versions(xml: &str) -> Option<(String, String, Vec<String>)> {
+    let group_id = xml
+        .split("<groupId>")
+        .nth(1)?
+        .split("</groupId>")
+        .next()?
+        .to_string();
+    let artifact_id = xml
+        .split("<artifactId>")
+        .nth(1)?
+        .split("</artifactId>")
+        .next()?
+        .to_string();
+
+    let mut versions = Vec::new();
+    if let Some(versions_block) = xml.split("<versions>").nth(1) {
+        if let Some(versions_block) = versions_block.split("</versions>").next() {
+            for segment in versions_block.split("<version>").skip(1) {
+                if let Some(ver) = segment.split("</version>").next() {
+                    let ver = ver.trim();
+                    if !ver.is_empty() {
+                        versions.push(ver.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Some((group_id, artifact_id, versions))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +564,20 @@ mod tests {
         assert!(xml.contains("<artifactId>mylib</artifactId>"));
         assert!(xml.contains("<latest>1.1.0</latest>"));
         assert!(xml.contains("<release>1.1.0</release>"));
+    }
+
+    #[test]
+    fn test_parse_metadata_versions() {
+        let xml = generate_metadata_xml(
+            "com.example",
+            "my-lib",
+            &["1.0.0".into(), "1.1.0".into()],
+            "1.1.0",
+            Some("1.1.0"),
+        );
+        let (g, a, versions) = parse_metadata_versions(&xml).unwrap();
+        assert_eq!(g, "com.example");
+        assert_eq!(a, "my-lib");
+        assert_eq!(versions, vec!["1.0.0", "1.1.0"]);
     }
 }
