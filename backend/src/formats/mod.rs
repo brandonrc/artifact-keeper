@@ -20,6 +20,7 @@ pub mod huggingface;
 pub mod incus;
 pub mod jetbrains_plugins;
 pub mod maven;
+pub mod maven_version;
 pub mod mlmodel;
 pub mod npm;
 pub mod nuget;
