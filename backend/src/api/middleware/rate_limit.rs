@@ -16,7 +16,13 @@ use tokio::sync::RwLock;
 
 use super::auth::AuthExtension;
 
-/// Rate limiter that tracks requests per key (IP or user ID).
+/// Per-instance, in-memory rate limiter that tracks requests per key (IP or user ID).
+///
+/// This limiter is **not shared across replicas**. Each application instance
+/// maintains its own counters, so effective per-client limits scale linearly
+/// with the number of instances. For multi-instance deployments behind a load
+/// balancer, use an ingress-level rate limiter (e.g. NGINX `limit_req`,
+/// Envoy, or a cloud WAF) to enforce global limits.
 #[derive(Debug)]
 pub struct RateLimiter {
     /// Map of key -> (request count, window start time)

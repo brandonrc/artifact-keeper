@@ -25,12 +25,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout backend
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -62,7 +62,7 @@ jobs:
           echo "- Schemas: $(python3 -c "import json; print(len(json.load(open('openapi.json')).get('components',{}).get('schemas',{})))")" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload spec artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: openapi-spec
           path: |

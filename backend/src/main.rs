@@ -114,9 +114,18 @@ pub async fn run_server(shutdown_token: Option<CancellationToken>) -> Result<()>
     let db_pool = db::create_pool(&config.database_url).await?;
     tracing::info!("Connected to database");
 
-    // Run migrations
-    sqlx::migrate!("./migrations").run(&db_pool).await?;
-    tracing::info!("Database migrations complete");
+    // Run migrations (skip with SKIP_MIGRATIONS=true for pre-applied migrations)
+    let skip_migrations = std::env::var("SKIP_MIGRATIONS")
+        .unwrap_or_default()
+        .eq_ignore_ascii_case("true");
+
+    if skip_migrations {
+        tracing::info!("SKIP_MIGRATIONS=true, skipping automatic database migrations");
+    } else {
+        tracing::info!("Running database migrations...");
+        sqlx::migrate!("./migrations").run(&db_pool).await?;
+        tracing::info!("Database migrations complete");
+    }
 
     // Provision admin user on first boot; returns true when setup lock is needed
     let setup_required = provision_admin_user(&db_pool, &config.storage_path).await?;
@@ -474,30 +483,8 @@ pub async fn run_server(shutdown_token: Option<CancellationToken>) -> Result<()>
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
                 let uri = request.uri();
-                let path = uri.path();
-                let sanitized = if let Some(query) = uri.query() {
-                    let redacted: String = query
-                        .split('&')
-                        .map(|pair| {
-                            if let Some((key, _)) = pair.split_once('=') {
-                                let k = key.to_lowercase();
-                                if k == "token"
-                                    || k == "key"
-                                    || k == "api_key"
-                                    || k == "password"
-                                    || k == "secret"
-                                {
-                                    return format!("{}=[REDACTED]", key);
-                                }
-                            }
-                            pair.to_string()
-                        })
-                        .collect::<Vec<_>>()
-                        .join("&");
-                    format!("{}?{}", path, redacted)
-                } else {
-                    path.to_string()
-                };
+                let sanitized =
+                    artifact_keeper_backend::api::redact_sensitive_params(uri.path(), uri.query());
                 tracing::info_span!(
                     "http_request",
                     method = %request.method(),

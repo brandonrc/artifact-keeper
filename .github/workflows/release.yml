@@ -79,7 +79,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -102,12 +102,12 @@ jobs:
 
       - name: Install build dependencies (Windows)
         if: runner.os == 'Windows'
-        uses: arduino/setup-protoc@v3
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
 
@@ -141,7 +141,7 @@ jobs:
           sha256sum ${{ matrix.name }}.exe > ${{ matrix.name }}.exe.sha256
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ${{ matrix.name }}
           path: |
@@ -159,10 +159,10 @@ jobs:
     if: always() && needs.build-binaries.result == 'success'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           pattern: artifact-keeper-*
@@ -202,7 +202,7 @@ jobs:
           ls -la release-assets/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Artifact Keeper ${{ steps.version.outputs.version }}
@@ -214,7 +214,7 @@ jobs:
 
       - name: Notify Windows MSI build
         if: steps.gates.outputs.all_passed == 'true'
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ secrets.WINDOWS_REPO_PAT }}
           repository: artifact-keeper/artifact-keeper-windows
@@ -235,10 +235,10 @@ jobs:
       needs.release-gate.result == 'success'
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Trigger Docker publish
-        uses: benc-uk/workflow-dispatch@v1
+        uses: benc-uk/workflow-dispatch@7a027648b88c2413826b6ddd6c76114894dc5ec4 # v1
         with:
           workflow: docker-publish.yml
           token: ${{ secrets.GITHUB_TOKEN }}

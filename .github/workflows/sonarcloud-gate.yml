@@ -136,7 +136,7 @@ jobs:
 
       - name: Download coverage artifact
         if: steps.check.outputs.status == 'NONE'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: lcov-coverage
           run-id: ${{ github.event.workflow_run.id }}
@@ -156,7 +156,7 @@ jobs:
 
       - name: Run SonarCloud Scan
         if: steps.check.outputs.status == 'NONE'
-        uses: SonarSource/sonarqube-scan-action@v7
+        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
@@ -228,7 +228,7 @@ jobs:
       # appear on the PR. We must explicitly post a commit status instead.
       - name: Set commit status
         if: always() && steps.pr.outputs.skip != 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           GATE_STATUS: ${{ steps.gate.outputs.status || steps.check.outputs.status }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -267,7 +267,7 @@ jobs:
       - name: Post PR comment
         if: always() && steps.pr.outputs.skip != 'true'
         continue-on-error: true
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           GATE_STATUS: ${{ steps.gate.outputs.status || steps.check.outputs.status }}
           COVERAGE: ${{ steps.gate.outputs.coverage }}
