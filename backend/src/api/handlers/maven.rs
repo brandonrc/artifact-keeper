@@ -491,13 +491,7 @@ async fn generate_metadata_for_artifact(
     let latest = sorted.last().unwrap().clone();
     let release = maven_version::latest_release(&sorted).cloned();
 
-    let xml = generate_metadata_xml(
-        group_id,
-        artifact_id,
-        &sorted,
-        &latest,
-        release.as_deref(),
-    );
+    let xml = generate_metadata_xml(group_id, artifact_id, &sorted, &latest, release.as_deref());
 
     Ok(xml)
 }
@@ -1362,10 +1356,7 @@ mod tests {
 
     #[test]
     fn test_content_type_xml() {
-        assert_eq!(
-            content_type_for_path("maven-metadata.xml"),
-            "text/xml"
-        );
+        assert_eq!(content_type_for_path("maven-metadata.xml"), "text/xml");
     }
 
     #[test]

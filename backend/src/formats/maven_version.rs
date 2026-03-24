@@ -368,10 +368,7 @@ mod tests {
             "1.0.0".to_string(),
         ];
         let sorted = sort_maven_versions(&versions);
-        assert_eq!(
-            sorted,
-            vec!["1.0.0", "1.0.1", "1.0.2", "1.0.10", "2.0.0"]
-        );
+        assert_eq!(sorted, vec!["1.0.0", "1.0.1", "1.0.2", "1.0.10", "2.0.0"]);
     }
 
     #[test]
@@ -396,10 +393,7 @@ mod tests {
 
     #[test]
     fn test_latest_release_all_snapshots() {
-        let versions = vec![
-            "1.0.0-SNAPSHOT".to_string(),
-            "2.0.0-SNAPSHOT".to_string(),
-        ];
+        let versions = vec!["1.0.0-SNAPSHOT".to_string(), "2.0.0-SNAPSHOT".to_string()];
         assert!(latest_release(&versions).is_none());
     }
 }
