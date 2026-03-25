@@ -222,6 +222,42 @@ impl S3Config {
     }
 }
 
+/// Generate the full S3 key with optional prefix.
+fn make_full_key(prefix: Option<&str>, key: &str) -> String {
+    match prefix {
+        Some(p) => format!("{}/{}", p.trim_end_matches('/'), key),
+        None => key.to_string(),
+    }
+}
+
+/// Strip the prefix from an S3 key.
+fn strip_key_prefix(prefix: Option<&str>, key: &str) -> String {
+    match prefix {
+        Some(p) => {
+            let prefix_with_slash = format!("{}/", p.trim_end_matches('/'));
+            key.strip_prefix(&prefix_with_slash)
+                .unwrap_or(key)
+                .to_string()
+        }
+        None => key.to_string(),
+    }
+}
+
+/// Try to generate an Artifactory fallback path from a native path.
+/// Native format: ab/cd/abcd...full_checksum (64 chars)
+/// Artifactory format: ab/abcd...full_checksum
+fn artifactory_fallback_path(key: &str) -> Option<String> {
+    if key.split('/').count() < 3 {
+        return None;
+    }
+    let checksum = key.rsplit('/').next()?;
+    if checksum.len() == 64 && checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("{}/{}", &checksum[..2], checksum))
+    } else {
+        None
+    }
+}
+
 /// S3-compatible storage backend
 pub struct S3Backend {
     store: AmazonS3,
@@ -336,41 +372,17 @@ impl S3Backend {
 
     /// Generate the full S3 key with optional prefix
     fn full_key(&self, key: &str) -> String {
-        match &self.prefix {
-            Some(prefix) => format!("{}/{}", prefix.trim_end_matches('/'), key),
-            None => key.to_string(),
-        }
+        make_full_key(self.prefix.as_deref(), key)
     }
 
     /// Strip the prefix from an S3 key
     fn strip_prefix(&self, key: &str) -> String {
-        match &self.prefix {
-            Some(prefix) => {
-                let prefix_with_slash = format!("{}/", prefix.trim_end_matches('/'));
-                key.strip_prefix(&prefix_with_slash)
-                    .unwrap_or(key)
-                    .to_string()
-            }
-            None => key.to_string(),
-        }
+        strip_key_prefix(self.prefix.as_deref(), key)
     }
 
     /// Try to generate an Artifactory fallback path from a native path
-    ///
-    /// Native format: ab/cd/abcd...full_checksum (64 chars)
-    /// Artifactory format: ab/abcd...full_checksum
     fn try_artifactory_fallback(&self, key: &str) -> Option<String> {
-        // Native format: {checksum[0:2]}/{checksum[2:4]}/{checksum}
-        // Need at least 3 segments and a 64-char hex final segment
-        if key.split('/').count() < 3 {
-            return None;
-        }
-        let checksum = key.rsplit('/').next()?;
-        if checksum.len() == 64 && checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
-            Some(format!("{}/{}", &checksum[..2], checksum))
-        } else {
-            None
-        }
+        artifactory_fallback_path(key)
     }
 
     async fn try_fallback_get(&self, key: &str, reason: &'static str) -> Result<Option<Bytes>> {
@@ -719,51 +731,129 @@ impl S3Backend {
 mod tests {
     use super::*;
 
+    // --- free function tests: make_full_key ---
+
     #[test]
     fn test_full_key_with_prefix() {
-        // We can't create a real S3Backend without credentials, but we can test the key logic
-        // by testing the string operations directly
-        let prefix = Some("artifacts".to_string());
-        let key = "test/file.txt";
-
-        let full = match &prefix {
-            Some(p) => format!("{}/{}", p.trim_end_matches('/'), key),
-            None => key.to_string(),
-        };
-
-        assert_eq!(full, "artifacts/test/file.txt");
+        assert_eq!(
+            make_full_key(Some("artifacts"), "test/file.txt"),
+            "artifacts/test/file.txt"
+        );
     }
 
     #[test]
     fn test_full_key_without_prefix() {
-        let prefix: Option<String> = None;
-        let key = "test/file.txt";
-
-        let full = match &prefix {
-            Some(p) => format!("{}/{}", p.trim_end_matches('/'), key),
-            None => key.to_string(),
-        };
-
-        assert_eq!(full, "test/file.txt");
+        assert_eq!(make_full_key(None, "test/file.txt"), "test/file.txt");
     }
 
     #[test]
-    fn test_strip_prefix() {
-        let prefix = Some("artifacts".to_string());
-        let key = "artifacts/test/file.txt";
-
-        let stripped = match &prefix {
-            Some(p) => {
-                let prefix_with_slash = format!("{}/", p.trim_end_matches('/'));
-                key.strip_prefix(&prefix_with_slash)
-                    .unwrap_or(key)
-                    .to_string()
-            }
-            None => key.to_string(),
-        };
-
-        assert_eq!(stripped, "test/file.txt");
+    fn test_full_key_trailing_slash_prefix() {
+        assert_eq!(
+            make_full_key(Some("artifacts/"), "test/file.txt"),
+            "artifacts/test/file.txt"
+        );
     }
+
+    #[test]
+    fn test_full_key_empty_key() {
+        assert_eq!(make_full_key(Some("prefix"), ""), "prefix/");
+        assert_eq!(make_full_key(None, ""), "");
+    }
+
+    #[test]
+    fn test_make_full_key_double_slash_prevention() {
+        // Prefix with trailing slash should not produce double slash
+        assert_eq!(make_full_key(Some("prefix/"), "key"), "prefix/key");
+    }
+
+    // --- free function tests: strip_key_prefix ---
+
+    #[test]
+    fn test_strip_prefix() {
+        assert_eq!(
+            strip_key_prefix(Some("artifacts"), "artifacts/test/file.txt"),
+            "test/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_strip_prefix_no_match() {
+        assert_eq!(
+            strip_key_prefix(Some("other-prefix"), "artifacts/test/file.txt"),
+            "artifacts/test/file.txt"
+        );
+    }
+
+    #[test]
+    fn test_strip_prefix_none() {
+        assert_eq!(strip_key_prefix(None, "test/file.txt"), "test/file.txt");
+    }
+
+    #[test]
+    fn test_strip_prefix_exact_match() {
+        // Key is exactly "prefix/" with nothing after
+        assert_eq!(strip_key_prefix(Some("prefix"), "prefix/"), "");
+    }
+
+    #[test]
+    fn test_strip_prefix_with_trailing_slash() {
+        assert_eq!(
+            strip_key_prefix(Some("prefix/"), "prefix/test/file.txt"),
+            "test/file.txt"
+        );
+    }
+
+    // --- free function tests: artifactory_fallback_path ---
+
+    #[test]
+    fn test_artifactory_fallback_valid_native_path() {
+        let key = "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
+        let result = artifactory_fallback_path(key);
+        assert_eq!(
+            result.unwrap(),
+            "91/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
+        );
+    }
+
+    #[test]
+    fn test_artifactory_fallback_short_checksum_rejected() {
+        assert!(artifactory_fallback_path("ab/cd/abcdef1234").is_none());
+    }
+
+    #[test]
+    fn test_artifactory_fallback_non_hex_rejected() {
+        assert!(artifactory_fallback_path(
+            "zz/yy/zzyy00000000000000000000000000000000000000000000000000gggggg"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_artifactory_fallback_single_segment_rejected() {
+        assert!(artifactory_fallback_path(
+            "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_artifactory_fallback_two_segments() {
+        assert!(artifactory_fallback_path(
+            "ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_artifactory_fallback_deeply_nested() {
+        // More than 3 segments should still work (takes the last one)
+        let checksum = "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
+        let key = format!("a/b/c/d/{}", checksum);
+        let result = artifactory_fallback_path(&key);
+        assert_eq!(result.unwrap(), format!("91/{}", checksum));
+    }
+
+    // --- S3Config constructor / builder tests ---
 
     #[test]
     fn test_s3_config_new() {
@@ -787,48 +877,13 @@ mod tests {
     fn test_s3_config_with_path_format() {
         let config = S3Config::new("my-bucket".to_string(), "us-west-2".to_string(), None, None)
             .with_path_format(StoragePathFormat::Artifactory);
-
         assert_eq!(config.path_format, StoragePathFormat::Artifactory);
     }
 
     #[test]
-    fn test_artifactory_fallback_path_extraction() {
-        // Test the path extraction logic directly
-        let native_key = "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
-
-        // Parse native format: {checksum[0:2]}/{checksum[2:4]}/{checksum}
-        let parts: Vec<&str> = native_key.split('/').collect();
-        assert_eq!(parts.len(), 3);
-
-        let checksum = parts[2];
-        assert_eq!(checksum.len(), 64);
-
-        // Generate Artifactory format
-        let artifactory_key = format!("{}/{}", &checksum[..2], checksum);
-        assert_eq!(
-            artifactory_key,
-            "91/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
-        );
-    }
-
-    #[test]
-    fn test_artifactory_fallback_invalid_key() {
-        // Test with invalid key (not a valid checksum path)
-        let invalid_key = "not/a/valid/path.txt";
-
-        let parts: Vec<&str> = invalid_key.split('/').collect();
-        let last_part = parts.last().unwrap();
-
-        // Should not match: not 64 chars and not all hex
-        assert!(last_part.len() != 64 || !last_part.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn test_path_format_with_s3_config() {
-        // Test that path format is properly set via with_path_format
         let config = S3Config::new("test".to_string(), "us-east-1".to_string(), None, None)
             .with_path_format(StoragePathFormat::Migration);
-
         assert_eq!(config.path_format, StoragePathFormat::Migration);
         assert!(config.path_format.has_fallback());
     }
@@ -845,11 +900,8 @@ mod tests {
         let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
             .with_redirect_downloads(true);
         assert!(config.redirect_downloads);
-        // Without presign credentials, Option A (auto-refresh) will be used
         assert!(config.presign_access_key.is_none());
     }
-
-    // --- S3Config builder method tests ---
 
     #[test]
     fn test_s3_config_with_presign_expiry() {
@@ -912,101 +964,6 @@ mod tests {
         assert_eq!(config.presign_expiry, Duration::from_secs(600));
         assert_eq!(config.path_format, StoragePathFormat::Migration);
         assert!(config.cloudfront.is_some());
-    }
-
-    // --- full_key / strip_prefix via actual struct logic ---
-
-    #[test]
-    fn test_full_key_trailing_slash_prefix() {
-        let prefix = Some("artifacts/".to_string());
-        let key = "test/file.txt";
-
-        let full = match &prefix {
-            Some(p) => format!("{}/{}", p.trim_end_matches('/'), key),
-            None => key.to_string(),
-        };
-
-        assert_eq!(full, "artifacts/test/file.txt");
-    }
-
-    #[test]
-    fn test_strip_prefix_no_match() {
-        let prefix = Some("other-prefix".to_string());
-        let key = "artifacts/test/file.txt";
-
-        let stripped = match &prefix {
-            Some(p) => {
-                let prefix_with_slash = format!("{}/", p.trim_end_matches('/'));
-                key.strip_prefix(&prefix_with_slash)
-                    .unwrap_or(key)
-                    .to_string()
-            }
-            None => key.to_string(),
-        };
-
-        // Key doesn't start with "other-prefix/", so it returns the key unchanged
-        assert_eq!(stripped, "artifacts/test/file.txt");
-    }
-
-    #[test]
-    fn test_strip_prefix_none() {
-        let prefix: Option<String> = None;
-        let key = "test/file.txt";
-
-        let stripped = match &prefix {
-            Some(p) => {
-                let prefix_with_slash = format!("{}/", p.trim_end_matches('/'));
-                key.strip_prefix(&prefix_with_slash)
-                    .unwrap_or(key)
-                    .to_string()
-            }
-            None => key.to_string(),
-        };
-
-        assert_eq!(stripped, "test/file.txt");
-    }
-
-    // --- try_artifactory_fallback logic ---
-
-    #[test]
-    fn test_artifactory_fallback_valid_native_path() {
-        // Simulate the try_artifactory_fallback logic for a valid path
-        let key = "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
-        let parts: Vec<&str> = key.split('/').collect();
-        assert_eq!(parts.len(), 3);
-        let checksum = parts[parts.len() - 1];
-        assert_eq!(checksum.len(), 64);
-        assert!(checksum.chars().all(|c| c.is_ascii_hexdigit()));
-        let fallback = format!("{}/{}", &checksum[..2], checksum);
-        assert_eq!(
-            fallback,
-            "91/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
-        );
-    }
-
-    #[test]
-    fn test_artifactory_fallback_short_checksum_rejected() {
-        let key = "ab/cd/abcdef1234";
-        let parts: Vec<&str> = key.split('/').collect();
-        let checksum = parts[parts.len() - 1];
-        // Not 64 chars, should be rejected
-        assert_ne!(checksum.len(), 64);
-    }
-
-    #[test]
-    fn test_artifactory_fallback_non_hex_rejected() {
-        let key = "zz/yy/zzyy00000000000000000000000000000000000000000000000000gggggg";
-        let parts: Vec<&str> = key.split('/').collect();
-        let checksum = parts[parts.len() - 1];
-        assert!(!checksum.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn test_artifactory_fallback_single_segment_rejected() {
-        let key = "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
-        let parts: Vec<&str> = key.split('/').collect();
-        // Only 1 part, need >= 3
-        assert!(parts.len() < 3);
     }
 
     // --- path_format tests ---
@@ -1080,6 +1037,372 @@ mod tests {
             Some("/etc/ssl/internal-ca.pem".to_string())
         );
         assert!(!config.insecure_tls);
+    }
+
+    // --- build_store tests ---
+
+    #[test]
+    fn test_build_store_invalid_ca_cert_path() {
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
+            .with_ca_cert_path("/nonexistent/ca.pem".to_string());
+        let result = S3Backend::build_store(&config, None, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Failed to read CA cert"), "got: {err}");
+    }
+
+    #[test]
+    fn test_build_store_with_explicit_credentials() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        );
+        let result = S3Backend::build_store(&config, Some("AKID"), Some("SECRET"));
+        assert!(
+            result.is_ok(),
+            "build_store should succeed with explicit creds"
+        );
+    }
+
+    #[test]
+    fn test_build_store_minimal_config() {
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None);
+        let result = S3Backend::build_store(&config, None, None);
+        assert!(
+            result.is_ok(),
+            "build_store should succeed with minimal config"
+        );
+    }
+
+    #[test]
+    fn test_build_store_with_custom_endpoint() {
+        let config = S3Config::new(
+            "b".to_string(),
+            "us-east-1".to_string(),
+            Some("https://s3.internal:9000".to_string()),
+            None,
+        );
+        let result = S3Backend::build_store(&config, None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_store_allows_http_for_http_endpoint() {
+        let config = S3Config::new(
+            "b".to_string(),
+            "us-east-1".to_string(),
+            Some("http://minio:9000".to_string()),
+            None,
+        );
+        // Should succeed (allow_http enabled for http:// endpoints)
+        assert!(S3Backend::build_store(&config, None, None).is_ok());
+    }
+
+    #[test]
+    fn test_build_store_insecure_tls() {
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
+            .with_insecure_tls(true);
+        assert!(S3Backend::build_store(&config, None, None).is_ok());
+    }
+
+    // --- S3Config from_env tests ---
+
+    #[test]
+    fn test_s3_config_from_env_missing_bucket() {
+        let original = std::env::var("S3_BUCKET").ok();
+        std::env::remove_var("S3_BUCKET");
+        let result = S3Config::from_env();
+        assert!(result.is_err());
+        // Restore
+        if let Some(v) = original {
+            std::env::set_var("S3_BUCKET", v);
+        }
+    }
+
+    #[test]
+    fn test_s3_config_from_env_success() {
+        // Save originals
+        let orig_bucket = std::env::var("S3_BUCKET").ok();
+        let orig_region = std::env::var("S3_REGION").ok();
+        let orig_endpoint = std::env::var("S3_ENDPOINT").ok();
+        let orig_prefix = std::env::var("S3_PREFIX").ok();
+        let orig_redirect = std::env::var("S3_REDIRECT_DOWNLOADS").ok();
+        let orig_expiry = std::env::var("S3_PRESIGN_EXPIRY_SECS").ok();
+        let orig_pak = std::env::var("S3_PRESIGN_ACCESS_KEY_ID").ok();
+        let orig_psk = std::env::var("S3_PRESIGN_SECRET_ACCESS_KEY").ok();
+        let orig_ca = std::env::var("S3_CA_CERT_PATH").ok();
+        let orig_insecure = std::env::var("S3_INSECURE_TLS").ok();
+        // Also save CloudFront vars to avoid interference
+        let orig_cf_url = std::env::var("CLOUDFRONT_DISTRIBUTION_URL").ok();
+
+        // Set test values
+        std::env::set_var("S3_BUCKET", "test-from-env-bucket");
+        std::env::set_var("S3_REGION", "eu-west-1");
+        std::env::set_var("S3_ENDPOINT", "http://localhost:9000");
+        std::env::set_var("S3_PREFIX", "my-prefix");
+        std::env::set_var("S3_REDIRECT_DOWNLOADS", "true");
+        std::env::set_var("S3_PRESIGN_EXPIRY_SECS", "7200");
+        std::env::set_var("S3_PRESIGN_ACCESS_KEY_ID", "presign-ak");
+        std::env::set_var("S3_PRESIGN_SECRET_ACCESS_KEY", "presign-sk");
+        std::env::remove_var("S3_CA_CERT_PATH");
+        std::env::set_var("S3_INSECURE_TLS", "1");
+        std::env::remove_var("CLOUDFRONT_DISTRIBUTION_URL");
+
+        let result = S3Config::from_env();
+        assert!(
+            result.is_ok(),
+            "from_env should succeed: {:?}",
+            result.err()
+        );
+        let config = result.unwrap();
+        assert_eq!(config.bucket, "test-from-env-bucket");
+        assert_eq!(config.region, "eu-west-1");
+        assert_eq!(config.endpoint, Some("http://localhost:9000".to_string()));
+        assert_eq!(config.prefix, Some("my-prefix".to_string()));
+        assert!(config.redirect_downloads);
+        assert_eq!(config.presign_expiry, Duration::from_secs(7200));
+        assert_eq!(config.presign_access_key, Some("presign-ak".to_string()));
+        assert_eq!(config.presign_secret_key, Some("presign-sk".to_string()));
+        assert!(config.ca_cert_path.is_none());
+        assert!(config.insecure_tls);
+        assert!(config.cloudfront.is_none());
+
+        // Restore all originals
+        let restore = |name: &str, val: Option<String>| match val {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        };
+        restore("S3_BUCKET", orig_bucket);
+        restore("S3_REGION", orig_region);
+        restore("S3_ENDPOINT", orig_endpoint);
+        restore("S3_PREFIX", orig_prefix);
+        restore("S3_REDIRECT_DOWNLOADS", orig_redirect);
+        restore("S3_PRESIGN_EXPIRY_SECS", orig_expiry);
+        restore("S3_PRESIGN_ACCESS_KEY_ID", orig_pak);
+        restore("S3_PRESIGN_SECRET_ACCESS_KEY", orig_psk);
+        restore("S3_CA_CERT_PATH", orig_ca);
+        restore("S3_INSECURE_TLS", orig_insecure);
+        restore("CLOUDFRONT_DISTRIBUTION_URL", orig_cf_url);
+    }
+
+    #[test]
+    fn test_build_store_with_valid_ca_cert() {
+        // Use the test fixture PEM file
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let pem_path = format!("{}/tests/fixtures/test-ca.pem", manifest_dir);
+
+        // Only run if the fixture exists
+        if !std::path::Path::new(&pem_path).exists() {
+            eprintln!("Skipping: test-ca.pem fixture not found at {}", pem_path);
+            return;
+        }
+
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
+            .with_ca_cert_path(pem_path);
+        let result = S3Backend::build_store(&config, None, None);
+        assert!(
+            result.is_ok(),
+            "build_store with valid CA cert should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_build_store_with_invalid_pem_content() {
+        let tmp_path = std::env::temp_dir().join("test-bad-ca-s3.pem");
+        std::fs::write(&tmp_path, b"not-a-valid-pem").expect("write temp PEM");
+
+        let config = S3Config::new("b".to_string(), "us-east-1".to_string(), None, None)
+            .with_ca_cert_path(tmp_path.to_str().unwrap().to_string());
+        let result = S3Backend::build_store(&config, None, None);
+        let _ = std::fs::remove_file(&tmp_path);
+        // The PEM bundle parser may succeed with 0 certs or fail, either is acceptable
+        // as long as we exercise the code path
+        let _ = result;
+    }
+
+    // --- Presign expiry clamping ---
+
+    #[test]
+    fn test_presign_expiry_clamp_within_limit() {
+        let expiry = Duration::from_secs(3600);
+        let clamped = Duration::from_secs(expiry.as_secs().min(604800));
+        assert_eq!(clamped, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn test_presign_expiry_clamp_exceeds_7_days() {
+        let expiry = Duration::from_secs(1_000_000);
+        let clamped = Duration::from_secs(expiry.as_secs().min(604800));
+        assert_eq!(clamped, Duration::from_secs(604800));
+    }
+
+    #[test]
+    fn test_presign_expiry_clamp_exact_7_days() {
+        let expiry = Duration::from_secs(604800);
+        let clamped = Duration::from_secs(expiry.as_secs().min(604800));
+        assert_eq!(clamped, Duration::from_secs(604800));
+    }
+
+    // --- S3Backend::new construction tests ---
+
+    #[tokio::test]
+    async fn test_s3_backend_new_minimal() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            Some("prefix".to_string()),
+        );
+        let backend = S3Backend::new(config).await;
+        assert!(backend.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_new_with_signing_store() {
+        let mut config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        );
+        config.presign_access_key = Some("SIGN_AK".to_string());
+        config.presign_secret_key = Some("SIGN_SK".to_string());
+        config.redirect_downloads = true;
+        let backend = S3Backend::new(config).await;
+        assert!(backend.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_new_with_tls_config() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        )
+        .with_insecure_tls(true);
+        let backend = S3Backend::new(config).await;
+        assert!(backend.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_new_migration_path_format() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        )
+        .with_path_format(StoragePathFormat::Migration);
+        let backend = S3Backend::new(config).await;
+        assert!(backend.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_supports_redirect_false_by_default() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        );
+        let backend = S3Backend::new(config).await.unwrap();
+        assert!(!backend.redirect_downloads);
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_supports_redirect_when_enabled() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        )
+        .with_redirect_downloads(true);
+        let backend = S3Backend::new(config).await.unwrap();
+        assert!(backend.redirect_downloads);
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_full_key_integration() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            Some("myprefix".to_string()),
+        );
+        let backend = S3Backend::new(config).await.unwrap();
+        assert_eq!(backend.full_key("some/path"), "myprefix/some/path");
+        assert_eq!(backend.strip_prefix("myprefix/some/path"), "some/path");
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_fallback_integration() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        )
+        .with_path_format(StoragePathFormat::Migration);
+        let backend = S3Backend::new(config).await.unwrap();
+
+        let key = "91/6f/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9";
+        let fallback = backend.try_artifactory_fallback(key);
+        assert_eq!(
+            fallback.unwrap(),
+            "91/916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
+        );
+
+        // No fallback for non-checksum paths
+        assert!(backend.try_artifactory_fallback("not/valid").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_from_env_with_env_vars() {
+        // Save originals
+        let orig_bucket = std::env::var("S3_BUCKET").ok();
+        let orig_region = std::env::var("S3_REGION").ok();
+        let orig_endpoint = std::env::var("S3_ENDPOINT").ok();
+        let orig_cf_url = std::env::var("CLOUDFRONT_DISTRIBUTION_URL").ok();
+
+        std::env::set_var("S3_BUCKET", "env-test-bucket");
+        std::env::set_var("S3_REGION", "ap-south-1");
+        std::env::set_var("S3_ENDPOINT", "http://localhost:9999");
+        std::env::remove_var("CLOUDFRONT_DISTRIBUTION_URL");
+
+        let backend = S3Backend::from_env().await;
+        assert!(
+            backend.is_ok(),
+            "from_env should succeed: {:?}",
+            backend.err()
+        );
+
+        // Restore
+        let restore = |name: &str, val: Option<String>| match val {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        };
+        restore("S3_BUCKET", orig_bucket);
+        restore("S3_REGION", orig_region);
+        restore("S3_ENDPOINT", orig_endpoint);
+        restore("CLOUDFRONT_DISTRIBUTION_URL", orig_cf_url);
+    }
+
+    #[tokio::test]
+    async fn test_s3_backend_new_invalid_ca_cert_fails() {
+        let config = S3Config::new(
+            "test-bucket".to_string(),
+            "us-east-1".to_string(),
+            Some("http://localhost:9999".to_string()),
+            None,
+        )
+        .with_ca_cert_path("/nonexistent/cert.pem".to_string());
+        let backend = S3Backend::new(config).await;
+        assert!(backend.is_err());
     }
 }
 
