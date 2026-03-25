@@ -1,12 +1,16 @@
-//! S3 storage backend using rust-s3 crate.
+//! S3 storage backend using the `object_store` crate (Apache Arrow project).
 //!
-//! Supports AWS S3 and S3-compatible services (MinIO, etc.).
+//! Supports AWS S3 and S3-compatible services (MinIO, Ceph RGW, R2, etc.).
 //! Configuration via environment variables:
 //! - S3_BUCKET: Bucket name (required)
 //! - S3_REGION: AWS region (default: us-east-1)
 //! - S3_ENDPOINT: Custom endpoint URL for S3-compatible services
 //! - S3_ACCESS_KEY_ID: Access key (preferred, falls back to AWS_ACCESS_KEY_ID)
 //! - S3_SECRET_ACCESS_KEY: Secret key (preferred, falls back to AWS_SECRET_ACCESS_KEY)
+//!
+//! For TLS configuration:
+//! - S3_CA_CERT_PATH: Path to PEM file with custom CA certificate(s)
+//! - S3_INSECURE_TLS: Disable TLS certificate verification (default: false)
 //!
 //! For redirect downloads (302 to presigned URLs):
 //! - S3_REDIRECT_DOWNLOADS: Enable 302 redirects (default: false)
@@ -25,11 +29,10 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use s3::bucket::Bucket;
-use s3::creds::Credentials;
-use s3::error::S3Error;
-use s3::region::Region;
-use s3::request::ResponseData;
+use futures::TryStreamExt;
+use object_store::aws::{AmazonS3, AmazonS3Builder};
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use std::time::Duration;
 
 use super::{PresignedUrl, PresignedUrlSource, StoragePathFormat};
@@ -58,6 +61,10 @@ pub struct S3Config {
     pub presign_access_key: Option<String>,
     /// Dedicated secret key for presigned URL signing (optional, overrides default credentials)
     pub presign_secret_key: Option<String>,
+    /// Path to a PEM file containing custom CA certificate(s) for S3 connections
+    pub ca_cert_path: Option<String>,
+    /// Disable TLS certificate verification (for dev/test with self-signed certs)
+    pub insecure_tls: bool,
 }
 
 /// CloudFront CDN configuration for signed URLs
@@ -99,6 +106,11 @@ impl S3Config {
         let presign_access_key = std::env::var("S3_PRESIGN_ACCESS_KEY_ID").ok();
         let presign_secret_key = std::env::var("S3_PRESIGN_SECRET_ACCESS_KEY").ok();
 
+        let ca_cert_path = std::env::var("S3_CA_CERT_PATH").ok();
+        let insecure_tls = std::env::var("S3_INSECURE_TLS")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
         Ok(Self {
             bucket,
             region,
@@ -110,6 +122,8 @@ impl S3Config {
             path_format,
             presign_access_key,
             presign_secret_key,
+            ca_cert_path,
+            insecure_tls,
         })
     }
 
@@ -168,6 +182,8 @@ impl S3Config {
             path_format: StoragePathFormat::default(),
             presign_access_key: None,
             presign_secret_key: None,
+            ca_cert_path: None,
+            insecure_tls: false,
         }
     }
 
@@ -194,88 +210,86 @@ impl S3Config {
         self.cloudfront = Some(config);
         self
     }
+
+    pub fn with_ca_cert_path(mut self, path: String) -> Self {
+        self.ca_cert_path = Some(path);
+        self
+    }
+
+    pub fn with_insecure_tls(mut self, insecure: bool) -> Self {
+        self.insecure_tls = insecure;
+        self
+    }
 }
 
 /// S3-compatible storage backend
 pub struct S3Backend {
-    bucket: Box<Bucket>,
+    store: AmazonS3,
     prefix: Option<String>,
-    /// Enable redirect downloads via presigned URLs
     redirect_downloads: bool,
-    /// Default presigned URL expiry
     presign_expiry: Duration,
-    /// CloudFront configuration (optional)
     cloudfront: Option<CloudFrontConfig>,
-    /// Storage path format (for Artifactory compatibility)
     path_format: StoragePathFormat,
-    /// Pre-built signing bucket with dedicated credentials (Option B)
-    signing_bucket: Option<Box<Bucket>>,
-    /// Stored region for creating fresh signing buckets (Option A)
-    region: Region,
-    /// Stored bucket name for creating fresh signing buckets (Option A)
-    bucket_name: String,
-    /// Whether to use path-style access (for MinIO)
-    use_path_style: bool,
+    signing_store: Option<AmazonS3>,
 }
 
 impl S3Backend {
-    /// Create new S3 backend from configuration
-    pub async fn new(config: S3Config) -> Result<Self> {
-        // S3-prefixed credential env vars take precedence, then fall back to the
-        // default AWS credential chain (AWS_ACCESS_KEY_ID, ~/.aws/credentials, IRSA, etc.)
-        let credentials = if let (Ok(ak), Ok(sk)) = (
+    fn build_store(config: &S3Config, access_key: Option<&str>, secret_key: Option<&str>) -> Result<AmazonS3> {
+        let mut client_opts = object_store::ClientOptions::new();
+
+        if config.endpoint.as_ref().is_some_and(|e| e.starts_with("http://")) {
+            client_opts = client_opts.with_allow_http(true);
+        }
+
+        if let Some(ca_path) = &config.ca_cert_path {
+            let pem = std::fs::read(ca_path)
+                .map_err(|e| AppError::Config(format!("Failed to read CA cert '{}': {}", ca_path, e)))?;
+            let certs = object_store::Certificate::from_pem_bundle(&pem)
+                .map_err(|e| AppError::Config(format!("Invalid CA cert PEM '{}': {}", ca_path, e)))?;
+            for cert in certs {
+                client_opts = client_opts.with_root_certificate(cert);
+            }
+            tracing::info!(path = %ca_path, "Loaded custom CA certificate(s) for S3");
+        }
+
+        if config.insecure_tls {
+            client_opts = client_opts.with_allow_invalid_certificates(true);
+            tracing::warn!("S3 TLS certificate verification is DISABLED (S3_INSECURE_TLS=true)");
+        }
+
+        let mut builder = AmazonS3Builder::new()
+            .with_bucket_name(&config.bucket)
+            .with_region(&config.region)
+            .with_client_options(client_opts);
+
+        if let Some(endpoint) = &config.endpoint {
+            builder = builder.with_endpoint(endpoint);
+        }
+
+        if let Some(ak) = access_key {
+            if let Some(sk) = secret_key {
+                builder = builder.with_access_key_id(ak).with_secret_access_key(sk);
+            }
+        } else if let (Ok(ak), Ok(sk)) = (
             std::env::var("S3_ACCESS_KEY_ID"),
             std::env::var("S3_SECRET_ACCESS_KEY"),
         ) {
             tracing::info!("Using S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY for S3 credentials");
-            Credentials::new(Some(&ak), Some(&sk), None, None, None)
-                .map_err(|e| AppError::Config(format!("Invalid S3 credentials: {}", e)))?
-        } else {
-            Credentials::default()
-                .map_err(|e| AppError::Config(format!("Failed to load AWS credentials: {}", e)))?
-        };
+            builder = builder.with_access_key_id(&ak).with_secret_access_key(&sk);
+        }
 
-        // Create region (with optional custom endpoint)
-        let region = match &config.endpoint {
-            Some(endpoint) => Region::Custom {
-                region: config.region.clone(),
-                endpoint: endpoint.clone(),
-            },
-            None => config
-                .region
-                .parse()
-                .map_err(|_| AppError::Config(format!("Invalid S3 region: {}", config.region)))?,
-        };
+        builder.build().map_err(|e| AppError::Config(format!("Failed to build S3 client: {}", e)))
+    }
 
-        let use_path_style = config.endpoint.is_some();
+    /// Create new S3 backend from configuration
+    pub async fn new(config: S3Config) -> Result<Self> {
+        let store = Self::build_store(&config, None, None)?;
 
-        // Create bucket handle
-        let bucket = Bucket::new(&config.bucket, region.clone(), credentials)
-            .map_err(|e| AppError::Config(format!("Failed to create S3 bucket: {}", e)))?;
-
-        // Enable path-style access for MinIO compatibility
-        let bucket = if use_path_style {
-            bucket.with_path_style()
-        } else {
-            bucket
-        };
-
-        // Build dedicated signing bucket if explicit presign credentials are provided
-        let signing_bucket = match (&config.presign_access_key, &config.presign_secret_key) {
+        let signing_store = match (&config.presign_access_key, &config.presign_secret_key) {
             (Some(ak), Some(sk)) => {
-                let signing_creds = Credentials::new(Some(ak), Some(sk), None, None, None)
-                    .map_err(|e| AppError::Config(format!("Invalid presign credentials: {}", e)))?;
-                let sb =
-                    Bucket::new(&config.bucket, region.clone(), signing_creds).map_err(|e| {
-                        AppError::Config(format!("Failed to create signing bucket: {}", e))
-                    })?;
-                let sb = if use_path_style {
-                    sb.with_path_style()
-                } else {
-                    sb
-                };
+                let ss = Self::build_store(&config, Some(ak), Some(sk))?;
                 tracing::info!("Using dedicated credentials for presigned URL signing");
-                Some(sb)
+                Some(ss)
             }
             _ => None,
         };
@@ -285,35 +299,26 @@ impl S3Backend {
                 bucket = %config.bucket,
                 cloudfront = config.cloudfront.is_some(),
                 expiry_secs = config.presign_expiry.as_secs(),
-                dedicated_signing_creds = signing_bucket.is_some(),
+                dedicated_signing_creds = signing_store.is_some(),
                 "S3 redirect downloads enabled"
             );
         }
 
         if config.path_format != StoragePathFormat::Native {
-            tracing::info!(
-                path_format = %config.path_format,
-                "S3 storage path format configured"
-            );
+            tracing::info!(path_format = %config.path_format, "S3 storage path format configured");
         }
 
-        let bucket_name = config.bucket;
-
         Ok(Self {
-            bucket,
+            store,
             prefix: config.prefix,
             redirect_downloads: config.redirect_downloads,
             presign_expiry: config.presign_expiry,
             cloudfront: config.cloudfront,
             path_format: config.path_format,
-            signing_bucket,
-            region,
-            bucket_name,
-            use_path_style,
+            signing_store,
         })
     }
 
-    /// Create S3 backend from environment variables
     pub async fn from_env() -> Result<Self> {
         let config = S3Config::from_env()?;
         Self::new(config).await
@@ -358,140 +363,6 @@ impl S3Backend {
         None
     }
 
-    fn is_not_found_error(err: &str) -> bool {
-        err.contains("404") || err.contains("NoSuchKey")
-    }
-
-    /// Check if a head_object error string indicates "not found" (includes "Not Found" variant
-    /// used by some S3-compatible backends in addition to standard 404/NoSuchKey).
-    fn is_head_not_found_error(err: &str) -> bool {
-        Self::is_not_found_error(err) || err.contains("Not Found")
-    }
-
-    /// Validate that a put response has a successful status code.
-    /// Returns Ok(()) for 2xx, Err(Storage) otherwise.
-    /// The `body` parameter is included in error messages to surface S3 error
-    /// details (e.g. AccessDenied, SignatureDoesNotMatch) for diagnostics.
-    fn classify_put_status(key: &str, status: u16, body: &[u8]) -> Result<()> {
-        if (200..300).contains(&status) {
-            Ok(())
-        } else {
-            let detail = String::from_utf8_lossy(body);
-            let detail = if detail.is_empty() {
-                String::new()
-            } else {
-                // Truncate long XML bodies to a reasonable length
-                let truncated: String = detail.chars().take(512).collect();
-                format!(": {}", truncated)
-            };
-            Err(AppError::Storage(format!(
-                "S3 returned status {} for put '{}'{}",
-                status, key, detail
-            )))
-        }
-    }
-
-    /// Classify the primary get_object result (before fallback logic).
-    /// Returns:
-    ///   Ok(Some(())) for 2xx responses
-    ///   Ok(None) for 404 status (caller should try fallback)
-    ///   Err(Storage) for other non-2xx status codes
-    fn classify_get_response(key: &str, resp: &ResponseData) -> Result<Option<()>> {
-        let status = resp.status_code();
-        if (200..300).contains(&status) {
-            Ok(Some(()))
-        } else if status == 404 {
-            Ok(None)
-        } else {
-            Err(AppError::Storage(format!(
-                "S3 returned status {} for '{}'",
-                status, key
-            )))
-        }
-    }
-
-    /// Classify a get_object S3Error.
-    /// Returns true if the error indicates "not found" (caller should try fallback),
-    /// or returns Err(Storage) for other errors.
-    fn classify_get_error_is_not_found(key: &str, e: &S3Error) -> Result<bool> {
-        let err_str = e.to_string();
-        if Self::is_not_found_error(&err_str) {
-            Ok(true)
-        } else {
-            Err(AppError::Storage(format!(
-                "Failed to get object '{}': {}",
-                key, e
-            )))
-        }
-    }
-
-    /// Classify a head_object status code for exists/size operations.
-    /// Returns:
-    ///   Ok(Some(true)) for 2xx (object exists)
-    ///   Ok(None) for 404 (not found, caller may try fallback)
-    ///   Err(Storage) for other status codes
-    fn classify_head_status(key: &str, status: u16) -> Result<Option<bool>> {
-        if (200..300).contains(&status) {
-            Ok(Some(true))
-        } else if status == 404 {
-            Ok(None)
-        } else {
-            Err(AppError::Storage(format!(
-                "S3 returned status {} for head '{}'",
-                status, key
-            )))
-        }
-    }
-
-    /// Validate that a delete response has an acceptable status code.
-    /// Returns Ok(()) for 2xx or 404, Err(Storage) otherwise.
-    fn classify_delete_status(key: &str, status: u16) -> Result<()> {
-        if (200..300).contains(&status) || status == 404 {
-            Ok(())
-        } else {
-            Err(AppError::Storage(format!(
-                "S3 returned status {} for delete '{}'",
-                status, key
-            )))
-        }
-    }
-
-    fn classify_fallback_get_result(
-        key: &str,
-        fallback_key: &str,
-        result: std::result::Result<ResponseData, S3Error>,
-    ) -> Result<Option<Bytes>> {
-        match result {
-            Ok(resp) if (200..300).contains(&resp.status_code()) => {
-                tracing::info!(
-                    key = %key,
-                    fallback = %fallback_key,
-                    size = resp.bytes().len(),
-                    "Found artifact at Artifactory fallback path"
-                );
-                Ok(Some(Bytes::from(resp.to_vec())))
-            }
-            Ok(resp) if resp.status_code() == 404 => Ok(None),
-            Ok(resp) => Err(AppError::Storage(format!(
-                "S3 returned status {} for fallback '{}' while reading '{}'",
-                resp.status_code(),
-                fallback_key,
-                key
-            ))),
-            Err(e) => {
-                let err_str = e.to_string();
-                if Self::is_not_found_error(&err_str) {
-                    Ok(None)
-                } else {
-                    Err(AppError::Storage(format!(
-                        "Failed to get fallback object '{}' for '{}': {}",
-                        fallback_key, key, e
-                    )))
-                }
-            }
-        }
-    }
-
     async fn try_fallback_get(&self, key: &str, reason: &'static str) -> Result<Option<Bytes>> {
         if !self.path_format.has_fallback() {
             return Ok(None);
@@ -509,11 +380,26 @@ impl S3Backend {
             "Trying Artifactory fallback path"
         );
 
-        Self::classify_fallback_get_result(
-            key,
-            &fallback_key,
-            self.bucket.get_object(&fallback_full_key).await,
-        )
+        let path: ObjectPath = fallback_full_key.into();
+        match self.store.get(&path).await {
+            Ok(result) => {
+                let bytes = result.bytes().await.map_err(|e| {
+                    AppError::Storage(format!("Failed to read fallback '{}': {}", fallback_key, e))
+                })?;
+                tracing::info!(
+                    key = %key,
+                    fallback = %fallback_key,
+                    size = bytes.len(),
+                    "Found artifact at Artifactory fallback path"
+                );
+                Ok(Some(bytes))
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(AppError::Storage(format!(
+                "Failed to get fallback object '{}' for '{}': {}",
+                fallback_key, key, e
+            ))),
+        }
     }
 }
 
