@@ -82,7 +82,7 @@ async fn shutdown_signal() {
 pub async fn run_server(shutdown_token: Option<CancellationToken>) -> Result<()> {
     // Install a rustls CryptoProvider before any TLS operations.
     // Required by rustls 0.23+ when multiple providers (ring, aws-lc-rs)
-    // are compiled in via transitive dependencies (rust-s3, reqwest, sqlx).
+    // are compiled in via transitive dependencies (object_store, reqwest, sqlx).
     // Without this, IRSA/STS credential fetches panic at startup.
     rustls::crypto::ring::default_provider()
         .install_default()

@@ -227,7 +227,6 @@ pub struct S3Backend {
     store: AmazonS3,
     prefix: Option<String>,
     redirect_downloads: bool,
-    presign_expiry: Duration,
     cloudfront: Option<CloudFrontConfig>,
     path_format: StoragePathFormat,
     signing_store: Option<AmazonS3>,
@@ -324,7 +323,6 @@ impl S3Backend {
             store,
             prefix: config.prefix,
             redirect_downloads: config.redirect_downloads,
-            presign_expiry: config.presign_expiry,
             cloudfront: config.cloudfront,
             path_format: config.path_format,
             signing_store,
@@ -362,17 +360,17 @@ impl S3Backend {
     /// Native format: ab/cd/abcd...full_checksum (64 chars)
     /// Artifactory format: ab/abcd...full_checksum
     fn try_artifactory_fallback(&self, key: &str) -> Option<String> {
-        // Parse native format: {checksum[0:2]}/{checksum[2:4]}/{checksum}
-        let parts: Vec<&str> = key.split('/').collect();
-        if parts.len() >= 3 {
-            // Last part should be the full checksum
-            let checksum = parts[parts.len() - 1];
-            if checksum.len() == 64 && checksum.chars().all(|c| c.is_ascii_hexdigit()) {
-                // Generate Artifactory format: {checksum[0:2]}/{checksum}
-                return Some(format!("{}/{}", &checksum[..2], checksum));
-            }
+        // Native format: {checksum[0:2]}/{checksum[2:4]}/{checksum}
+        // Need at least 3 segments and a 64-char hex final segment
+        if key.split('/').count() < 3 {
+            return None;
         }
-        None
+        let checksum = key.rsplit('/').next()?;
+        if checksum.len() == 64 && checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Some(format!("{}/{}", &checksum[..2], checksum))
+        } else {
+            None
+        }
     }
 
     async fn try_fallback_get(&self, key: &str, reason: &'static str) -> Result<Option<Bytes>> {
@@ -419,10 +417,10 @@ impl S3Backend {
 impl super::StorageBackend for S3Backend {
     async fn put(&self, key: &str, content: Bytes) -> Result<()> {
         let full_key = self.full_key(key);
-        let path: ObjectPath = full_key.clone().into();
+        let path: ObjectPath = full_key.into();
 
         self.store.put(&path, content.into()).await.map_err(|e| {
-            tracing::error!(key = %key, full_key = %full_key, error = %e, "S3 put_object failed");
+            tracing::error!(key = %key, error = %e, "S3 put_object failed");
             AppError::Storage(format!("Failed to put object '{}': {}", key, e))
         })?;
 
@@ -714,16 +712,6 @@ impl S3Backend {
         );
 
         Ok(signed_url)
-    }
-
-    /// Check if redirect downloads are enabled
-    pub fn redirect_enabled(&self) -> bool {
-        self.redirect_downloads
-    }
-
-    /// Get the default presign expiry duration
-    pub fn default_presign_expiry(&self) -> Duration {
-        self.presign_expiry
     }
 }
 
