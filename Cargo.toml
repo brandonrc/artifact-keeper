@@ -37,11 +37,11 @@ hmac = "0.12"
 # Encryption
 aes-gcm = "0.10"
 
-# S3 storage using rust-s3 crate (works with Rust 1.75+)
-# fail-on-err: convert non-2xx S3 responses into Err() with full response body
-# (without this, PUT responses discard the body and replace it with the ETag header,
-# which means S3 error details like AccessDenied are silently lost)
-rust-s3 = { version = "0.37", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
+# S3 storage using Apache object_store crate (supports custom CA certs for TLS)
+object_store = { version = "0.13", features = ["aws"] }
+
+# HTTP types (used for presigned URL methods)
+http = "1"
 
 # Logging/Tracing
 tracing = "0.1"
