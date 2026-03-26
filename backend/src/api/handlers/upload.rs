@@ -17,6 +17,8 @@ use axum::routing::{patch, post};
 use axum::{Extension, Json, Router};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
@@ -123,6 +125,9 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Response, Response> {
     let user_id = auth.user_id;
+
+    // Validate artifact path before doing anything else
+    upload_service::validate_artifact_path(&req.artifact_path).map_err(map_upload_err)?;
 
     // Resolve repository
     let repo = sqlx::query_as::<_, (Uuid,)>(
@@ -494,6 +499,7 @@ fn artifact_name_from_path(path: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::io_other_error, clippy::unnecessary_literal_unwrap)]
 mod tests {
     use super::*;
 

@@ -522,6 +522,7 @@ pub fn parse_content_range(header: &str) -> Result<(i64, i64, i64), String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unnecessary_literal_unwrap, clippy::assertions_on_constants)]
     use super::*;
 
     // -----------------------------------------------------------------------
