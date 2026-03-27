@@ -291,7 +291,7 @@ async fn oidc_callback_inner(
     .await?;
 
     let frontend_url = format!(
-        "/auth/callback?code={}",
+        "/callback?code={}",
         urlencoding::encode(&exchange_code),
     );
 
@@ -514,7 +514,7 @@ pub async fn saml_acs(
     .await?;
 
     let frontend_url = format!(
-        "/auth/callback?code={}",
+        "/callback?code={}",
         urlencoding::encode(&exchange_code),
     );
 
