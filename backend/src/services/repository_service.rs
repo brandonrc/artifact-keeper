@@ -7,6 +7,7 @@ use std::sync::Arc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::api::validation::validate_outbound_url;
 use crate::error::{AppError, Result};
 #[allow(unused_imports)] // Used by sqlx query macros
 use crate::models::repository::{
@@ -46,17 +47,25 @@ pub struct UpdateRepositoryRequest {
 // Pure helper functions (no DB, testable in isolation)
 // ---------------------------------------------------------------------------
 
-/// Validate that a remote repository has an upstream URL.
-/// Returns an error message if validation fails, None if ok.
+/// Validate that a remote repository has an upstream URL and that the URL is
+/// safe to contact (anti-SSRF). Returns an error if validation fails.
 pub(crate) fn validate_remote_upstream(
     repo_type: &RepositoryType,
     upstream_url: &Option<String>,
-) -> Option<String> {
-    if *repo_type == RepositoryType::Remote && upstream_url.is_none() {
-        Some("Remote repository must have an upstream URL".to_string())
-    } else {
-        None
+) -> Result<()> {
+    if *repo_type == RepositoryType::Remote {
+        match upstream_url {
+            None => {
+                return Err(AppError::Validation(
+                    "Remote repository must have an upstream URL".to_string(),
+                ))
+            }
+            Some(url) => validate_outbound_url(url, "Upstream URL")?,
+        }
+    } else if let Some(url) = upstream_url {
+        validate_outbound_url(url, "Upstream URL")?;
     }
+    Ok(())
 }
 
 /// Derive a format key string from a RepositoryFormat enum.
@@ -126,10 +135,8 @@ impl RepositoryService {
 
     /// Create a new repository
     pub async fn create(&self, req: CreateRepositoryRequest) -> Result<Repository> {
-        // Validate remote repository has upstream URL
-        if let Some(msg) = validate_remote_upstream(&req.repo_type, &req.upstream_url) {
-            return Err(AppError::Validation(msg));
-        }
+        // Validate remote repository has upstream URL and it is safe to contact
+        validate_remote_upstream(&req.repo_type, &req.upstream_url)?;
 
         // Check if format handler is enabled (T044)
         let format_key = derive_format_key(&req.format);
@@ -346,6 +353,11 @@ impl RepositoryService {
 
     /// Update a repository
     pub async fn update(&self, id: Uuid, req: UpdateRepositoryRequest) -> Result<Repository> {
+        // Validate upstream_url is safe to contact if it is being updated
+        if let Some(ref url) = req.upstream_url {
+            validate_outbound_url(url, "Upstream URL")?;
+        }
+
         let repo = sqlx::query_as!(
             Repository,
             r#"
@@ -831,8 +843,8 @@ mod tests {
     #[test]
     fn test_validate_remote_upstream_remote_without_url_fails() {
         let result = validate_remote_upstream(&RepositoryType::Remote, &None);
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("upstream URL"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("upstream URL"));
     }
 
     #[test]
@@ -841,25 +853,25 @@ mod tests {
             &RepositoryType::Remote,
             &Some("https://upstream.example.com".to_string()),
         );
-        assert!(result.is_none());
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_remote_upstream_local_without_url_passes() {
         let result = validate_remote_upstream(&RepositoryType::Local, &None);
-        assert!(result.is_none());
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_remote_upstream_virtual_without_url_passes() {
         let result = validate_remote_upstream(&RepositoryType::Virtual, &None);
-        assert!(result.is_none());
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_remote_upstream_staging_without_url_passes() {
         let result = validate_remote_upstream(&RepositoryType::Staging, &None);
-        assert!(result.is_none());
+        assert!(result.is_ok());
     }
 
     // -----------------------------------------------------------------------

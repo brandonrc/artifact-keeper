@@ -53,7 +53,7 @@ jobs:
       - name: Setup Packer
         uses: hashicorp/setup-packer@c3d53c525d422944e50ee27b840746d6522b08de # main
         with:
-          version: latest
+          version: "1.11.2"
 
       - name: Packer Init
         working-directory: iac/packer

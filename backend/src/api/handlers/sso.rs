@@ -165,8 +165,8 @@ pub async fn oidc_callback(
     Query(params): Query<OidcCallbackQuery>,
 ) -> Result<Redirect> {
     // Validate SSO session (CSRF check), then delegate to shared logic
-    let _session = AuthConfigService::validate_sso_session(&state.db, &params.state).await?;
-    oidc_callback_inner(state, id, params.code).await
+    let session = AuthConfigService::validate_sso_session(&state.db, &params.state).await?;
+    oidc_callback_inner(state, id, params.code, session.nonce).await
 }
 
 /// Handle OIDC callback without provider UUID in the path.
@@ -181,7 +181,7 @@ pub async fn oidc_callback_generic(
 ) -> Result<Redirect> {
     // Validate SSO session and resolve the provider from the stored state
     let session = AuthConfigService::validate_sso_session(&state.db, &params.state).await?;
-    oidc_callback_inner(state, session.provider_id, params.code).await
+    oidc_callback_inner(state, session.provider_id, params.code, session.nonce).await
 }
 
 /// Shared OIDC callback logic used by both the provider-specific and generic
@@ -190,6 +190,7 @@ async fn oidc_callback_inner(
     state: SharedState,
     provider_id: Uuid,
     authorization_code: String,
+    session_nonce: Option<String>,
 ) -> Result<Redirect> {
     // 1. Get decrypted OIDC config
     let (row, client_secret) =
@@ -239,8 +240,16 @@ async fn oidc_callback_inner(
         .as_str()
         .ok_or_else(|| AppError::Internal("Token response missing id_token".into()))?;
 
-    // 5. Decode JWT payload (base64 decode the middle segment)
-    let claims = decode_jwt_payload(id_token)?;
+    // 5. Verify ID token signature and validate standard claims
+    let claims = validate_id_token(
+        &http_client,
+        id_token,
+        &discovery,
+        &row.client_id,
+        &row.issuer_url,
+        session_nonce.as_deref(),
+    )
+    .await?;
 
     // 6. Extract user claims (using attribute_mapping overrides when configured)
     let attr = &row.attribute_mapping;
@@ -636,10 +645,131 @@ pub(crate) fn extract_oidc_groups(claims: &serde_json::Value, groups_claim: &str
         .unwrap_or_default()
 }
 
+/// Validate an OIDC ID token by verifying its signature against the provider's
+/// JWKS and checking the `iss`, `aud`, `exp`, and `nonce` claims.
+async fn validate_id_token(
+    http_client: &reqwest::Client,
+    id_token: &str,
+    discovery: &serde_json::Value,
+    client_id: &str,
+    issuer_url: &str,
+    session_nonce: Option<&str>,
+) -> Result<serde_json::Value> {
+    use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
+
+    let jwks_uri = discovery["jwks_uri"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal("OIDC discovery missing jwks_uri".into()))?;
+
+    let jwks: serde_json::Value = http_client
+        .get(jwks_uri)
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to fetch JWKS: {e}")))?
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse JWKS: {e}")))?;
+
+    let header = decode_header(id_token)
+        .map_err(|e| AppError::Authentication(format!("Invalid ID token header: {e}")))?;
+
+    let keys = jwks["keys"]
+        .as_array()
+        .ok_or_else(|| AppError::Internal("JWKS missing keys array".into()))?;
+
+    let decoding_key = if let Some(kid) = &header.kid {
+        keys.iter()
+            .find(|k| k["kid"].as_str() == Some(kid.as_str()))
+            .ok_or_else(|| AppError::Authentication("No matching JWK found for kid".into()))
+            .and_then(|k| {
+                let kty = k["kty"].as_str().unwrap_or("");
+                if kty == "RSA" {
+                    let n = k["n"].as_str().ok_or_else(|| {
+                        AppError::Internal("JWK missing RSA modulus".into())
+                    })?;
+                    let e = k["e"].as_str().ok_or_else(|| {
+                        AppError::Internal("JWK missing RSA exponent".into())
+                    })?;
+                    DecodingKey::from_rsa_components(n, e).map_err(|err| {
+                        AppError::Internal(format!("Failed to build RSA decoding key: {err}"))
+                    })
+                } else if kty == "EC" {
+                    let x = k["x"].as_str().ok_or_else(|| {
+                        AppError::Internal("JWK missing EC x coordinate".into())
+                    })?;
+                    let y = k["y"].as_str().ok_or_else(|| {
+                        AppError::Internal("JWK missing EC y coordinate".into())
+                    })?;
+                    DecodingKey::from_ec_components(x, y).map_err(|err| {
+                        AppError::Internal(format!("Failed to build EC decoding key: {err}"))
+                    })
+                } else {
+                    Err(AppError::Internal(format!("Unsupported JWK key type: {kty}")))
+                }
+            })?
+    } else {
+        // No kid: try the first RSA or EC key
+        keys.iter()
+            .find_map(|k| {
+                let kty = k["kty"].as_str().unwrap_or("");
+                if kty == "RSA" {
+                    let n = k["n"].as_str()?;
+                    let e = k["e"].as_str()?;
+                    DecodingKey::from_rsa_components(n, e).ok()
+                } else if kty == "EC" {
+                    let x = k["x"].as_str()?;
+                    let y = k["y"].as_str()?;
+                    DecodingKey::from_ec_components(x, y).ok()
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| AppError::Internal("No usable JWK found in JWKS".into()))?
+    };
+
+    let alg = match header.alg {
+        jsonwebtoken::Algorithm::RS256 => Algorithm::RS256,
+        jsonwebtoken::Algorithm::RS384 => Algorithm::RS384,
+        jsonwebtoken::Algorithm::RS512 => Algorithm::RS512,
+        jsonwebtoken::Algorithm::ES256 => Algorithm::ES256,
+        jsonwebtoken::Algorithm::ES384 => Algorithm::ES384,
+        jsonwebtoken::Algorithm::PS256 => Algorithm::PS256,
+        jsonwebtoken::Algorithm::PS384 => Algorithm::PS384,
+        jsonwebtoken::Algorithm::PS512 => Algorithm::PS512,
+        other => {
+            return Err(AppError::Authentication(format!(
+                "Unsupported ID token algorithm: {other:?}"
+            )))
+        }
+    };
+
+    let mut validation = Validation::new(alg);
+    validation.set_audience(&[client_id]);
+    validation.set_issuer(&[issuer_url]);
+
+    let token_data = decode::<serde_json::Value>(id_token, &decoding_key, &validation)
+        .map_err(|e| AppError::Authentication(format!("ID token validation failed: {e}")))?;
+
+    let claims = token_data.claims;
+
+    if let Some(expected_nonce) = session_nonce {
+        let token_nonce = claims["nonce"]
+            .as_str()
+            .ok_or_else(|| AppError::Authentication("ID token missing nonce claim".into()))?;
+        if token_nonce != expected_nonce {
+            return Err(AppError::Authentication(
+                "ID token nonce does not match session nonce".into(),
+            ));
+        }
+    }
+
+    Ok(claims)
+}
+
 /// Decode the payload segment of a JWT without verifying the signature.
 ///
-/// This is safe here because we just received the token directly from the
-/// identity provider over a TLS-secured backchannel.
+/// WARNING: This function does NOT verify the JWT signature. Use
+/// `validate_id_token` for security-sensitive flows.
 pub(crate) fn decode_jwt_payload(token: &str) -> Result<serde_json::Value> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;

@@ -370,11 +370,7 @@ impl CveHistoryServiceTrait for CveHistoryGrpcServer {
     ) -> Result<Response<RetroactiveScanResponse>, Status> {
         let _req = request.into_inner();
 
-        // TODO: Implement retroactive scan job queuing
-        Ok(Response::new(RetroactiveScanResponse {
-            artifacts_queued: 0,
-            job_id: Uuid::new_v4().to_string(),
-        }))
+        Err(Status::unimplemented("Retroactive scan queuing is not yet implemented. This feature is planned for a future release."))
     }
 }
 

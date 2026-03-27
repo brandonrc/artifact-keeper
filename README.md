@@ -255,14 +255,14 @@ Get running in 5 minutes with Docker Compose: **[Quickstart Guide](https://artif
 
 ```
 artifact-keeper/
-├── backend/          # Rust backend (Axum, SQLx, 429 unit tests)
+├── backend/          # Rust backend (Axum, SQLx, 6,400+ unit tests)
 │   ├── src/
 │   │   ├── api/      # Handlers, middleware, routes
 │   │   ├── formats/  # 45+ format handler implementations
-│   │   ├── services/ # Business logic (35+ services)
-│   │   ├── models/   # Data models (18 types)
+│   │   ├── services/ # Business logic (68 services)
+│   │   ├── models/   # Data models (21 types)
 │   │   └── storage/  # FS and S3 backends
-│   └── migrations/   # 33 PostgreSQL migrations
+│   └── migrations/   # 69 PostgreSQL migrations
 ├── edge/             # Peer replication service (Rust)
 ├── scripts/          # Test runners, native client tests, stress tests
 └── .github/          # CI/CD workflows

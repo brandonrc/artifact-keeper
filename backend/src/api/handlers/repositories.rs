@@ -924,9 +924,11 @@ pub async fn list_artifacts(
 
     let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
 
+    let artifact_ids: Vec<Uuid> = artifacts.iter().map(|a| a.id).collect();
+    let download_counts = artifact_service.get_download_stats_batch(&artifact_ids).await?;
+
     let mut items = Vec::new();
     for artifact in artifacts {
-        let downloads = artifact_service.get_download_stats(artifact.id).await?;
         items.push(ArtifactResponse {
             id: artifact.id,
             repository_key: key.clone(),
@@ -936,7 +938,7 @@ pub async fn list_artifacts(
             size_bytes: artifact.size_bytes,
             checksum_sha256: artifact.checksum_sha256,
             content_type: artifact.content_type,
-            download_count: downloads,
+            download_count: *download_counts.get(&artifact.id).unwrap_or(&0),
             created_at: artifact.created_at,
             metadata: None,
         });

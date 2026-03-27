@@ -987,6 +987,23 @@ impl ArtifactService {
 
         Ok(count)
     }
+
+    /// Get download statistics for multiple artifacts in a single query
+    pub async fn get_download_stats_batch(&self, artifact_ids: &[Uuid]) -> Result<std::collections::HashMap<Uuid, i64>> {
+        let rows = sqlx::query!(
+            r#"SELECT artifact_id, COUNT(*) as "count!" FROM download_statistics WHERE artifact_id = ANY($1) GROUP BY artifact_id"#,
+            artifact_ids
+        )
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            map.insert(row.artifact_id, row.count);
+        }
+        Ok(map)
+    }
 }
 
 /// URL fields commonly found in package metadata across all formats.
