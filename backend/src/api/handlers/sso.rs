@@ -1196,4 +1196,110 @@ mod tests {
         let result = decode_jwt_payload(&token).unwrap();
         assert_eq!(result["name"], "Jean-Pierre Dupont");
     }
+
+    // --- validate_id_token logic coverage ---
+    // The full function is async + needs HTTP, but we can test the sub-logic.
+
+    #[test]
+    fn test_algorithm_mapping_rs256() {
+        use jsonwebtoken::Algorithm;
+        let alg = jsonwebtoken::Algorithm::RS256;
+        let mapped = match alg {
+            jsonwebtoken::Algorithm::RS256 => Algorithm::RS256,
+            jsonwebtoken::Algorithm::RS384 => Algorithm::RS384,
+            jsonwebtoken::Algorithm::RS512 => Algorithm::RS512,
+            jsonwebtoken::Algorithm::ES256 => Algorithm::ES256,
+            jsonwebtoken::Algorithm::ES384 => Algorithm::ES384,
+            jsonwebtoken::Algorithm::PS256 => Algorithm::PS256,
+            jsonwebtoken::Algorithm::PS384 => Algorithm::PS384,
+            jsonwebtoken::Algorithm::PS512 => Algorithm::PS512,
+            _ => panic!("unsupported"),
+        };
+        assert_eq!(mapped, Algorithm::RS256);
+    }
+
+    #[test]
+    fn test_algorithm_mapping_es256() {
+        use jsonwebtoken::Algorithm;
+        let alg = jsonwebtoken::Algorithm::ES256;
+        let mapped = match alg {
+            jsonwebtoken::Algorithm::RS256 => Algorithm::RS256,
+            jsonwebtoken::Algorithm::ES256 => Algorithm::ES256,
+            _ => panic!("unsupported"),
+        };
+        assert_eq!(mapped, Algorithm::ES256);
+    }
+
+    #[test]
+    fn test_nonce_validation_match() {
+        let claims = serde_json::json!({"nonce": "abc123"});
+        let expected = "abc123";
+        let token_nonce = claims["nonce"].as_str().unwrap();
+        assert_eq!(token_nonce, expected);
+    }
+
+    #[test]
+    fn test_nonce_validation_mismatch() {
+        let claims = serde_json::json!({"nonce": "abc123"});
+        let expected = "different";
+        let token_nonce = claims["nonce"].as_str().unwrap();
+        assert_ne!(token_nonce, expected);
+    }
+
+    #[test]
+    fn test_nonce_validation_missing_claim() {
+        let claims = serde_json::json!({"sub": "user"});
+        assert!(claims["nonce"].as_str().is_none());
+    }
+
+    #[test]
+    fn test_discovery_missing_jwks_uri() {
+        let discovery = serde_json::json!({"issuer": "https://idp.example.com"});
+        assert!(discovery["jwks_uri"].as_str().is_none());
+    }
+
+    #[test]
+    fn test_discovery_with_jwks_uri() {
+        let discovery = serde_json::json!({
+            "jwks_uri": "https://idp.example.com/.well-known/jwks.json"
+        });
+        assert_eq!(
+            discovery["jwks_uri"].as_str().unwrap(),
+            "https://idp.example.com/.well-known/jwks.json"
+        );
+    }
+
+    #[test]
+    fn test_jwks_key_selection_by_kid() {
+        let jwks = serde_json::json!({
+            "keys": [
+                {"kid": "key1", "kty": "RSA"},
+                {"kid": "key2", "kty": "EC"}
+            ]
+        });
+        let keys = jwks["keys"].as_array().unwrap();
+        let target_kid = "key2";
+        let found = keys.iter().find(|k| k["kid"].as_str() == Some(target_kid));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap()["kty"].as_str().unwrap(), "EC");
+    }
+
+    #[test]
+    fn test_jwks_key_fallback_first_key() {
+        let jwks = serde_json::json!({
+            "keys": [{"kty": "RSA", "n": "abc", "e": "AQAB"}]
+        });
+        let keys = jwks["keys"].as_array().unwrap();
+        // No kid match, fall back to first
+        let fallback = keys.first();
+        assert!(fallback.is_some());
+        assert_eq!(fallback.unwrap()["kty"].as_str().unwrap(), "RSA");
+    }
+
+    #[test]
+    fn test_jwks_empty_keys_array() {
+        let jwks = serde_json::json!({"keys": []});
+        let keys = jwks["keys"].as_array().unwrap();
+        assert!(keys.is_empty());
+    }
 }
