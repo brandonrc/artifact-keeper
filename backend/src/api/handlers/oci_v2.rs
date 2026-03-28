@@ -389,11 +389,31 @@ async fn token(
     {
         Ok(result) => result,
         Err(_) => {
-            return oci_error(
-                StatusCode::UNAUTHORIZED,
-                "UNAUTHORIZED",
-                "invalid username or password",
-            )
+            // Fall back to API token in the password field (for service accounts
+            // and CI/CD pipelines that use `docker login -p <api-token>`)
+            match auth_service.validate_api_token(&credentials.1).await {
+                Ok(validation) => {
+                    let user = validation.user;
+                    let tokens = match auth_service.generate_tokens(&user) {
+                        Ok(t) => t,
+                        Err(_) => {
+                            return oci_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "SERVER_ERROR",
+                                "failed to generate tokens",
+                            )
+                        }
+                    };
+                    (user, tokens)
+                }
+                Err(_) => {
+                    return oci_error(
+                        StatusCode::UNAUTHORIZED,
+                        "UNAUTHORIZED",
+                        "invalid username or password",
+                    )
+                }
+            }
         }
     };
 
