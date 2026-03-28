@@ -29,6 +29,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   # ════════════════════════════════════════════════════════════════════════════
@@ -45,10 +47,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -59,16 +65,19 @@ jobs:
   test-backend-unit:
     name: 🧪 Backend Unit Tests
     runs-on: ubuntu-latest
-    needs: lint-rust
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run unit tests
         env:
@@ -78,7 +87,6 @@ jobs:
   coverage:
     name: 📊 Code Coverage
     runs-on: ubuntu-latest
-    needs: lint-rust
     services:
       postgres:
         image: postgres:16-alpine
@@ -98,16 +106,23 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@sqlx-cli
 
       - name: Run database migrations
-        run: cargo install sqlx-cli --no-default-features --features postgres && sqlx migrate run --source backend/migrations
+        run: sqlx migrate run --source backend/migrations
         env:
           DATABASE_URL: postgresql://registry:registry@localhost:5432/artifact_registry
 
@@ -141,7 +156,6 @@ jobs:
   test-backend-integration:
     name: 🔗 Backend Integration Tests
     runs-on: ubuntu-latest
-    needs: lint-rust
     if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.event_name == 'push'
     services:
       postgres:
@@ -163,10 +177,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run integration tests
         env:
@@ -416,7 +434,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked || true
+        uses: taiki-e/install-action@cargo-audit
 
       - name: Audit Rust dependencies
         run: cargo audit
@@ -517,7 +535,8 @@ jobs:
   build-windows-dev:
     name: 🪟 Windows Dev Build
     runs-on: windows-latest
-    needs: [lint-rust, test-backend-unit]
+    # Only build Windows on main push (not PRs) to save 27+ min on PR checks.
+    # The release workflow builds Windows binaries for actual releases.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
