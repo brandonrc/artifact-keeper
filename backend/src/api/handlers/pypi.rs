@@ -1577,4 +1577,45 @@ mod tests {
         let result = extract_metadata_from_sdist(b"not a tar.gz");
         assert!(result.is_none());
     }
+
+    // -----------------------------------------------------------------------
+    // pypi_content_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_pypi_content_type_wheel() {
+        assert_eq!(
+            pypi_content_type("requests-2.31.0-py3-none-any.whl"),
+            "application/zip"
+        );
+    }
+
+    #[test]
+    fn test_pypi_content_type_sdist() {
+        assert_eq!(
+            pypi_content_type("requests-2.31.0.tar.gz"),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_pypi_content_type_zip() {
+        assert_eq!(
+            pypi_content_type("requests-2.31.0.zip"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_pypi_content_type_egg() {
+        assert_eq!(
+            pypi_content_type("requests-2.31.0.egg"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_pypi_content_type_no_extension() {
+        assert_eq!(pypi_content_type("somefile"), "application/octet-stream");
+    }
 }

@@ -1171,4 +1171,53 @@ mod tests {
 
         assert!(is_cache_expired(&metadata.expires_at));
     }
+
+    // =======================================================================
+    // PyPI-specific cache key derivation
+    // =======================================================================
+
+    #[test]
+    fn test_cache_key_for_pypi_local_path() {
+        let key = ProxyService::cache_storage_key(
+            "my-pypi-remote",
+            "simple/requests/requests-2.31.0.tar.gz",
+        );
+        assert_eq!(
+            key,
+            "proxy-cache/my-pypi-remote/simple/requests/requests-2.31.0.tar.gz/__content__"
+        );
+    }
+
+    #[test]
+    fn test_cache_metadata_key_for_pypi_local_path() {
+        let key = ProxyService::cache_metadata_key(
+            "my-pypi-remote",
+            "simple/requests/requests-2.31.0.tar.gz",
+        );
+        assert_eq!(
+            key,
+            "proxy-cache/my-pypi-remote/simple/requests/requests-2.31.0.tar.gz/__cache_meta__.json"
+        );
+    }
+
+    #[test]
+    fn test_cache_key_for_pypi_wheel() {
+        let key = ProxyService::cache_storage_key(
+            "pypi-proxy",
+            "simple/flask/flask-3.0.0-py3-none-any.whl",
+        );
+        assert!(key.starts_with("proxy-cache/pypi-proxy/simple/flask/"));
+        assert!(key.ends_with("/__content__"));
+    }
+
+    #[test]
+    fn test_cache_key_pypi_and_npm_do_not_collide() {
+        let pypi_key = ProxyService::cache_storage_key(
+            "pypi-remote",
+            "simple/requests/requests-2.31.0.tar.gz",
+        );
+        let npm_key =
+            ProxyService::cache_storage_key("npm-remote", "simple/requests/requests-2.31.0.tar.gz");
+        assert_ne!(pypi_key, npm_key);
+    }
 }

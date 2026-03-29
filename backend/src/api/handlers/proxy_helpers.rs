@@ -696,4 +696,58 @@ mod tests {
         let response = internal_error("Database", "connection refused");
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
+
+    // ── map_proxy_error tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_map_proxy_error_not_found() {
+        let err = crate::error::AppError::NotFound("missing artifact".to_string());
+        let response = map_proxy_error("repo-key", "path/to/file", err);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_map_proxy_error_internal_becomes_bad_gateway() {
+        let err = crate::error::AppError::Internal("connection failed".to_string());
+        let response = map_proxy_error("repo-key", "path/to/file", err);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_map_proxy_error_storage_becomes_bad_gateway() {
+        let err = crate::error::AppError::Storage("disk full".to_string());
+        let response = map_proxy_error("repo-key", "some/path", err);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_map_proxy_error_bad_gateway_stays_bad_gateway() {
+        let err = crate::error::AppError::BadGateway("upstream timeout".to_string());
+        let response = map_proxy_error("repo-key", "pkg", err);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_map_proxy_error_validation_becomes_bad_gateway() {
+        let err = crate::error::AppError::Validation("bad input".to_string());
+        let response = map_proxy_error("repo-key", "pkg", err);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    // ── RepoInfo::storage_location tests ───────────────────────────────
+
+    #[test]
+    fn test_repo_info_storage_location() {
+        let info = RepoInfo {
+            id: Uuid::new_v4(),
+            key: "my-repo".to_string(),
+            storage_path: "/data/repos/my-repo".to_string(),
+            storage_backend: "filesystem".to_string(),
+            repo_type: "local".to_string(),
+            upstream_url: None,
+        };
+        let loc = info.storage_location();
+        assert_eq!(loc.backend, "filesystem");
+        assert_eq!(loc.path, "/data/repos/my-repo");
+    }
 }
