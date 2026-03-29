@@ -131,6 +131,24 @@ pub fn reject_write_if_not_hosted(repo_type: &str) -> Result<(), Response> {
     }
 }
 
+/// Map a proxy service error to an HTTP error response.
+///
+/// `NotFound` errors become 404; everything else becomes 502 Bad Gateway.
+/// The error is logged at `warn` level with the repo key and path for context.
+fn map_proxy_error(repo_key: &str, path: &str, e: crate::error::AppError) -> Response {
+    tracing::warn!("Proxy fetch failed for {}/{}: {}", repo_key, path, e);
+    match &e {
+        crate::error::AppError::NotFound(_) => {
+            (StatusCode::NOT_FOUND, "Artifact not found upstream").into_response()
+        }
+        _ => (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to fetch from upstream: {}", e),
+        )
+            .into_response(),
+    }
+}
+
 /// Attempt to fetch an artifact from the upstream via the proxy service.
 /// Constructs a minimal `Repository` model from handler-level repo info.
 /// Returns `(content_bytes, content_type)` on success.
@@ -147,19 +165,7 @@ pub async fn proxy_fetch(
     proxy_service
         .fetch_artifact(&repo, path)
         .await
-        .map_err(|e| {
-            tracing::warn!("Proxy fetch failed for {}/{}: {}", repo_key, path, e);
-            match &e {
-                crate::error::AppError::NotFound(_) => {
-                    (StatusCode::NOT_FOUND, "Artifact not found upstream").into_response()
-                }
-                _ => (
-                    StatusCode::BAD_GATEWAY,
-                    format!("Failed to fetch from upstream: {}", e),
-                )
-                    .into_response(),
-            }
-        })
+        .map_err(|e| map_proxy_error(repo_key, path, e))
 }
 
 /// Check whether an artifact is present in the proxy cache under `path`
@@ -170,11 +176,21 @@ pub async fn proxy_check_cache(
     repo_key: &str,
     path: &str,
 ) -> Option<(Bytes, Option<String>)> {
-    proxy_service
+    match proxy_service
         .get_cached_artifact_by_path(repo_key, path)
         .await
-        .ok()
-        .flatten()
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::debug!(
+                "Cache lookup failed for {}/{}, treating as miss: {}",
+                repo_key,
+                path,
+                e
+            );
+            None
+        }
+    }
 }
 
 /// Fetch from upstream using `fetch_path` for the URL but `cache_path` for
@@ -193,24 +209,7 @@ pub async fn proxy_fetch_with_cache_key(
     proxy_service
         .fetch_artifact_with_cache_path(&repo, fetch_path, cache_path)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Proxy fetch failed for {}/{}: {}",
-                repo_key,
-                fetch_path,
-                e
-            );
-            match &e {
-                crate::error::AppError::NotFound(_) => {
-                    (StatusCode::NOT_FOUND, "Artifact not found upstream").into_response()
-                }
-                _ => (
-                    StatusCode::BAD_GATEWAY,
-                    format!("Failed to fetch from upstream: {}", e),
-                )
-                    .into_response(),
-            }
-        })
+        .map_err(|e| map_proxy_error(repo_key, fetch_path, e))
 }
 
 /// Fetch from upstream directly, bypassing the proxy cache.
@@ -230,24 +229,7 @@ pub async fn proxy_fetch_uncached(
     proxy_service
         .fetch_upstream_direct(&repo, path)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Direct upstream fetch failed for {}/{}: {}",
-                repo_key,
-                path,
-                e
-            );
-            match &e {
-                crate::error::AppError::NotFound(_) => {
-                    (StatusCode::NOT_FOUND, "Artifact not found upstream").into_response()
-                }
-                _ => (
-                    StatusCode::BAD_GATEWAY,
-                    format!("Failed to fetch from upstream: {}", e),
-                )
-                    .into_response(),
-            }
-        })
+        .map_err(|e| map_proxy_error(repo_key, path, e))
 }
 
 /// Resolve virtual repository members and attempt to find an artifact.

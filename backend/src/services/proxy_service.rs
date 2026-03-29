@@ -72,66 +72,7 @@ impl ProxyService {
         repo: &Repository,
         path: &str,
     ) -> Result<(Bytes, Option<String>)> {
-        // Validate repository type
-        if repo.repo_type != RepositoryType::Remote {
-            return Err(AppError::Validation(
-                "Proxy operations only supported for remote repositories".to_string(),
-            ));
-        }
-
-        // Get upstream URL
-        let upstream_url = repo.upstream_url.as_ref().ok_or_else(|| {
-            AppError::Config("Remote repository missing upstream_url".to_string())
-        })?;
-
-        // Generate storage key for cached artifact
-        let cache_key = Self::cache_storage_key(&repo.key, path);
-        let metadata_key = Self::cache_metadata_key(&repo.key, path);
-
-        // Check if we have a valid cached copy
-        if let Some((content, content_type)) =
-            self.get_cached_artifact(&cache_key, &metadata_key).await?
-        {
-            return Ok((content, content_type));
-        }
-
-        // Fetch from upstream
-        let full_url = Self::build_upstream_url(upstream_url, path);
-        let upstream_result = self.fetch_from_upstream(&full_url, repo.id).await;
-
-        match upstream_result {
-            Ok((content, content_type, etag)) => {
-                // Cache the artifact
-                let cache_ttl = self.get_cache_ttl_for_repo(repo.id).await;
-                self.cache_artifact(
-                    &cache_key,
-                    &metadata_key,
-                    &content,
-                    content_type.clone(),
-                    etag,
-                    cache_ttl,
-                )
-                .await?;
-
-                Ok((content, content_type))
-            }
-            Err(upstream_err) => {
-                // Upstream failed. Try serving stale cached content as a fallback.
-                if let Ok(Some((stale_content, stale_content_type))) = self
-                    .get_stale_cached_artifact(&cache_key, &metadata_key)
-                    .await
-                {
-                    tracing::warn!(
-                        "Upstream fetch failed for {}; serving stale cached copy: {}",
-                        full_url,
-                        upstream_err
-                    );
-                    Ok((stale_content, stale_content_type))
-                } else {
-                    Err(upstream_err)
-                }
-            }
-        }
+        self.fetch_artifact_with_cache_path(repo, path, path).await
     }
 
     /// Check whether an artifact is already present in the proxy cache

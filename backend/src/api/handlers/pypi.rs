@@ -33,6 +33,21 @@ use crate::formats::pypi::PypiHandler;
 use crate::models::repository::RepositoryType;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Map a PyPI filename to the appropriate MIME content type.
+fn pypi_content_type(filename: &str) -> &'static str {
+    if filename.ends_with(".whl") {
+        "application/zip"
+    } else if filename.ends_with(".tar.gz") {
+        "application/gzip"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -387,23 +402,19 @@ async fn serve_file(
                     // This avoids fetching the simple index from upstream just
                     // to rediscover the download URL when the file is already
                     // cached from a previous request.
-                    if let Some((content, _content_type)) = proxy_helpers::proxy_check_cache(
-                        proxy,
-                        repo_key,
-                        &local_cache_path,
-                    )
-                    .await
+                    //
+                    // Note: fetch_artifact_with_cache_path also checks the cache
+                    // internally, so on a miss this results in a second storage
+                    // read for the same key. The duplication is intentional: it
+                    // acts as a race-condition guard and the cost of one extra
+                    // storage read is negligible compared to the upstream HTTP
+                    // fetch that follows on a true miss.
+                    if let Some((content, _content_type)) =
+                        proxy_helpers::proxy_check_cache(proxy, repo_key, &local_cache_path).await
                     {
-                        let content_type = if filename.ends_with(".whl") {
-                            "application/zip"
-                        } else if filename.ends_with(".tar.gz") {
-                            "application/gzip"
-                        } else {
-                            "application/octet-stream"
-                        };
                         return Ok(Response::builder()
                             .status(StatusCode::OK)
-                            .header(CONTENT_TYPE, content_type)
+                            .header(CONTENT_TYPE, pypi_content_type(filename))
                             .header(
                                 "Content-Disposition",
                                 format!("attachment; filename=\"{}\"", filename),
@@ -444,19 +455,13 @@ async fn serve_file(
                             .and_then(|i| url[i + 3..].find('/').map(|j| i + 3 + j))
                         {
                             Some(pos) => (url[..pos].to_string(), url[pos + 1..].to_string()),
-                            None => (
-                                upstream_url.clone(),
-                                local_cache_path.clone(),
-                            ),
+                            None => (upstream_url.clone(), local_cache_path.clone()),
                         }
                     } else {
                         // No absolute URL found (the upstream may be another
                         // AK instance that uses relative paths). Fall back to
                         // the simple/{project}/{filename} convention.
-                        (
-                            upstream_url.clone(),
-                            local_cache_path.clone(),
-                        )
+                        (upstream_url.clone(), local_cache_path.clone())
                     };
 
                     // Fetch from upstream but cache under the local convention
@@ -472,17 +477,9 @@ async fn serve_file(
                     )
                     .await?;
 
-                    let content_type = if filename.ends_with(".whl") {
-                        "application/zip"
-                    } else if filename.ends_with(".tar.gz") {
-                        "application/gzip"
-                    } else {
-                        "application/octet-stream"
-                    };
-
                     return Ok(Response::builder()
                         .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, content_type)
+                        .header(CONTENT_TYPE, pypi_content_type(filename))
                         .header(
                             "Content-Disposition",
                             format!("attachment; filename=\"{}\"", filename),
@@ -517,15 +514,7 @@ async fn serve_file(
                 )
                 .await?;
 
-                let ct = content_type.unwrap_or_else(|| {
-                    if fname.ends_with(".whl") {
-                        "application/zip".to_string()
-                    } else if fname.ends_with(".tar.gz") {
-                        "application/gzip".to_string()
-                    } else {
-                        "application/octet-stream".to_string()
-                    }
-                });
+                let ct = content_type.unwrap_or_else(|| pypi_content_type(&fname).to_string());
 
                 return Ok(Response::builder()
                     .status(StatusCode::OK)
@@ -559,17 +548,9 @@ async fn serve_file(
     .execute(&state.db)
     .await;
 
-    let content_type = if filename.ends_with(".whl") {
-        "application/zip"
-    } else if filename.ends_with(".tar.gz") {
-        "application/gzip"
-    } else {
-        "application/octet-stream"
-    };
-
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_TYPE, pypi_content_type(filename))
         .header(
             "Content-Disposition",
             format!("attachment; filename=\"{}\"", filename),
@@ -843,14 +824,7 @@ async fn upload(
             .insert("summary".to_string(), serde_json::Value::String(s.clone()));
     }
 
-    // Infer content type
-    let content_type = if filename.ends_with(".whl") {
-        "application/zip"
-    } else if filename.ends_with(".tar.gz") {
-        "application/gzip"
-    } else {
-        "application/octet-stream"
-    };
+    let content_type = pypi_content_type(&filename);
 
     let artifact_path = format!("{}/{}/{}", normalized, pkg_version, filename);
     let size_bytes = content.len() as i64;
