@@ -381,15 +381,47 @@ async fn serve_file(
                     (&repo.upstream_url, &state.proxy_service)
                 {
                     let normalized = PypiHandler::normalize_name(project);
+                    let local_cache_path = format!("simple/{}/{}", normalized, filename);
 
-                    // Fetch the simple index page directly from the upstream
-                    // (bypassing the proxy cache) to discover the real download
-                    // URL for this file.  The cached copy may contain URLs that
-                    // were rewritten by rewrite_upstream_urls(), so we need the
-                    // raw upstream HTML to find the original absolute URLs.
-                    // External registries (e.g. pypi.org) host files on a
-                    // different domain (files.pythonhosted.org), so we cannot
-                    // just append the filename to the upstream URL.
+                    // Try the proxy cache first using a predictable local path.
+                    // This avoids fetching the simple index from upstream just
+                    // to rediscover the download URL when the file is already
+                    // cached from a previous request.
+                    if let Some((content, _content_type)) = proxy_helpers::proxy_check_cache(
+                        proxy,
+                        repo_key,
+                        &local_cache_path,
+                    )
+                    .await
+                    {
+                        let content_type = if filename.ends_with(".whl") {
+                            "application/zip"
+                        } else if filename.ends_with(".tar.gz") {
+                            "application/gzip"
+                        } else {
+                            "application/octet-stream"
+                        };
+                        return Ok(Response::builder()
+                            .status(StatusCode::OK)
+                            .header(CONTENT_TYPE, content_type)
+                            .header(
+                                "Content-Disposition",
+                                format!("attachment; filename=\"{}\"", filename),
+                            )
+                            .header(CONTENT_LENGTH, content.len().to_string())
+                            .body(Body::from(content))
+                            .unwrap());
+                    }
+
+                    // Cache miss. Fetch the simple index page directly from
+                    // the upstream (bypassing the proxy cache) to discover the
+                    // real download URL for this file. The cached copy may
+                    // contain URLs that were rewritten by
+                    // rewrite_upstream_urls(), so we need the raw upstream HTML
+                    // to find the original absolute URLs. External registries
+                    // (e.g. pypi.org) host files on a different domain
+                    // (files.pythonhosted.org), so we cannot just append the
+                    // filename to the upstream URL.
                     let index_path = format!("simple/{}/", normalized);
                     let (index_bytes, _ct) = proxy_helpers::proxy_fetch_uncached(
                         proxy,
@@ -405,8 +437,8 @@ async fn serve_file(
 
                     let (fetch_base, fetch_path) = if let Some(ref url) = file_url {
                         // Absolute URL from the index (e.g. https://files.pythonhosted.org/packages/.../file.whl).
-                        // Split into scheme+host base and path so proxy_fetch
-                        // can cache it under the repo key.
+                        // Split into scheme+host base and path so the fetch
+                        // targets the correct upstream server.
                         match url
                             .find("://")
                             .and_then(|i| url[i + 3..].find('/').map(|j| i + 3 + j))
@@ -414,7 +446,7 @@ async fn serve_file(
                             Some(pos) => (url[..pos].to_string(), url[pos + 1..].to_string()),
                             None => (
                                 upstream_url.clone(),
-                                format!("simple/{}/{}", normalized, filename),
+                                local_cache_path.clone(),
                             ),
                         }
                     } else {
@@ -423,16 +455,20 @@ async fn serve_file(
                         // the simple/{project}/{filename} convention.
                         (
                             upstream_url.clone(),
-                            format!("simple/{}/{}", normalized, filename),
+                            local_cache_path.clone(),
                         )
                     };
 
-                    let (content, _content_type) = proxy_helpers::proxy_fetch(
+                    // Fetch from upstream but cache under the local convention
+                    // path so that subsequent requests hit the cache without
+                    // needing to rediscover the upstream URL.
+                    let (content, _content_type) = proxy_helpers::proxy_fetch_with_cache_key(
                         proxy,
                         repo.id,
                         repo_key,
                         &fetch_base,
                         &fetch_path,
+                        &local_cache_path,
                     )
                     .await?;
 

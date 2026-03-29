@@ -162,6 +162,57 @@ pub async fn proxy_fetch(
         })
 }
 
+/// Check whether an artifact is present in the proxy cache under `path`
+/// without contacting upstream. Returns `Ok(Some(...))` on cache hit,
+/// `Ok(None)` on miss or expired entry.
+pub async fn proxy_check_cache(
+    proxy_service: &ProxyService,
+    repo_key: &str,
+    path: &str,
+) -> Option<(Bytes, Option<String>)> {
+    proxy_service
+        .get_cached_artifact_by_path(repo_key, path)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Fetch from upstream using `fetch_path` for the URL but `cache_path` for
+/// the proxy cache key. This lets callers store content under a predictable
+/// local path even when the upstream download URL varies between requests.
+pub async fn proxy_fetch_with_cache_key(
+    proxy_service: &ProxyService,
+    repo_id: Uuid,
+    repo_key: &str,
+    upstream_url: &str,
+    fetch_path: &str,
+    cache_path: &str,
+) -> Result<(Bytes, Option<String>), Response> {
+    let repo = build_remote_repo(repo_id, repo_key, upstream_url);
+
+    proxy_service
+        .fetch_artifact_with_cache_path(&repo, fetch_path, cache_path)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Proxy fetch failed for {}/{}: {}",
+                repo_key,
+                fetch_path,
+                e
+            );
+            match &e {
+                crate::error::AppError::NotFound(_) => {
+                    (StatusCode::NOT_FOUND, "Artifact not found upstream").into_response()
+                }
+                _ => (
+                    StatusCode::BAD_GATEWAY,
+                    format!("Failed to fetch from upstream: {}", e),
+                )
+                    .into_response(),
+            }
+        })
+}
+
 /// Fetch from upstream directly, bypassing the proxy cache.
 ///
 /// Use this instead of [`proxy_fetch`] when the caller needs the raw upstream

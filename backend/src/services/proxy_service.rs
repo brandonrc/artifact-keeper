@@ -134,6 +134,92 @@ impl ProxyService {
         }
     }
 
+    /// Check whether an artifact is already present in the proxy cache
+    /// under the given `path` (without contacting upstream).
+    ///
+    /// Returns `Ok(Some((content, content_type)))` on cache hit, `Ok(None)`
+    /// on cache miss or expired entry.
+    pub async fn get_cached_artifact_by_path(
+        &self,
+        repo_key: &str,
+        path: &str,
+    ) -> Result<Option<(Bytes, Option<String>)>> {
+        let cache_key = Self::cache_storage_key(repo_key, path);
+        let metadata_key = Self::cache_metadata_key(repo_key, path);
+        self.get_cached_artifact(&cache_key, &metadata_key).await
+    }
+
+    /// Fetch artifact from upstream, but use `cache_path` instead of
+    /// `fetch_path` when reading and writing the proxy cache.
+    ///
+    /// This is useful when the upstream download URL is unpredictable (e.g.,
+    /// PyPI hosts files on a different domain) but the caller wants a stable,
+    /// locally-computed cache key so that subsequent requests can hit the
+    /// cache without rediscovering the upstream URL.
+    pub async fn fetch_artifact_with_cache_path(
+        &self,
+        repo: &Repository,
+        fetch_path: &str,
+        cache_path: &str,
+    ) -> Result<(Bytes, Option<String>)> {
+        if repo.repo_type != RepositoryType::Remote {
+            return Err(AppError::Validation(
+                "Proxy operations only supported for remote repositories".to_string(),
+            ));
+        }
+
+        let upstream_url = repo.upstream_url.as_ref().ok_or_else(|| {
+            AppError::Config("Remote repository missing upstream_url".to_string())
+        })?;
+
+        // Cache keys use the caller-supplied cache_path
+        let cache_key = Self::cache_storage_key(&repo.key, cache_path);
+        let metadata_key = Self::cache_metadata_key(&repo.key, cache_path);
+
+        // Check if we have a valid cached copy
+        if let Some((content, content_type)) =
+            self.get_cached_artifact(&cache_key, &metadata_key).await?
+        {
+            return Ok((content, content_type));
+        }
+
+        // Fetch from upstream using the real fetch_path
+        let full_url = Self::build_upstream_url(upstream_url, fetch_path);
+        let upstream_result = self.fetch_from_upstream(&full_url, repo.id).await;
+
+        match upstream_result {
+            Ok((content, content_type, etag)) => {
+                let cache_ttl = self.get_cache_ttl_for_repo(repo.id).await;
+                self.cache_artifact(
+                    &cache_key,
+                    &metadata_key,
+                    &content,
+                    content_type.clone(),
+                    etag,
+                    cache_ttl,
+                )
+                .await?;
+
+                Ok((content, content_type))
+            }
+            Err(upstream_err) => {
+                if let Ok(Some((stale_content, stale_content_type))) = self
+                    .get_stale_cached_artifact(&cache_key, &metadata_key)
+                    .await
+                {
+                    tracing::warn!(
+                        "Upstream fetch failed for {}; serving stale cached copy: {}",
+                        full_url,
+                        upstream_err
+                    );
+                    Ok((stale_content, stale_content_type))
+                } else {
+                    Err(upstream_err)
+                }
+            }
+        }
+    }
+
     /// Check if upstream has a newer version of the artifact.
     /// Returns true if upstream has newer content or cache is expired.
     pub async fn check_upstream(&self, repo: &Repository, path: &str) -> Result<bool> {
