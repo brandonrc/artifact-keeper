@@ -380,127 +380,77 @@ async fn serve_file(
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
-                    let normalized = PypiHandler::normalize_name(project);
-
-                    // Fetch the simple index page directly from the upstream
-                    // (bypassing the proxy cache) to discover the real download
-                    // URL for this file.  The cached copy may contain URLs that
-                    // were rewritten by rewrite_upstream_urls(), so we need the
-                    // raw upstream HTML to find the original absolute URLs.
-                    // External registries (e.g. pypi.org) host files on a
-                    // different domain (files.pythonhosted.org), so we cannot
-                    // just append the filename to the upstream URL.
-                    let index_path = format!("simple/{}/", normalized);
-                    let (index_bytes, _ct) = proxy_helpers::proxy_fetch_uncached(
+                    let content = fetch_from_pypi_remote(
                         proxy,
                         repo.id,
                         repo_key,
                         upstream_url,
-                        &index_path,
+                        project,
+                        filename,
                     )
                     .await?;
 
-                    let index_html = String::from_utf8_lossy(&index_bytes);
-                    let file_url = find_upstream_url_for_file(&index_html, filename);
-
-                    let (fetch_base, fetch_path) = if let Some(ref url) = file_url {
-                        // Absolute URL from the index (e.g. https://files.pythonhosted.org/packages/.../file.whl).
-                        // Split into scheme+host base and path so proxy_fetch
-                        // can cache it under the repo key.
-                        match url
-                            .find("://")
-                            .and_then(|i| url[i + 3..].find('/').map(|j| i + 3 + j))
-                        {
-                            Some(pos) => (url[..pos].to_string(), url[pos + 1..].to_string()),
-                            None => (
-                                upstream_url.clone(),
-                                format!("simple/{}/{}", normalized, filename),
-                            ),
-                        }
-                    } else {
-                        // No absolute URL found (the upstream may be another
-                        // AK instance that uses relative paths). Fall back to
-                        // the simple/{project}/{filename} convention.
-                        (
-                            upstream_url.clone(),
-                            format!("simple/{}/{}", normalized, filename),
-                        )
-                    };
-
-                    let (content, _content_type) = proxy_helpers::proxy_fetch(
-                        proxy,
-                        repo.id,
-                        repo_key,
-                        &fetch_base,
-                        &fetch_path,
-                    )
-                    .await?;
-
-                    let content_type = if filename.ends_with(".whl") {
-                        "application/zip"
-                    } else if filename.ends_with(".tar.gz") {
-                        "application/gzip"
-                    } else {
-                        "application/octet-stream"
-                    };
-
-                    return Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .header(CONTENT_TYPE, content_type)
-                        .header(
-                            "Content-Disposition",
-                            format!("attachment; filename=\"{}\"", filename),
-                        )
-                        .header(CONTENT_LENGTH, content.len().to_string())
-                        .body(Body::from(content))
-                        .unwrap());
+                    return Ok(build_file_response(filename, content));
                 }
             }
-            // Virtual repo: try each member in priority order
+            // Virtual repo: try each member in priority order.
+            // Unlike generic formats, PyPI requires format-specific fetch
+            // logic for remote members because external registries (e.g.
+            // pypi.org) host files on a different domain than the simple
+            // index. We iterate members manually and delegate to
+            // fetch_from_pypi_remote for each remote member.
             if repo.repo_type == RepositoryType::Virtual {
-                let db = state.db.clone();
-                let fname = filename.to_string();
-                let normalized = PypiHandler::normalize_name(project);
-                let upstream_path = format!("simple/{}/{}", normalized, filename);
-                let (content, content_type) = proxy_helpers::resolve_virtual_download(
-                    &state.db,
-                    state.proxy_service.as_deref(),
-                    repo.id,
-                    &upstream_path,
-                    |member_id, location| {
-                        let db = db.clone();
-                        let state = state.clone();
-                        let fname = fname.clone();
-                        async move {
-                            proxy_helpers::local_fetch_by_path_suffix(
-                                &db, &state, member_id, &location, &fname,
+                let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+
+                if members.is_empty() {
+                    return Err(AppError::NotFound(
+                        "Virtual repository has no members".to_string(),
+                    )
+                    .into_response());
+                }
+
+                for member in &members {
+                    // Try local storage first (works for hosted repos and
+                    // cached remote artifacts)
+                    if let Ok((content, _ct)) = proxy_helpers::local_fetch_by_path_suffix(
+                        &state.db,
+                        state,
+                        member.id,
+                        &member.storage_location(),
+                        filename,
+                    )
+                    .await
+                    {
+                        return Ok(build_file_response(filename, content));
+                    }
+
+                    // If member is a remote PyPI repo, use the format-specific
+                    // fetch that resolves the real upstream download URL via the
+                    // simple index page.
+                    if member.repo_type == RepositoryType::Remote {
+                        if let (Some(ref upstream_url), Some(ref proxy)) =
+                            (&member.upstream_url, &state.proxy_service)
+                        {
+                            if let Ok(content) = fetch_from_pypi_remote(
+                                proxy,
+                                member.id,
+                                &member.key,
+                                upstream_url,
+                                project,
+                                filename,
                             )
                             .await
+                            {
+                                return Ok(build_file_response(filename, content));
+                            }
                         }
-                    },
-                )
-                .await?;
-
-                let ct = content_type.unwrap_or_else(|| {
-                    if fname.ends_with(".whl") {
-                        "application/zip".to_string()
-                    } else if fname.ends_with(".tar.gz") {
-                        "application/gzip".to_string()
-                    } else {
-                        "application/octet-stream".to_string()
                     }
-                });
+                }
 
-                return Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, ct)
-                    .header(
-                        "Content-Disposition",
-                        format!("attachment; filename=\"{}\"", filename),
-                    )
-                    .header(CONTENT_LENGTH, content.len().to_string())
-                    .body(Body::from(content))
-                    .unwrap());
+                return Err(AppError::NotFound(
+                    "Artifact not found in any member repository".to_string(),
+                )
+                .into_response());
             }
             return Err(AppError::NotFound("File not found".to_string()).into_response());
         }
@@ -542,6 +492,83 @@ async fn serve_file(
         .header("X-PyPI-File-SHA256", &artifact.checksum_sha256)
         .body(Body::from(content))
         .unwrap())
+}
+
+/// Fetch a file from a remote PyPI upstream using the format-specific URL
+/// resolution logic. External PyPI registries (e.g. pypi.org) host files on a
+/// different domain (files.pythonhosted.org), so we cannot just append the
+/// filename to the upstream URL. Instead, we fetch the simple index page,
+/// parse it to discover the real download URL for the file, and then download
+/// from that URL.
+async fn fetch_from_pypi_remote(
+    proxy: &crate::services::proxy_service::ProxyService,
+    repo_id: uuid::Uuid,
+    repo_key: &str,
+    upstream_url: &str,
+    project: &str,
+    filename: &str,
+) -> Result<Bytes, Response> {
+    let normalized = PypiHandler::normalize_name(project);
+
+    let index_path = format!("simple/{}/", normalized);
+    let (index_bytes, _ct) =
+        proxy_helpers::proxy_fetch_uncached(proxy, repo_id, repo_key, upstream_url, &index_path)
+            .await?;
+
+    let index_html = String::from_utf8_lossy(&index_bytes);
+    let file_url = find_upstream_url_for_file(&index_html, filename);
+
+    let (fetch_base, fetch_path) = if let Some(ref url) = file_url {
+        // Absolute URL from the index (e.g.
+        // https://files.pythonhosted.org/packages/.../file.whl).
+        // Split into scheme+host base and path so proxy_fetch can
+        // cache it under the repo key.
+        match url
+            .find("://")
+            .and_then(|i| url[i + 3..].find('/').map(|j| i + 3 + j))
+        {
+            Some(pos) => (url[..pos].to_string(), url[pos + 1..].to_string()),
+            None => (
+                upstream_url.to_string(),
+                format!("simple/{}/{}", normalized, filename),
+            ),
+        }
+    } else {
+        // No absolute URL found (the upstream may be another AK instance
+        // that uses relative paths). Fall back to the
+        // simple/{project}/{filename} convention.
+        (
+            upstream_url.to_string(),
+            format!("simple/{}/{}", normalized, filename),
+        )
+    };
+
+    let (content, _content_type) =
+        proxy_helpers::proxy_fetch(proxy, repo_id, repo_key, &fetch_base, &fetch_path).await?;
+
+    Ok(content)
+}
+
+/// Build the HTTP response for serving a PyPI file download.
+fn build_file_response(filename: &str, content: Bytes) -> Response {
+    let content_type = if filename.ends_with(".whl") {
+        "application/zip"
+    } else if filename.ends_with(".tar.gz") {
+        "application/gzip"
+    } else {
+        "application/octet-stream"
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .header(CONTENT_LENGTH, content.len().to_string())
+        .body(Body::from(content))
+        .unwrap()
 }
 
 async fn serve_metadata(
@@ -1566,5 +1593,60 @@ mod tests {
     fn test_extract_metadata_from_sdist_invalid_data() {
         let result = extract_metadata_from_sdist(b"not a tar.gz");
         assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_file_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_file_response_wheel_content_type() {
+        let content = Bytes::from_static(b"fake wheel data");
+        let resp =
+            build_file_response("numpy-2.0.0-cp312-cp312-manylinux_2_17_x86_64.whl", content);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(CONTENT_TYPE).unwrap(), "application/zip");
+    }
+
+    #[test]
+    fn test_build_file_response_sdist_content_type() {
+        let content = Bytes::from_static(b"fake sdist data");
+        let resp = build_file_response("six-1.16.0.tar.gz", content);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "application/gzip"
+        );
+    }
+
+    #[test]
+    fn test_build_file_response_unknown_extension() {
+        let content = Bytes::from_static(b"some data");
+        let resp = build_file_response("package-1.0.zip", content);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_build_file_response_content_disposition() {
+        let content = Bytes::from_static(b"data");
+        let resp = build_file_response("requests-2.31.0.tar.gz", content);
+        assert_eq!(
+            resp.headers().get("Content-Disposition").unwrap(),
+            "attachment; filename=\"requests-2.31.0.tar.gz\""
+        );
+    }
+
+    #[test]
+    fn test_build_file_response_content_length() {
+        let data = b"hello world data here";
+        let content = Bytes::from_static(data);
+        let resp = build_file_response("pkg-1.0.tar.gz", content);
+        assert_eq!(
+            resp.headers().get(CONTENT_LENGTH).unwrap(),
+            &data.len().to_string()
+        );
     }
 }
