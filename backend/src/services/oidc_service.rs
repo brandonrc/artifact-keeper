@@ -502,13 +502,13 @@ impl OidcService {
         .map_err(|e| AppError::Database(e.to_string()))?;
 
         if let Some(mut user) = existing_user {
-            // Update user info from OIDC
             let is_admin = self.is_admin_from_groups(&oidc_user.groups);
 
             sqlx::query!(
                 r#"
                 UPDATE users
-                SET email = $1, display_name = $2, is_admin = $3,
+                SET email = $1, display_name = $2,
+                    is_admin = COALESCE($3, is_admin),
                     last_login_at = NOW(), updated_at = NOW()
                 WHERE id = $4
                 "#,
@@ -523,14 +523,16 @@ impl OidcService {
 
             user.email = oidc_user.email.clone();
             user.display_name = oidc_user.display_name.clone();
-            user.is_admin = is_admin;
+            if let Some(admin) = is_admin {
+                user.is_admin = admin;
+            }
 
             return Ok(user);
         }
 
         // Create new user from OIDC
         let user_id = Uuid::new_v4();
-        let is_admin = self.is_admin_from_groups(&oidc_user.groups);
+        let is_admin = self.is_admin_from_groups(&oidc_user.groups).unwrap_or(false);
 
         // Generate unique username if conflict exists
         let username = self.generate_unique_username(&oidc_user.username).await?;
@@ -598,15 +600,12 @@ impl OidcService {
         }
     }
 
-    /// Check if user is admin based on group memberships
-    fn is_admin_from_groups(&self, groups: &[String]) -> bool {
-        if let Some(admin_group) = &self.config.admin_group {
+    fn is_admin_from_groups(&self, groups: &[String]) -> Option<bool> {
+        self.config.admin_group.as_ref().map(|admin_group| {
             groups
                 .iter()
                 .any(|g| g.to_lowercase() == admin_group.to_lowercase())
-        } else {
-            false
-        }
+        })
     }
 
     /// Extract group memberships for role mapping
@@ -618,7 +617,7 @@ impl OidcService {
     pub fn map_groups_to_roles(&self, groups: &[String]) -> Vec<String> {
         let mut roles = vec!["user".to_string()];
 
-        if self.is_admin_from_groups(groups) {
+        if self.is_admin_from_groups(groups).unwrap_or(false) {
             roles.push("admin".to_string());
         }
 
