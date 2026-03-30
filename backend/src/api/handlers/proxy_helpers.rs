@@ -796,7 +796,10 @@ mod tests {
         let repo = super::build_remote_repo(id, "test-repo", "https://upstream.example.com");
         assert_eq!(repo.id, id);
         assert_eq!(repo.key, "test-repo");
-        assert_eq!(repo.repo_type, crate::models::repository::RepositoryType::Remote);
+        assert_eq!(
+            repo.repo_type,
+            crate::models::repository::RepositoryType::Remote
+        );
         assert_eq!(
             repo.upstream_url.as_deref(),
             Some("https://upstream.example.com")
@@ -807,7 +810,10 @@ mod tests {
     fn test_build_remote_repo_always_remote_type() {
         let id = uuid::Uuid::new_v4();
         let repo = super::build_remote_repo(id, "any-key", "https://example.com");
-        assert_eq!(repo.repo_type, crate::models::repository::RepositoryType::Remote);
+        assert_eq!(
+            repo.repo_type,
+            crate::models::repository::RepositoryType::Remote
+        );
     }
 
     // --- reject_write_if_not_hosted ---
