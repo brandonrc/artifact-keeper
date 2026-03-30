@@ -380,6 +380,20 @@ async fn serve_file(
                 if let (Some(ref upstream_url), Some(ref proxy)) =
                     (&repo.upstream_url, &state.proxy_service)
                 {
+                    // Try the proxy cache first using a predictable local
+                    // path. This avoids fetching the simple index from upstream
+                    // just to rediscover the download URL when the file is
+                    // already cached from a previous request.
+                    let normalized = PypiHandler::normalize_name(project);
+                    let local_cache_path = format!("simple/{}/{}", normalized, filename);
+
+                    if let Some((content, _ct)) =
+                        proxy_helpers::proxy_check_cache(proxy, repo_key, &local_cache_path).await
+                    {
+                        return Ok(build_file_response(filename, content));
+                    }
+
+                    // Cache miss: use PyPI-specific fetch logic.
                     let content = fetch_from_pypi_remote(
                         proxy,
                         repo.id,
