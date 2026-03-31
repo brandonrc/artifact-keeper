@@ -7,11 +7,15 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use sha2::{Sha256, Digest};
+use std::sync::Arc;
+
 use crate::api::AppState;
 use crate::models::repository::{
     ReplicationPriority, Repository, RepositoryFormat, RepositoryType,
 };
 use crate::services::proxy_service::ProxyService;
+use crate::services::scanner_service::ScannerService;
 use crate::storage::StorageLocation;
 
 // ---------------------------------------------------------------------------
@@ -567,6 +571,109 @@ fn build_remote_repo(id: Uuid, key: &str, upstream_url: &str) -> Repository {
     }
 }
 
+/// Compute SHA-256 hex digest of content.
+fn compute_sha256_hex(content: &Bytes) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Register a proxy-fetched artifact in the `artifacts` table and optionally
+/// trigger a scan if `scan_on_proxy` is enabled for the repository.
+///
+/// This is fire-and-forget: the caller does not need to await the result.
+/// Duplicate fetches of the same artifact are handled via ON CONFLICT DO NOTHING.
+///
+/// `artifact_path` is the logical path (e.g. "lodash/-/lodash-4.17.21.tgz").
+/// `name` and `version` are package-level identifiers extracted by the caller.
+/// `content_type` defaults to "application/octet-stream" if None.
+pub fn register_proxied_artifact(
+    db: PgPool,
+    scanner_service: Option<Arc<ScannerService>>,
+    repo_id: Uuid,
+    artifact_path: String,
+    name: String,
+    version: String,
+    content: Bytes,
+    content_type: Option<String>,
+) {
+    tokio::spawn(async move {
+        let size_bytes = content.len() as i64;
+        let checksum = compute_sha256_hex(&content);
+        let ct = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+        // Use the proxy-cache storage key convention so the scanner can find
+        // the content via the same path the proxy service already cached it to.
+        let storage_key = format!("proxy-cache/{}", artifact_path);
+
+        let result = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            INSERT INTO artifacts (
+                repository_id, path, name, version, size_bytes,
+                checksum_sha256, content_type, storage_key
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (repository_id, path) WHERE is_deleted = false
+            DO UPDATE SET
+                size_bytes = EXCLUDED.size_bytes,
+                checksum_sha256 = EXCLUDED.checksum_sha256,
+                updated_at = NOW()
+            RETURNING id
+            "#,
+        )
+        .bind(repo_id)
+        .bind(&artifact_path)
+        .bind(&name)
+        .bind(&version)
+        .bind(size_bytes)
+        .bind(&checksum)
+        .bind(&ct)
+        .bind(&storage_key)
+        .fetch_one(&db)
+        .await;
+
+        match result {
+            Ok(artifact_id) => {
+                tracing::debug!(
+                    "Registered proxied artifact {} ({} bytes, sha256={})",
+                    artifact_path,
+                    size_bytes,
+                    &checksum[..12]
+                );
+
+                // Check scan_on_proxy and trigger scan
+                if let Some(scanner) = scanner_service {
+                    let should_scan = sqlx::query_scalar::<_, bool>(
+                        "SELECT scan_on_proxy FROM scan_configs WHERE repository_id = $1 AND scan_enabled = true",
+                    )
+                    .bind(repo_id)
+                    .fetch_optional(&db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false);
+
+                    if should_scan {
+                        if let Err(e) = scanner.scan_artifact(artifact_id).await {
+                            tracing::warn!(
+                                "scan_on_proxy failed for artifact {}: {}",
+                                artifact_id,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to register proxied artifact {}: {}",
+                    artifact_path,
+                    e
+                );
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +943,15 @@ mod tests {
     #[test]
     fn test_reject_write_virtual_rejected() {
         assert!(super::reject_write_if_not_hosted("virtual").is_err());
+    }
+
+    #[test]
+    fn test_compute_sha256_hex() {
+        let data = bytes::Bytes::from_static(b"hello world");
+        let hash = super::compute_sha256_hex(&data);
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 }
