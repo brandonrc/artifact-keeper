@@ -341,6 +341,21 @@ async fn serve_tarball(
                     )
                     .await?;
 
+                    proxy_helpers::register_proxied_artifact(
+                        state.db.clone(),
+                        state.scanner_service.clone(),
+                        repo.id,
+                        format!("{}/-/{}", package_name, filename),
+                        package_name.to_string(),
+                        filename
+                            .strip_suffix(".tgz")
+                            .and_then(|s| s.rsplit_once('-'))
+                            .map(|(_, v)| v.to_string())
+                            .unwrap_or_default(),
+                        content.clone(),
+                        Some("application/gzip".to_string()),
+                    );
+
                     return Ok(Response::builder()
                         .status(StatusCode::OK)
                         .header(CONTENT_TYPE, "application/octet-stream")

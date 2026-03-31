@@ -605,6 +605,18 @@ async fn download_zip(
                         &upstream_path,
                     )
                     .await?;
+
+                    proxy_helpers::register_proxied_artifact(
+                        state.db.clone(),
+                        state.scanner_service.clone(),
+                        repo.id,
+                        format!("{}/@v/{}.zip", module, version),
+                        module.to_string(),
+                        version.to_string(),
+                        content.clone(),
+                        Some("application/zip".to_string()),
+                    );
+
                     return Ok(Response::builder()
                         .status(StatusCode::OK)
                         .header(

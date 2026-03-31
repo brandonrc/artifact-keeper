@@ -404,6 +404,26 @@ async fn serve_file(
                     )
                     .await?;
 
+                    proxy_helpers::register_proxied_artifact(
+                        state.db.clone(),
+                        state.scanner_service.clone(),
+                        repo.id,
+                        format!("packages/{}/{}", normalized, filename),
+                        project.to_string(),
+                        filename
+                            .split('-')
+                            .nth(1)
+                            .and_then(|s| {
+                                s.strip_suffix(".tar.gz")
+                                    .or(s.strip_suffix(".whl"))
+                                    .or(s.split(".tar").next())
+                            })
+                            .unwrap_or("")
+                            .to_string(),
+                        content.clone(),
+                        Some(pypi_content_type(filename).to_string()),
+                    );
+
                     return Ok(build_file_response(filename, content));
                 }
             }

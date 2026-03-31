@@ -692,6 +692,17 @@ async fn download(
                     )
                     .await?;
 
+                    proxy_helpers::register_proxied_artifact(
+                        state.db.clone(),
+                        state.scanner_service.clone(),
+                        repo.id,
+                        format!("crates/{}/{}/download", name_lower, version),
+                        name_lower.to_string(),
+                        version.to_string(),
+                        content.clone(),
+                        Some("application/gzip".to_string()),
+                    );
+
                     let filename = format!("{}-{}.crate", name_lower, version);
 
                     return Ok(Response::builder()
