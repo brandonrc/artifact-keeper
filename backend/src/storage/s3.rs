@@ -302,6 +302,10 @@ impl S3Backend {
             tracing::warn!("S3 TLS certificate verification is DISABLED (S3_INSECURE_TLS=true)");
         }
 
+        // Use new() instead of from_env() to avoid greedy ingestion of AWS_*
+        // env vars that could hijack endpoints (AWS_ENDPOINT_URL), disable
+        // signing (AWS_SKIP_SIGNATURE), or shadow IAM credentials. We
+        // selectively read only the credential chain variables needed.
         let mut builder = AmazonS3Builder::new()
             .with_bucket_name(&config.bucket)
             .with_region(&config.region)
@@ -311,6 +315,38 @@ impl S3Backend {
             builder = builder.with_endpoint(endpoint);
         }
 
+        // ECS Fargate task role credentials
+        if let Ok(uri) = std::env::var("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") {
+            builder = builder.with_config(
+                object_store::aws::AmazonS3ConfigKey::ContainerCredentialsRelativeUri,
+                uri,
+            );
+        }
+        // EKS Pod Identity credentials
+        if let Ok(uri) = std::env::var("AWS_CONTAINER_CREDENTIALS_FULL_URI") {
+            builder = builder.with_config(
+                object_store::aws::AmazonS3ConfigKey::ContainerCredentialsFullUri,
+                uri,
+            );
+        }
+        if let Ok(f) = std::env::var("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE") {
+            builder = builder.with_config(
+                object_store::aws::AmazonS3ConfigKey::ContainerAuthorizationTokenFile,
+                f,
+            );
+        }
+        // EKS IRSA / Web Identity credentials
+        if let Ok(f) = std::env::var("AWS_WEB_IDENTITY_TOKEN_FILE") {
+            builder = builder.with_config(
+                object_store::aws::AmazonS3ConfigKey::WebIdentityTokenFile,
+                f,
+            );
+        }
+        if let Ok(arn) = std::env::var("AWS_ROLE_ARN") {
+            builder = builder.with_config(object_store::aws::AmazonS3ConfigKey::RoleArn, arn);
+        }
+
+        // Explicit credentials: function args > S3_* env vars > AWS_* env vars
         if let Some(ak) = access_key {
             if let Some(sk) = secret_key {
                 builder = builder.with_access_key_id(ak).with_secret_access_key(sk);
@@ -321,6 +357,14 @@ impl S3Backend {
         ) {
             tracing::info!("Using S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY for S3 credentials");
             builder = builder.with_access_key_id(&ak).with_secret_access_key(&sk);
+        } else if let (Ok(ak), Ok(sk)) = (
+            std::env::var("AWS_ACCESS_KEY_ID"),
+            std::env::var("AWS_SECRET_ACCESS_KEY"),
+        ) {
+            builder = builder.with_access_key_id(&ak).with_secret_access_key(&sk);
+            if let Ok(token) = std::env::var("AWS_SESSION_TOKEN") {
+                builder = builder.with_token(token);
+            }
         }
 
         builder
