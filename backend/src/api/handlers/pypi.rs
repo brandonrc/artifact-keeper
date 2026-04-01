@@ -1041,10 +1041,11 @@ fn find_upstream_url_for_file(
 /// returns 404, which pip treats as a hard error since the index promised the
 /// metadata was available.
 fn rewrite_upstream_urls(html: &str, repo_key: &str, project: &str) -> String {
-    // Match <a href="..."> patterns where the URL is either:
-    //   1. An absolute URL (http:// or https://)
-    //   2. A root-relative path starting with /pypi/ (from a local upstream repo)
-    let re = Regex::new(r#"<a\s+([^>]*?)href="(https?://[^"]+|/pypi/[^"]+)"([^>]*)>"#).unwrap();
+    // Match <a href="..."> patterns with any href value: absolute URLs,
+    // root-relative paths, or relative paths (../../packages/file.tar.gz).
+    // Registries like Nexus, devpi, and Artifactory use relative hrefs in
+    // their simple index HTML, so we must handle all forms.
+    let re = Regex::new(r#"<a\s+([^>]*?)href="([^"]+)"([^>]*)>"#).unwrap();
     let normalized = PypiHandler::normalize_name(project);
 
     // Matches data-dist-info-metadata="..." and data-core-metadata="..."
@@ -1167,11 +1168,13 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_preserves_relative_urls() {
+    fn test_rewrite_rewrites_relative_urls() {
+        // Relative URLs should now be rewritten to local proxy paths
+        // (previously these were left unchanged, which broke Nexus/devpi remotes)
         let html = r#"<a href="numpy-1.3.0.tar.gz#sha256=abc123">numpy-1.3.0.tar.gz</a>"#;
         let result = rewrite_upstream_urls(html, "pypi-remote", "numpy");
-        // Relative URLs should be left unchanged
-        assert_eq!(result, html);
+        assert!(result
+            .contains(r#"href="/pypi/pypi-remote/simple/numpy/numpy-1.3.0.tar.gz#sha256=abc123""#));
     }
 
     #[test]
@@ -1271,8 +1274,8 @@ mod tests {
         let result = rewrite_upstream_urls(html, "repo", "pkg");
         // Absolute URL is rewritten
         assert!(result.contains(r#"href="/pypi/repo/simple/pkg/pkg-1.0.tar.gz#sha256=aaa""#));
-        // Relative URL is left unchanged
-        assert!(result.contains(r#"href="pkg-2.0.tar.gz#sha256=bbb""#));
+        // Relative URL is now also rewritten (needed for Nexus/devpi remotes)
+        assert!(result.contains(r#"href="/pypi/repo/simple/pkg/pkg-2.0.tar.gz#sha256=bbb""#));
     }
 
     #[test]
@@ -1341,8 +1344,10 @@ mod tests {
         assert!(
             result.contains(r#"href="/pypi/remote/simple/numpy/numpy-2.0.0.tar.gz#sha256=bbb""#)
         );
-        // Plain relative URL is left unchanged
-        assert!(result.contains(r#"href="numpy-3.0.0.tar.gz#sha256=ccc""#));
+        // Plain relative URL is now also rewritten (needed for Nexus/devpi)
+        assert!(
+            result.contains(r#"href="/pypi/remote/simple/numpy/numpy-3.0.0.tar.gz#sha256=ccc""#)
+        );
     }
 
     #[test]
@@ -1446,6 +1451,48 @@ mod tests {
         assert!(result.contains("data-requires-python"));
         assert!(result.contains("data-gpg-sig"));
         assert!(!result.contains("data-dist-info-metadata"));
+    }
+
+    #[test]
+    fn test_rewrite_relative_dotdot_href() {
+        // Nexus-style relative href should be rewritten to local proxy path
+        let html = r#"<a href="../../packages/requests-2.31.0.tar.gz#sha256=abc">requests-2.31.0.tar.gz</a>"#;
+        let result = rewrite_upstream_urls(html, "pypi-remote", "requests");
+        assert!(result.contains(
+            r#"href="/pypi/pypi-remote/simple/requests/requests-2.31.0.tar.gz#sha256=abc""#
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_root_relative_href() {
+        // Root-relative href (/packages/...) should also be rewritten
+        let html =
+            r#"<a href="/packages/ab/cd/six-1.16.0.tar.gz#sha256=abc">six-1.16.0.tar.gz</a>"#;
+        let result = rewrite_upstream_urls(html, "repo", "six");
+        assert!(result.contains(r#"href="/pypi/repo/simple/six/six-1.16.0.tar.gz#sha256=abc""#));
+    }
+
+    #[test]
+    fn test_rewrite_plain_relative_href() {
+        // Plain relative href (packages/file.tar.gz) from devpi
+        let html = r#"<a href="packages/pkg-1.0.tar.gz#sha256=abc">pkg-1.0.tar.gz</a>"#;
+        let result = rewrite_upstream_urls(html, "devpi-remote", "pkg");
+        assert!(
+            result.contains(r#"href="/pypi/devpi-remote/simple/pkg/pkg-1.0.tar.gz#sha256=abc""#)
+        );
+    }
+
+    #[test]
+    fn test_rewrite_mixed_absolute_and_relative_hrefs() {
+        let html = concat!(
+            r#"<a href="https://files.example.com/pkg-1.0.whl#sha256=aaa">pkg-1.0.whl</a>"#,
+            "\n",
+            r#"<a href="../../packages/pkg-1.0.tar.gz#sha256=bbb">pkg-1.0.tar.gz</a>"#,
+        );
+        let result = rewrite_upstream_urls(html, "repo", "pkg");
+        // Both should be rewritten to local proxy paths
+        assert!(result.contains(r#"href="/pypi/repo/simple/pkg/pkg-1.0.whl#sha256=aaa""#));
+        assert!(result.contains(r#"href="/pypi/repo/simple/pkg/pkg-1.0.tar.gz#sha256=bbb""#));
     }
 
     // -----------------------------------------------------------------------
