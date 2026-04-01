@@ -109,5 +109,8 @@ prost = "0.13"
 prost-types = "0.13"
 tonic-build = "0.12"
 
+# URL parsing and resolution
+url = "2.5"
+
 # XML Digital Signatures (SAML signature verification)
 bergshamra = "0.3"
