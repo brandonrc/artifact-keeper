@@ -72,6 +72,66 @@ fn normalize_package_name(raw: &str) -> String {
         .unwrap_or_else(|_| raw.to_string())
 }
 
+/// Validate a decoded npm package name.
+///
+/// Rejects names with path traversal sequences, null bytes, and names that
+/// violate the npm naming rules (empty, too long, leading dot/underscore,
+/// non-lowercase for unscoped packages). Called after URL decoding to catch
+/// percent-encoded attacks like `%2e%2e%2f`.
+#[allow(clippy::result_large_err)]
+fn validate_package_name(name: &str) -> Result<(), Response> {
+    if name.is_empty() {
+        return Err(map_status(
+            StatusCode::BAD_REQUEST,
+            "Package name cannot be empty",
+        ));
+    }
+    if name.len() > 214 {
+        return Err(map_status(StatusCode::BAD_REQUEST, "Package name too long"));
+    }
+    if name.contains('\0') {
+        return Err(map_status(
+            StatusCode::BAD_REQUEST,
+            "Package name contains null bytes",
+        ));
+    }
+    // After decoding, the only slash allowed is the single scope separator
+    // in scoped packages (@scope/pkg). Reject traversal sequences.
+    if name.contains("..") {
+        return Err(map_status(
+            StatusCode::BAD_REQUEST,
+            "Package name contains path traversal",
+        ));
+    }
+    // Unscoped names must not contain slashes at all
+    if !name.starts_with('@') && name.contains('/') {
+        return Err(map_status(
+            StatusCode::BAD_REQUEST,
+            "Unscoped package name contains '/'",
+        ));
+    }
+    // Scoped names must have exactly one slash
+    if let Some(rest) = name.strip_prefix('@') {
+        if rest.matches('/').count() != 1 {
+            return Err(map_status(
+                StatusCode::BAD_REQUEST,
+                "Scoped package name must have exactly one '/'",
+            ));
+        }
+    }
+    if name.starts_with('.') || name.starts_with('_') {
+        return Err(map_status(
+            StatusCode::BAD_REQUEST,
+            "Package name cannot start with '.' or '_'",
+        ));
+    }
+    Ok(())
+}
+
+fn map_status(status: StatusCode, msg: &str) -> Response {
+    (status, axum::Json(serde_json::json!({"error": msg}))).into_response()
+}
+
 /// Encode a package name for use in upstream registry URLs.
 ///
 /// Scoped packages like `@openai/codex` must be sent to upstream registries
@@ -107,6 +167,7 @@ async fn get_metadata(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let package = normalize_package_name(&package);
+    validate_package_name(&package)?;
     get_package_metadata(&state, &repo_key, &package, &headers).await
 }
 
@@ -118,6 +179,7 @@ async fn get_scoped_metadata(
     let scope = normalize_package_name(&scope);
     let package = normalize_package_name(&package);
     let full_name = format!("@{}/{}", scope, package);
+    validate_package_name(&full_name)?;
     get_package_metadata(&state, &repo_key, &full_name, &headers).await
 }
 
@@ -325,6 +387,7 @@ async fn download_tarball(
     Path((repo_key, package, filename)): Path<(String, String, String)>,
 ) -> Result<Response, Response> {
     let package = normalize_package_name(&package);
+    validate_package_name(&package)?;
     serve_tarball(&state, &repo_key, &package, &filename).await
 }
 
@@ -335,6 +398,7 @@ async fn download_scoped_tarball(
     let scope = normalize_package_name(&scope);
     let package = normalize_package_name(&package);
     let full_name = format!("@{}/{}", scope, package);
+    validate_package_name(&full_name)?;
     serve_tarball(&state, &repo_key, &full_name, &filename).await
 }
 
@@ -477,6 +541,7 @@ async fn publish(
     body: Bytes,
 ) -> Result<Response, Response> {
     let package = normalize_package_name(&package);
+    validate_package_name(&package)?;
     publish_package(&state, auth, &repo_key, &package, &headers, body).await
 }
 
@@ -490,6 +555,7 @@ async fn publish_scoped(
     let scope = normalize_package_name(&scope);
     let package = normalize_package_name(&package);
     let full_name = format!("@{}/{}", scope, package);
+    validate_package_name(&full_name)?;
     publish_package(&state, auth, &repo_key, &full_name, &headers, body).await
 }
 

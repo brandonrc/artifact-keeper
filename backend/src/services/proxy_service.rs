@@ -129,7 +129,7 @@ impl ProxyService {
         let upstream_result = self.fetch_from_upstream(&full_url, repo.id).await;
 
         match upstream_result {
-            Ok((content, content_type, etag)) => {
+            Ok((content, content_type, etag, _effective_url)) => {
                 let cache_ttl = self.get_cache_ttl_for_repo(repo.id).await;
                 self.cache_artifact(
                     &cache_key,
@@ -203,11 +203,16 @@ impl ProxyService {
     /// This is useful when the caller needs the *raw* upstream response (e.g.,
     /// to parse download URLs from a PyPI simple index) and cannot risk
     /// receiving a locally-transformed cached copy.
+    ///
+    /// Returns `(content, content_type, effective_url)`. The effective URL is
+    /// the final URL after any redirects, which may differ from the requested
+    /// URL. Callers that resolve relative URLs in the response body should use
+    /// the effective URL as the base for resolution.
     pub async fn fetch_upstream_direct(
         &self,
         repo: &Repository,
         path: &str,
-    ) -> Result<(Bytes, Option<String>)> {
+    ) -> Result<(Bytes, Option<String>, String)> {
         if repo.repo_type != RepositoryType::Remote {
             return Err(AppError::Validation(
                 "Proxy operations only supported for remote repositories".to_string(),
@@ -219,8 +224,9 @@ impl ProxyService {
         })?;
 
         let full_url = Self::build_upstream_url(upstream_url, path);
-        let (content, content_type, _etag) = self.fetch_from_upstream(&full_url, repo.id).await?;
-        Ok((content, content_type))
+        let (content, content_type, _etag, effective_url) =
+            self.fetch_from_upstream(&full_url, repo.id).await?;
+        Ok((content, content_type, effective_url))
     }
 
     /// Invalidate cached artifact
@@ -349,7 +355,7 @@ impl ProxyService {
         &self,
         url: &str,
         repo_id: Uuid,
-    ) -> Result<(Bytes, Option<String>, Option<String>)> {
+    ) -> Result<(Bytes, Option<String>, Option<String>, String)> {
         tracing::info!("Fetching artifact from upstream: {}", url);
 
         let upstream_auth =
@@ -366,6 +372,9 @@ impl ProxyService {
             .map_err(|e| AppError::Storage(format!("Failed to fetch from upstream: {}", e)))?;
 
         let status = response.status();
+        // Capture the effective URL after redirects before consuming the response
+        let effective_url = response.url().to_string();
+
         if status == StatusCode::NOT_FOUND {
             return Err(AppError::NotFound(format!(
                 "Artifact not found at upstream: {}",
@@ -405,7 +414,7 @@ impl ProxyService {
             etag
         );
 
-        Ok((content, content_type, etag))
+        Ok((content, content_type, etag, effective_url))
     }
 
     /// Cache artifact content and metadata

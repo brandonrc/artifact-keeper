@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::Extension;
 use axum::Router;
 use bytes::Bytes;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -538,16 +539,17 @@ async fn fetch_from_pypi_remote(
     let normalized = PypiHandler::normalize_name(project);
 
     let index_path = format!("simple/{}/", normalized);
-    let (index_bytes, _ct) =
+    let (index_bytes, _ct, effective_url) =
         proxy_helpers::proxy_fetch_uncached(proxy, repo_id, repo_key, upstream_url, &index_path)
             .await?;
 
     let index_html = String::from_utf8_lossy(&index_bytes);
 
-    // Build the full index page URL so relative hrefs can be resolved.
-    // upstream_url is e.g. "https://nexus.example.com/repository/pypi" and
-    // index_path is "simple/{project}/", giving us the base for resolution.
-    let full_index_url = format!("{}/{}", upstream_url.trim_end_matches('/'), index_path);
+    // Use the effective URL (after redirects) as the base for resolving
+    // relative hrefs. Some registries (Nexus, Artifactory) redirect the
+    // index request, and the relative paths in the HTML are relative to
+    // the final serving URL, not the originally requested URL.
+    let full_index_url = effective_url;
     let file_url = find_upstream_url_for_file(&index_html, filename, Some(&full_index_url));
 
     let fallback = || {
@@ -577,13 +579,27 @@ async fn fetch_from_pypi_remote(
         }
     }
 
+    // Use a stable cache key (simple/{project}/{filename}) regardless of the
+    // actual upstream URL. Nexus/devpi resolve to paths like
+    // packages/requests/2.31.0/requests-2.31.0.tar.gz which differ from the
+    // simple/ convention. A stable cache key ensures the cache-check
+    // optimization in serve_file works for all upstream registry types.
+    let local_cache_path = format!("simple/{}/{}", normalized, filename);
+
     let (fetch_base, fetch_path) = match file_url.as_deref().and_then(split_url_base_and_path) {
         Some(pair) => pair,
         None => fallback(),
     };
 
-    let (content, _content_type) =
-        proxy_helpers::proxy_fetch(proxy, repo_id, repo_key, &fetch_base, &fetch_path).await?;
+    let (content, _content_type) = proxy_helpers::proxy_fetch_with_cache_key(
+        proxy,
+        repo_id,
+        repo_key,
+        &fetch_base,
+        &fetch_path,
+        &local_cache_path,
+    )
+    .await?;
 
     Ok(content)
 }
@@ -974,18 +990,35 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+// ---------------------------------------------------------------------------
+// Static regexes (compiled once, reused across requests)
+// ---------------------------------------------------------------------------
+
+static HREF_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r##"<a\s+[^>]*?href="([^"#]+)"##).unwrap());
+
+static REWRITE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"<a\s+([^>]*?)href="([^"]+)"([^>]*)>"#).unwrap());
+
+static METADATA_ATTR_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"\s*data-(?:dist-info-metadata|core-metadata)="[^"]*""#).unwrap());
+
 /// Split a URL into its base (scheme + host) and path components.
 ///
 /// For example, `https://files.pythonhosted.org/packages/ab/cd/file.whl` splits
 /// into `("https://files.pythonhosted.org", "packages/ab/cd/file.whl")`.
 /// Returns `None` if the URL has no `://` scheme separator or no path after the
 /// host.
-fn split_url_base_and_path(url: &str) -> Option<(String, String)> {
-    let scheme_end = url.find("://")?;
-    let after_scheme = &url[scheme_end + 3..];
-    let slash_pos = after_scheme.find('/')?;
-    let split = scheme_end + 3 + slash_pos;
-    Some((url[..split].to_string(), url[split + 1..].to_string()))
+fn split_url_base_and_path(url_str: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url_str).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    let base = format!("{}://{}", parsed.scheme(), parsed.authority());
+    let path = parsed.path().strip_prefix('/').unwrap_or(parsed.path());
+    if path.is_empty() {
+        return None;
+    }
+    Some((base, path.to_string()))
 }
 
 /// Look up the original download URL for a given filename in upstream simple
@@ -1006,11 +1039,7 @@ fn find_upstream_url_for_file(
     filename: &str,
     index_url: Option<&str>,
 ) -> Option<String> {
-    // Match any href value in an <a> tag, capturing the part before the
-    // fragment (#sha256=...). This captures absolute URLs, root-relative
-    // paths, and relative paths alike.
-    let re = Regex::new(r##"<a\s+[^>]*?href="([^"#]+)"##).unwrap();
-    for caps in re.captures_iter(index_html) {
+    for caps in HREF_RE.captures_iter(index_html) {
         let href = &caps[1];
         let href_filename = href.rsplit('/').next().unwrap_or("");
         if href_filename != filename {
@@ -1060,54 +1089,45 @@ fn find_upstream_url_for_file(
 /// returns 404, which pip treats as a hard error since the index promised the
 /// metadata was available.
 fn rewrite_upstream_urls(html: &str, repo_key: &str, project: &str) -> String {
-    // Match <a href="..."> patterns with any href value: absolute URLs,
-    // root-relative paths, or relative paths (../../packages/file.tar.gz).
-    // Registries like Nexus, devpi, and Artifactory use relative hrefs in
-    // their simple index HTML, so we must handle all forms.
-    let re = Regex::new(r#"<a\s+([^>]*?)href="([^"]+)"([^>]*)>"#).unwrap();
     let normalized = PypiHandler::normalize_name(project);
 
-    // Matches data-dist-info-metadata="..." and data-core-metadata="..."
-    // attributes that we need to strip from proxied links.
-    let metadata_attr_re =
-        Regex::new(r#"\s*data-(?:dist-info-metadata|core-metadata)="[^"]*""#).unwrap();
+    REWRITE_RE
+        .replace_all(html, |caps: &regex::Captures| {
+            let before_href = &caps[1];
+            let full_url = &caps[2];
+            let after_href = &caps[3];
 
-    re.replace_all(html, |caps: &regex::Captures| {
-        let before_href = &caps[1];
-        let full_url = &caps[2];
-        let after_href = &caps[3];
+            // Split off the fragment (#sha256=...) if present
+            let (url_path, fragment) = match full_url.find('#') {
+                Some(pos) => (&full_url[..pos], &full_url[pos..]),
+                None => (full_url, ""),
+            };
 
-        // Split off the fragment (#sha256=...) if present
-        let (url_path, fragment) = match full_url.find('#') {
-            Some(pos) => (&full_url[..pos], &full_url[pos..]),
-            None => (full_url, ""),
-        };
+            // Extract the filename from the URL path
+            let filename = url_path.rsplit('/').next().unwrap_or(url_path);
 
-        // Extract the filename from the URL path
-        let filename = url_path.rsplit('/').next().unwrap_or(url_path);
+            if filename.is_empty() {
+                // Not a file URL, leave unchanged
+                return caps[0].to_string();
+            }
 
-        if filename.is_empty() {
-            // Not a file URL, leave unchanged
-            return caps[0].to_string();
-        }
+            let rewritten = format!(
+                "/pypi/{}/simple/{}/{}{}",
+                repo_key, normalized, filename, fragment
+            );
 
-        let rewritten = format!(
-            "/pypi/{}/simple/{}/{}{}",
-            repo_key, normalized, filename, fragment
-        );
+            // Strip PEP 658 metadata attributes. The proxy does not cache or
+            // serve .metadata files, so advertising them causes pip to fail
+            // with a 404 when it tries to fetch the promised metadata.
+            let before_cleaned = METADATA_ATTR_RE.replace_all(before_href, "");
+            let after_cleaned = METADATA_ATTR_RE.replace_all(after_href, "");
 
-        // Strip PEP 658 metadata attributes. The proxy does not cache or
-        // serve .metadata files, so advertising them causes pip to fail
-        // with a 404 when it tries to fetch the promised metadata.
-        let before_cleaned = metadata_attr_re.replace_all(before_href, "");
-        let after_cleaned = metadata_attr_re.replace_all(after_href, "");
-
-        format!(
-            "<a {}href=\"{}\"{}>",
-            before_cleaned, rewritten, after_cleaned
-        )
-    })
-    .into_owned()
+            format!(
+                "<a {}href=\"{}\"{}>",
+                before_cleaned, rewritten, after_cleaned
+            )
+        })
+        .into_owned()
 }
 
 #[cfg(test)]

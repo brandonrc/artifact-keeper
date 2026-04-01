@@ -212,6 +212,7 @@ dependencies = [
  "mime_guess",
  "native-tls",
  "object_store",
+ "once_cell",
  "openssl",
  "opentelemetry",
  "opentelemetry-otlp",

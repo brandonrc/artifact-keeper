@@ -217,13 +217,16 @@ pub async fn proxy_fetch_with_cache_key(
 /// Use this instead of [`proxy_fetch`] when the caller needs the raw upstream
 /// response and cannot tolerate locally-transformed cached content (e.g., when
 /// parsing download URLs from a PyPI simple index).
+/// Returns `(content, content_type, effective_url)`. The effective URL is the
+/// final URL after any redirects, which callers can use as a base for resolving
+/// relative URLs in the response body.
 pub async fn proxy_fetch_uncached(
     proxy_service: &ProxyService,
     repo_id: Uuid,
     repo_key: &str,
     upstream_url: &str,
     path: &str,
-) -> Result<(Bytes, Option<String>), Response> {
+) -> Result<(Bytes, Option<String>, String), Response> {
     let repo = build_remote_repo(repo_id, repo_key, upstream_url);
 
     proxy_service
