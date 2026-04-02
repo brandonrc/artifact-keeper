@@ -48,27 +48,6 @@ pub fn validate_outbound_url(url_str: &str, label: &str) -> Result<()> {
         }
     }
 
-    // Block single-label hostnames (no dot). In server environments these are
-    // almost always internal: Docker Compose service names, Kubernetes pods,
-    // or other LAN-only hosts. Public registries always have a FQDN.
-    if !bare_host_is_ip(host_str)
-        && !host_str.contains('.')
-        && !blocked_hosts.contains(&host_lower.as_str())
-    {
-        return Err(AppError::Validation(format!(
-            "{} host '{}' is not allowed (single-label hostnames are blocked)",
-            label, host_str
-        )));
-    }
-
-    // Block Kubernetes internal service addresses
-    if host_lower.ends_with(".svc.cluster.local") {
-        return Err(AppError::Validation(format!(
-            "{} host '{}' is not allowed (Kubernetes internal)",
-            label, host_str
-        )));
-    }
-
     // Block private/internal IP ranges.
     // host_str() returns brackets for IPv6 (e.g. "[::1]"), so strip them
     // before parsing as IpAddr.
@@ -96,15 +75,6 @@ pub fn validate_outbound_url(url_str: &str, label: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Check if a hostname string is actually an IP address (v4 or bracketed v6).
-fn bare_host_is_ip(host: &str) -> bool {
-    let bare = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    bare.parse::<std::net::IpAddr>().is_ok()
 }
 
 #[cfg(test)]
@@ -229,18 +199,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Single-label hostname blocking
+    // Non-blocked hostnames (K8s service names are allowed)
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_rejects_single_label_hostname() {
-        assert!(validate_outbound_url("http://myservice:8080/api", "Test URL").is_err());
-    }
-
-    #[test]
-    fn test_rejects_unknown_single_label() {
-        assert!(validate_outbound_url("http://trivy2:8090", "Test URL").is_err());
-    }
 
     #[test]
     fn test_allows_fqdn() {
@@ -248,29 +208,17 @@ mod tests {
     }
 
     #[test]
-    fn test_allows_subdomain() {
-        assert!(validate_outbound_url("https://nexus.internal.example.com", "Test URL").is_ok());
+    fn test_allows_k8s_service_name() {
+        // K8s deployments use single-label hostnames for intra-namespace services.
+        // These must be allowed for remote repos pointing at other services.
+        assert!(validate_outbound_url("http://nexus:8081/repository/pypi", "Test URL").is_ok());
     }
 
-    // -----------------------------------------------------------------------
-    // Kubernetes internal addresses
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn test_rejects_k8s_svc_cluster_local() {
+    fn test_allows_k8s_fqdn_service() {
         assert!(
-            validate_outbound_url("http://backend.default.svc.cluster.local:8080", "Test URL")
-                .is_err()
+            validate_outbound_url("http://nexus.tools.svc.cluster.local:8081", "Test URL").is_ok()
         );
-    }
-
-    #[test]
-    fn test_rejects_k8s_namespaced_service() {
-        assert!(validate_outbound_url(
-            "http://postgres.database.svc.cluster.local:5432",
-            "Test URL"
-        )
-        .is_err());
     }
 
     // -----------------------------------------------------------------------
