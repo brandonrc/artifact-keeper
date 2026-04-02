@@ -131,7 +131,7 @@ totp-rs = { version = "5", features = ["qr", "gen_secret"] }
 meilisearch-sdk = { workspace = true }
 
 # Temp files
-tempfile = "3.16"
+tempfile = "3.27"
 
 # Directory walking
 walkdir = "2.5"
