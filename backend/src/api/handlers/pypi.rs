@@ -147,6 +147,92 @@ async fn simple_project(
     let repo = resolve_pypi_repo(&state.db, &repo_key).await?;
     let normalized = PypiHandler::normalize_name(&project);
 
+    if repo.repo_type == RepositoryType::Local {
+        if let Some(artifacts) =
+            load_simple_project_artifacts(&state.db, repo.id, &normalized).await?
+        {
+            return render_simple_project_response(&repo_key, &normalized, &artifacts, &headers);
+        }
+    } else if repo.repo_type == RepositoryType::Remote {
+        return proxy_simple_project_response(
+            state.proxy_service.as_ref().map(|proxy| &**proxy),
+            repo.id,
+            &repo_key,
+            repo.upstream_url.as_deref(),
+            &normalized,
+            &project,
+        )
+        .await;
+    } else if repo.repo_type == RepositoryType::Virtual {
+        let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+
+        if members.is_empty() {
+            return Err(
+                AppError::NotFound("Virtual repository has no members".to_string())
+                    .into_response(),
+            );
+        }
+
+        for member in &members {
+            if member.repo_type == RepositoryType::Local {
+                if let Some(artifacts) =
+                    load_simple_project_artifacts(&state.db, member.id, &normalized).await?
+                {
+                    return render_simple_project_response(
+                        &repo_key,
+                        &normalized,
+                        &artifacts,
+                        &headers,
+                    );
+                }
+            }
+
+            if member.repo_type != RepositoryType::Remote {
+                continue;
+            }
+
+            match proxy_simple_project_response(
+                state.proxy_service.as_ref().map(|proxy| &**proxy),
+                member.id,
+                &repo_key,
+                member.upstream_url.as_deref(),
+                &normalized,
+                &project,
+            )
+            .await
+            {
+                Ok(response) => return Ok(response),
+                Err(_e) => {
+                    debug!(
+                        member_key = %member.key,
+                        "simple index lookup missed for virtual member"
+                    );
+                }
+            }
+        }
+
+        return Err(
+            AppError::NotFound("Package not found in any member repository".to_string())
+                .into_response(),
+        );
+    }
+
+    Err(AppError::NotFound("Package not found".to_string()).into_response())
+}
+
+struct SimpleProjectArtifact {
+    path: String,
+    version: Option<String>,
+    size_bytes: i64,
+    checksum_sha256: String,
+    metadata: Option<serde_json::Value>,
+}
+
+async fn load_simple_project_artifacts(
+    db: &PgPool,
+    repo_id: uuid::Uuid,
+    normalized: &str,
+) -> Result<Option<Vec<SimpleProjectArtifact>>, Response> {
     // Find all artifacts that belong to this package.
     // We normalize the name for matching: replace [_.-]+ with - then lowercase.
     let artifacts = sqlx::query!(
@@ -160,116 +246,37 @@ async fn simple_project(
           AND LOWER(REPLACE(REPLACE(REPLACE(a.name, '_', '-'), '.', '-'), '--', '-')) = $2
         ORDER BY a.created_at DESC
         "#,
-        repo.id,
+        repo_id,
         normalized
     )
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
-    .map_err(map_db_err)?;
+    .map_err(map_db_err)?
+    .into_iter()
+    .map(|a| {
+        SimpleProjectArtifact {
+            path: a.path,
+            version: a.version,
+            size_bytes: a.size_bytes,
+            checksum_sha256: a.checksum_sha256,
+            metadata: a.metadata,
+        }
+    })
+    .collect::<Vec<_>>();
 
     if artifacts.is_empty() {
-        // For remote repos, proxy the simple index from upstream
-        if repo.repo_type == RepositoryType::Remote {
-            if let (Some(ref upstream_url), Some(ref proxy)) =
-                (&repo.upstream_url, &state.proxy_service)
-            {
-                let upstream_path = format!("simple/{}/", normalized);
-                let (content, content_type) = proxy_helpers::proxy_fetch(
-                    proxy,
-                    repo.id,
-                    &repo_key,
-                    upstream_url,
-                    &upstream_path,
-                )
-                .await?;
-
-                // Rewrite absolute download URLs to route through our proxy
-                let ct = content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string());
-                let body = if ct.contains("text/html") {
-                    let html = String::from_utf8_lossy(&content);
-                    let rewritten = rewrite_upstream_urls(&html, &repo_key, &project);
-                    Body::from(rewritten)
-                } else {
-                    Body::from(content)
-                };
-
-                return Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header(CONTENT_TYPE, ct)
-                    .body(body)
-                    .unwrap());
-            }
-        }
-        // For virtual repos, iterate through remote members using the same
-        // proxy logic as the direct Remote path above: preserve the upstream
-        // content-type and only rewrite URLs in HTML responses.
-        if repo.repo_type == RepositoryType::Virtual {
-            let upstream_path = format!("simple/{}/", normalized);
-            let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
-
-            if members.is_empty() {
-                return Err(
-                    AppError::NotFound("Virtual repository has no members".to_string())
-                        .into_response(),
-                );
-            }
-
-            for member in &members {
-                if member.repo_type != RepositoryType::Remote {
-                    continue;
-                }
-                let Some(ref upstream_url) = member.upstream_url else {
-                    continue;
-                };
-                let Some(ref proxy) = state.proxy_service else {
-                    continue;
-                };
-
-                let result = proxy_helpers::proxy_fetch(
-                    proxy,
-                    member.id,
-                    &member.key,
-                    upstream_url,
-                    &upstream_path,
-                )
-                .await;
-
-                match result {
-                    Ok((content, content_type)) => {
-                        let ct =
-                            content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string());
-                        let body = if ct.contains("text/html") {
-                            let html = String::from_utf8_lossy(&content);
-                            let rewritten = rewrite_upstream_urls(&html, &repo_key, &project);
-                            Body::from(rewritten)
-                        } else {
-                            Body::from(content)
-                        };
-
-                        return Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header(CONTENT_TYPE, ct)
-                            .body(body)
-                            .unwrap());
-                    }
-                    Err(_e) => {
-                        debug!(
-                            member_key = %member.key,
-                            "simple index proxy fetch missed for virtual member"
-                        );
-                    }
-                }
-            }
-
-            return Err(AppError::NotFound(
-                "Package not found in any member repository".to_string(),
-            )
-            .into_response());
-        }
-
-        return Err(AppError::NotFound("Package not found".to_string()).into_response());
+        Ok(None)
+    } else {
+        Ok(Some(artifacts))
     }
+}
 
+fn render_simple_project_response(
+    repo_key: &str,
+    normalized: &str,
+    artifacts: &[SimpleProjectArtifact],
+    headers: &HeaderMap,
+) -> Result<Response, Response> {
     let accept = headers
         .get("accept")
         .and_then(|v| v.to_str().ok())
@@ -295,8 +302,8 @@ async fn simple_project(
                     "hashes": { "sha256": &a.checksum_sha256 },
                     "size": a.size_bytes,
                 });
-                if let Some(rp) = requires_python {
-                    file["requires-python"] = serde_json::Value::String(rp);
+                if let Some(requires_python) = requires_python {
+                    file["requires-python"] = serde_json::Value::String(requires_python);
                 }
                 file
             })
@@ -330,7 +337,7 @@ async fn simple_project(
     html.push_str("</head>\n<body>\n");
     html.push_str(&format!("<h1>Links for {}</h1>\n", normalized));
 
-    for a in &artifacts {
+    for a in artifacts {
         let filename = a.path.rsplit('/').next().unwrap_or(&a.path);
         let url = format!(
             "/pypi/{}/simple/{}/{}#sha256={}",
@@ -360,6 +367,47 @@ async fn simple_project(
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
         .body(Body::from(html))
+        .unwrap())
+}
+
+async fn proxy_simple_project_response(
+    proxy: Option<&crate::services::proxy_service::ProxyService>,
+    repo_id: uuid::Uuid,
+    repo_key: &str,
+    upstream_url: Option<&str>,
+    normalized: &str,
+    project: &str,
+) -> Result<Response, Response> {
+    let Some(proxy) = proxy else {
+        return Err(AppError::NotFound("Package not found".to_string()).into_response());
+    };
+    let Some(upstream_url) = upstream_url else {
+        return Err(AppError::NotFound("Package not found".to_string()).into_response());
+    };
+
+    let upstream_path = format!("simple/{}/", normalized);
+    let (content, content_type) = proxy_helpers::proxy_fetch(
+        proxy,
+        repo_id,
+        repo_key,
+        upstream_url,
+        &upstream_path,
+    )
+    .await?;
+
+    let content_type = content_type.unwrap_or_else(|| "text/html; charset=utf-8".to_string());
+    let body = if content_type.contains("text/html") {
+        let html = String::from_utf8_lossy(&content);
+        let rewritten = rewrite_upstream_urls(&html, repo_key, project);
+        Body::from(rewritten)
+    } else {
+        Body::from(content)
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .body(body)
         .unwrap())
 }
 
