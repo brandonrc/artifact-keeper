@@ -519,7 +519,7 @@ if command -v npm >/dev/null 2>&1; then
     (
         cd "$NPM_INSTALL_DIR"
         npm init -y --silent >/dev/null 2>&1
-        if npm install is-odd --registry "$REGISTRY_URL/npm/npm-proxy/" --no-audit --no-fund 2>/dev/null; then
+        if npm install is-odd --registry "$REGISTRY_URL/npm/npm-proxy/" --no-audit --no-fund 2>&1; then
             if [ -d node_modules/is-odd ]; then
                 echo "OK"
             else
@@ -529,7 +529,11 @@ if command -v npm >/dev/null 2>&1; then
             echo "FAILED"
         fi
     ) > "$TMPDIR_TEST/npm-result.txt" 2>&1
-    NPM_RESULT=$(cat "$TMPDIR_TEST/npm-result.txt" | tail -1)
+    NPM_RESULT=$(tail -1 "$TMPDIR_TEST/npm-result.txt")
+    if [ "$NPM_RESULT" != "OK" ]; then
+        echo "    npm install output:" >&2
+        cat "$TMPDIR_TEST/npm-result.txt" >&2
+    fi
     rm -rf "$NPM_INSTALL_DIR"
     case "$NPM_RESULT" in
         OK) pass "npm install is-odd via proxy succeeded" ;;

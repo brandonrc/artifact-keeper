@@ -17,7 +17,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::models::repository::{Repository, RepositoryType};
+use crate::models::repository::{Repository, RepositoryFormat, RepositoryType};
 use crate::services::storage_service::StorageService;
 
 /// Default cache TTL in seconds (24 hours)
@@ -699,6 +699,16 @@ impl ProxyService {
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_string());
         let size = content.len() as i64;
+        let format = sqlx::query_scalar::<_, RepositoryFormat>(
+            "SELECT format FROM repositories WHERE id = $1",
+        )
+        .bind(repository_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(RepositoryFormat::Generic);
+        let version = extract_version_from_path(&format, normalized_path);
 
         if let Err(e) = sqlx::query(
             r#"
@@ -706,8 +716,9 @@ impl ProxyService {
                 repository_id, path, name, version, size_bytes,
                 checksum_sha256, content_type, storage_key
             )
-            VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (repository_id, path) DO UPDATE SET
+                version = COALESCE(EXCLUDED.version, artifacts.version),
                 size_bytes = EXCLUDED.size_bytes,
                 checksum_sha256 = EXCLUDED.checksum_sha256,
                 content_type = EXCLUDED.content_type,
@@ -719,6 +730,7 @@ impl ProxyService {
         .bind(repository_id)
         .bind(normalized_path)
         .bind(artifact_name)
+        .bind(&version)
         .bind(size)
         .bind(&checksum)
         .bind(&ct)
@@ -846,6 +858,78 @@ impl ProxyService {
                     url
                 );
                 Ok(true)
+            }
+        }
+    }
+}
+
+/// Extract version from an artifact path based on the repository format.
+///
+/// Each package format encodes the version differently in the path. This
+/// function delegates to format-specific parsing logic and returns `None`
+/// for metadata files, index pages, or paths where the version cannot be
+/// determined.
+pub(crate) fn extract_version_from_path(format: &RepositoryFormat, path: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+
+    match format {
+        // Maven: groupId/.../artifactId/version/filename
+        RepositoryFormat::Maven | RepositoryFormat::Gradle | RepositoryFormat::Sbt => {
+            crate::formats::maven::MavenHandler::parse_coordinates(path)
+                .ok()
+                .map(|c| c.version)
+        }
+
+        // NPM: @scope/name/-/name-version.tgz or name/-/name-version.tgz
+        RepositoryFormat::Npm
+        | RepositoryFormat::Yarn
+        | RepositoryFormat::Bower
+        | RepositoryFormat::Pnpm => crate::formats::npm::NpmHandler::parse_path(path)
+            .ok()
+            .and_then(|info| info.version),
+
+        // PyPI: simple/name/ (index) or packages/name/version/filename
+        RepositoryFormat::Pypi | RepositoryFormat::Poetry | RepositoryFormat::Conda => {
+            crate::formats::pypi::PypiHandler::parse_path(path)
+                .ok()
+                .and_then(|info| info.version)
+        }
+
+        // NuGet: v3/flatcontainer/name/version/name.version.nupkg
+        RepositoryFormat::Nuget | RepositoryFormat::Chocolatey | RepositoryFormat::Powershell => {
+            crate::formats::nuget::NugetHandler::parse_path(path)
+                .ok()
+                .and_then(|info| info.version)
+        }
+
+        // Cargo: crates/name/name-version.crate or api/v1/crates/name/version/download
+        RepositoryFormat::Cargo => crate::formats::cargo::CargoHandler::parse_path(path)
+            .ok()
+            .and_then(|info| info.version),
+
+        // Go: module/@v/version.info|.mod|.zip
+        RepositoryFormat::Go => crate::formats::go::GoHandler::parse_path(path)
+            .ok()
+            .and_then(|info| info.version),
+
+        // OCI/Docker formats: version is conveyed via tags/digests in the
+        // registry protocol, not in the URL path, so return None.
+        RepositoryFormat::Docker
+        | RepositoryFormat::Podman
+        | RepositoryFormat::Buildx
+        | RepositoryFormat::Oras
+        | RepositoryFormat::WasmOci
+        | RepositoryFormat::HelmOci
+        | RepositoryFormat::Incus
+        | RepositoryFormat::Lxc => None,
+
+        // Generic fallback: try name/version/filename pattern
+        _ => {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() >= 3 {
+                Some(parts[parts.len() - 2].to_string())
+            } else {
+                None
             }
         }
     }
@@ -1698,6 +1782,178 @@ mod tests {
         let c = cache.read().await;
         assert!(!c.contains_key("expired"));
         assert!(c.contains_key("fresh"));
+    }
+
+    // =======================================================================
+    // extract_version_from_path tests
+    // =======================================================================
+
+    #[test]
+    fn test_extract_version_maven_standard() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "org/junit/junit-bom/5.10.1/junit-bom-5.10.1.pom",
+        );
+        assert_eq!(version.as_deref(), Some("5.10.1"));
+    }
+
+    #[test]
+    fn test_extract_version_maven_sha1_checksum() {
+        // This is the exact case from issue #640
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "org/junit/junit-bom/5.10.1/junit-bom-5.10.1.pom.sha1",
+        );
+        assert_eq!(version.as_deref(), Some("5.10.1"));
+    }
+
+    #[test]
+    fn test_extract_version_maven_snapshot() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "com/mycompany/app/my-app/1.0-SNAPSHOT/my-app-1.0-20260402.154115-1.jar",
+        );
+        assert_eq!(version.as_deref(), Some("1.0-SNAPSHOT"));
+    }
+
+    #[test]
+    fn test_extract_version_maven_deep_group_id() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "org/apache/commons/commons-lang3/3.12.0/commons-lang3-3.12.0.jar",
+        );
+        assert_eq!(version.as_deref(), Some("3.12.0"));
+    }
+
+    #[test]
+    fn test_extract_version_maven_metadata_xml() {
+        // maven-metadata.xml at version level still has the version in the path
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "org/junit/junit-bom/5.10.1/maven-metadata.xml",
+        );
+        assert_eq!(version.as_deref(), Some("5.10.1"));
+    }
+
+    #[test]
+    fn test_extract_version_maven_too_short_path() {
+        // Artifact-level metadata: groupId/artifactId/maven-metadata.xml
+        let version =
+            extract_version_from_path(&RepositoryFormat::Maven, "org/junit/maven-metadata.xml");
+        // parse_coordinates requires 4 segments, so this returns None
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_version_npm_unscoped_tarball() {
+        let version =
+            extract_version_from_path(&RepositoryFormat::Npm, "express/-/express-4.18.2.tgz");
+        assert_eq!(version.as_deref(), Some("4.18.2"));
+    }
+
+    #[test]
+    fn test_extract_version_npm_scoped_tarball() {
+        let version =
+            extract_version_from_path(&RepositoryFormat::Npm, "@babel/core/-/core-7.24.0.tgz");
+        assert_eq!(version.as_deref(), Some("7.24.0"));
+    }
+
+    #[test]
+    fn test_extract_version_npm_metadata_request() {
+        // Metadata requests (just package name) have no version
+        let version = extract_version_from_path(&RepositoryFormat::Npm, "express");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_version_pypi_package_file() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Pypi,
+            "packages/requests/2.31.0/requests-2.31.0.tar.gz",
+        );
+        assert_eq!(version.as_deref(), Some("2.31.0"));
+    }
+
+    #[test]
+    fn test_extract_version_pypi_simple_index() {
+        let version = extract_version_from_path(&RepositoryFormat::Pypi, "simple/requests/");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_version_nuget() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Nuget,
+            "v3/flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg",
+        );
+        assert_eq!(version.as_deref(), Some("13.0.3"));
+    }
+
+    #[test]
+    fn test_extract_version_cargo() {
+        let version =
+            extract_version_from_path(&RepositoryFormat::Cargo, "crates/serde/serde-1.0.197.crate");
+        assert_eq!(version.as_deref(), Some("1.0.197"));
+    }
+
+    #[test]
+    fn test_extract_version_go_module() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Go,
+            "github.com/gin-gonic/gin/@v/v1.9.1.info",
+        );
+        assert_eq!(version.as_deref(), Some("v1.9.1"));
+    }
+
+    #[test]
+    fn test_extract_version_go_zip() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Go,
+            "github.com/gin-gonic/gin/@v/v1.9.1.zip",
+        );
+        assert_eq!(version.as_deref(), Some("v1.9.1"));
+    }
+
+    #[test]
+    fn test_extract_version_docker_returns_none() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Docker,
+            "v2/library/nginx/manifests/1.25.3",
+        );
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_version_gradle_delegates_to_maven() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Gradle,
+            "com/google/guava/guava/32.1.3-jre/guava-32.1.3-jre.jar",
+        );
+        assert_eq!(version.as_deref(), Some("32.1.3-jre"));
+    }
+
+    #[test]
+    fn test_extract_version_generic_fallback() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Generic,
+            "my-tool/2.0.0/my-tool-2.0.0.tar.gz",
+        );
+        assert_eq!(version.as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn test_extract_version_generic_short_path() {
+        let version = extract_version_from_path(&RepositoryFormat::Generic, "single-file.bin");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_extract_version_leading_slash_stripped() {
+        let version = extract_version_from_path(
+            &RepositoryFormat::Maven,
+            "/org/junit/junit-bom/5.10.1/junit-bom-5.10.1.pom",
+        );
+        assert_eq!(version.as_deref(), Some("5.10.1"));
     }
 
     #[test]
