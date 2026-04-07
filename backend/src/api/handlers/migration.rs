@@ -40,6 +40,7 @@ fn migration_encryption_key() -> Result<String> {
         )
     })
 }
+use crate::services::migration_service::MigrationService;
 use crate::services::migration_worker::{ConflictResolution, MigrationWorker, WorkerConfig};
 use crate::services::nexus_client::{NexusAuth, NexusClient, NexusClientConfig};
 use crate::services::source_registry::SourceRegistry;
@@ -1504,7 +1505,50 @@ async fn run_assessment(
         AppError::Conflict("Cannot start assessment (wrong state or not found)".into())
     })?;
 
-    // TODO: Spawn assessment worker
+    // Fetch source connection to create the appropriate client
+    let connection: SourceConnectionRow = sqlx::query_as(
+        "SELECT id, name, url, auth_type, credentials_enc, source_type, created_at, created_by, verified_at FROM source_connections WHERE id = $1",
+    )
+    .bind(job.source_connection_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Source connection not found".into()))?;
+
+    let client = create_source_client(&connection)
+        .map_err(|e| AppError::Internal(format!("Failed to create client: {}", e)))?;
+
+    // Spawn the assessment worker following the same pattern as start_migration
+    let db = state.db.clone();
+    let fail_db = state.db.clone();
+    let job_id = job.id;
+    let connection_id = job.source_connection_id;
+    tokio::spawn(async move {
+        let service = MigrationService::new(db);
+        match service.run_assessment(connection_id, client.as_ref()).await {
+            Ok(result) => {
+                if let Err(e) = service.save_assessment(job_id, &result).await {
+                    tracing::error!(job_id = %job_id, error = %e, "Failed to save assessment results");
+                    let _ = sqlx::query(
+                        "UPDATE migration_jobs SET status = 'failed', finished_at = NOW(), error_summary = $2 WHERE id = $1"
+                    )
+                    .bind(job_id)
+                    .bind(format!("Failed to save assessment: {}", e))
+                    .execute(&fail_db)
+                    .await;
+                }
+            }
+            Err(e) => {
+                tracing::error!(job_id = %job_id, error = %e, "Assessment worker failed");
+                let _ = sqlx::query(
+                    "UPDATE migration_jobs SET status = 'failed', finished_at = NOW(), error_summary = $2 WHERE id = $1"
+                )
+                .bind(job_id)
+                .bind(e.to_string())
+                .execute(&fail_db)
+                .await;
+            }
+        }
+    });
 
     Ok((StatusCode::ACCEPTED, Json(job.into())))
 }

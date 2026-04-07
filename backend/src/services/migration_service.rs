@@ -14,6 +14,7 @@ use crate::services::artifactory_client::{
     ArtifactoryAuth, ArtifactoryClient, ArtifactoryClientConfig, RepositoryConfig,
     RepositoryListItem,
 };
+use crate::services::source_registry::SourceRegistry;
 
 /// Errors that can occur during migration
 #[derive(Error, Debug)]
@@ -965,11 +966,15 @@ pub struct AssessmentResult {
 }
 
 impl MigrationService {
-    /// Run a pre-migration assessment
+    /// Run a pre-migration assessment.
+    ///
+    /// Accepts any `SourceRegistry` implementation (Artifactory, Nexus, etc.).
+    /// User, group, and permission counts are only available for Artifactory
+    /// sources; other source types report 0 with a warning.
     pub async fn run_assessment(
         &self,
         _connection_id: Uuid,
-        client: &ArtifactoryClient,
+        client: &dyn SourceRegistry,
     ) -> Result<AssessmentResult, MigrationError> {
         let mut repositories = Vec::new();
         let mut total_artifacts = 0i64;
@@ -1031,32 +1036,16 @@ impl MigrationService {
             total_size += repo_size;
         }
 
-        // Count users
-        let users_count = match client.list_users().await {
-            Ok(users) => users.len() as i64,
-            Err(_) => {
-                warnings.push("Could not fetch user list".into());
-                0
-            }
-        };
-
-        // Count groups
-        let groups_count = match client.list_groups().await {
-            Ok(groups) => groups.len() as i64,
-            Err(_) => {
-                warnings.push("Could not fetch group list".into());
-                0
-            }
-        };
-
-        // Count permissions
-        let permissions_count = match client.list_permissions().await {
-            Ok(perms) => perms.permissions.len() as i64,
-            Err(_) => {
-                warnings.push("Could not fetch permission list".into());
-                0
-            }
-        };
+        // User/group/permission enumeration requires source-specific APIs that
+        // are not part of the SourceRegistry trait. Report 0 with a note so the
+        // caller knows these counts were not assessed.
+        warnings.push(format!(
+            "User, group, and permission counts are not available for {} sources during assessment",
+            client.source_type()
+        ));
+        let users_count = 0i64;
+        let groups_count = 0i64;
+        let permissions_count = 0i64;
 
         // Estimate duration (rough estimate: 1 artifact per second + overhead)
         let estimated_seconds = total_artifacts + (repositories.len() as i64 * 10);
