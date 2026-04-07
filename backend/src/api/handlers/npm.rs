@@ -195,6 +195,7 @@ struct NpmMetadataArtifact {
 ///
 /// `repo_key` should be the key visible to the client (the virtual repo key
 /// when serving through a virtual repository, or the repo's own key otherwise).
+#[allow(clippy::result_large_err)]
 fn build_npm_metadata_response(
     artifacts: &[NpmMetadataArtifact],
     package_name: &str,
