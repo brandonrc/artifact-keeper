@@ -2034,4 +2034,67 @@ mod tests {
         );
         assert_eq!(cloned.members.len(), 2);
     }
+
+    // -----------------------------------------------------------------------
+    // AssessmentResult serialization round-trip (#654)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_assessment_result_serialize_deserialize() {
+        let result = AssessmentResult {
+            repositories: vec![RepositoryAssessment {
+                key: "libs-release".to_string(),
+                repo_type: "local".to_string(),
+                package_type: "maven".to_string(),
+                artifact_count: 42,
+                total_size_bytes: 1024000,
+                compatibility: "full".to_string(),
+                warnings: vec![],
+            }],
+            total_artifacts: 42,
+            total_size_bytes: 1024000,
+            users_count: 5,
+            groups_count: 3,
+            permissions_count: 10,
+            estimated_duration_seconds: 52,
+            warnings: vec!["Some warning".to_string()],
+            blockers: vec![],
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        let deserialized: AssessmentResult = serde_json::from_value(json.clone()).unwrap();
+
+        assert_eq!(deserialized.total_artifacts, 42);
+        assert_eq!(deserialized.users_count, 5);
+        assert_eq!(deserialized.repositories.len(), 1);
+        assert_eq!(deserialized.repositories[0].key, "libs-release");
+        assert_eq!(deserialized.warnings, vec!["Some warning"]);
+
+        // Verify nested under "assessment" key (as save_assessment stores it)
+        let config = serde_json::json!({ "assessment": json });
+        let extracted: AssessmentResult =
+            serde_json::from_value(config["assessment"].clone()).unwrap();
+        assert_eq!(extracted.total_artifacts, 42);
+    }
+
+    #[test]
+    fn test_assessment_result_empty_repositories() {
+        let result = AssessmentResult {
+            repositories: vec![],
+            total_artifacts: 0,
+            total_size_bytes: 0,
+            users_count: 0,
+            groups_count: 0,
+            permissions_count: 0,
+            estimated_duration_seconds: 0,
+            warnings: vec!["User/group/permission counts require source-specific API access and are not included in this assessment".to_string()],
+            blockers: vec!["No repositories have supported package types".to_string()],
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        let deserialized: AssessmentResult = serde_json::from_value(json).unwrap();
+        assert!(deserialized.repositories.is_empty());
+        assert_eq!(deserialized.blockers.len(), 1);
+        assert_eq!(deserialized.warnings.len(), 1);
+    }
 }

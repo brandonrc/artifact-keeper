@@ -1518,34 +1518,31 @@ async fn run_assessment(
         .map_err(|e| AppError::Internal(format!("Failed to create client: {}", e)))?;
 
     let db = state.db.clone();
-    let fail_db = state.db.clone();
     let job_id = job.id;
     let connection_id = job.source_connection_id;
     tokio::spawn(async move {
         let service = MigrationService::new(db.clone());
-        match service.run_assessment(connection_id, &*client).await {
-            Ok(result) => {
-                if let Err(e) = service.save_assessment(job_id, &result).await {
+        let err = match service.run_assessment(connection_id, &*client).await {
+            Ok(result) => match service.save_assessment(job_id, &result).await {
+                Ok(()) => None,
+                Err(e) => {
                     tracing::error!(job_id = %job_id, error = %e, "Failed to save assessment results");
-                    let _ = sqlx::query(
-                        "UPDATE migration_jobs SET status = 'failed', finished_at = NOW(), error_summary = $2 WHERE id = $1"
-                    )
-                    .bind(job_id)
-                    .bind(e.to_string())
-                    .execute(&fail_db)
-                    .await;
+                    Some(e.to_string())
                 }
-            }
+            },
             Err(e) => {
                 tracing::error!(job_id = %job_id, error = %e, "Assessment worker failed");
-                let _ = sqlx::query(
-                    "UPDATE migration_jobs SET status = 'failed', finished_at = NOW(), error_summary = $2 WHERE id = $1"
-                )
-                .bind(job_id)
-                .bind(e.to_string())
-                .execute(&fail_db)
-                .await;
+                Some(e.to_string())
             }
+        };
+        if let Some(msg) = err {
+            let _ = sqlx::query(
+                "UPDATE migration_jobs SET status = 'failed', finished_at = NOW(), error_summary = $2 WHERE id = $1"
+            )
+            .bind(job_id)
+            .bind(msg)
+            .execute(&db)
+            .await;
         }
     });
 
