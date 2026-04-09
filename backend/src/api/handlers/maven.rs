@@ -446,6 +446,49 @@ async fn download(
             }
         }
 
+        // Virtual repo: try each member in priority order
+        if repo.repo_type == RepositoryType::Virtual {
+            let members = proxy_helpers::fetch_virtual_members(&state.db, repo.id).await?;
+
+            for member in &members {
+                // Try computing the checksum from the member's stored artifact
+                if let Ok(response) = serve_computed_checksum(
+                    &state,
+                    member.id,
+                    &member.storage_location(),
+                    base_path,
+                    checksum_type,
+                )
+                .await
+                {
+                    return Ok(response);
+                }
+
+                // If member is remote, try proxying the checksum file from upstream
+                if member.repo_type == RepositoryType::Remote {
+                    if let (Some(ref upstream_url), Some(ref proxy)) =
+                        (&member.upstream_url, &state.proxy_service)
+                    {
+                        if let Ok((content, _)) = proxy_helpers::proxy_fetch(
+                            proxy,
+                            member.id,
+                            &member.key,
+                            upstream_url,
+                            &path,
+                        )
+                        .await
+                        {
+                            return Ok(Response::builder()
+                                .status(StatusCode::OK)
+                                .header(CONTENT_TYPE, "text/plain")
+                                .body(Body::from(content))
+                                .unwrap());
+                        }
+                    }
+                }
+            }
+        }
+
         return Err(AppError::NotFound("File not found".to_string()).into_response());
     }
 
