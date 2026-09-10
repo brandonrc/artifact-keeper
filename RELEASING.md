@@ -228,10 +228,11 @@ existing tag that names the same commit.
    **Fallback: a prerelease tag.** `vX.Y.Z-rc.N` still works as it always
    did (the ruleset excludes `v*-rc*`, `v*-beta*`, `v*-alpha*` from
    immutability, so it is deletable and re-cuttable) and still runs the gate
-   inside `release.yml`. It is the old path, kept for maintenance branches
-   and for a rehearsal that needs a real tag; it certifies nothing and it
-   does not run the stable-only checks. Cut stable releases with the
-   candidate.
+   inside `release.yml`. It is the old path, kept for a rehearsal that needs
+   a real tag; it certifies nothing and it does not run the stable-only
+   checks. Cut stable releases with the candidate — including patch releases
+   from a maintenance branch, which now have their own candidate path (see
+   "Patch releases from a `release/X.Y.x` branch").
 
 7. **Dispatch the Release Promote.** With the candidate green:
 
@@ -334,6 +335,110 @@ existing tag that names the same commit.
    `SECURITY.md` carries the same commands written out for a user who does
    not have the repository checked out; keep the two in step.
 
+## Patch releases from a `release/X.Y.x` branch
+
+A patch release (1.9.1, 1.7.6) is cut from its maintenance branch, not from
+`main`. The candidate-then-promote flow above is the same flow, dispatched the
+same way: **both workflows are dispatched on `main`**, and you name the commit.
+
+```bash
+# 0. the branch exists and carries the flow
+#    Creating a release/X.Y.x ref is refused by ruleset 20038606 for
+#    everyone, admins included; cutting a NEW line is a deliberate,
+#    announced ruleset toggle by a repository admin, for as long as the push
+#    takes. An existing line needs no toggle.
+#    The branch must carry scripts/ci/resolve-certified-ref.sh,
+#    assert-candidate-certified.sh, follow-dispatched-run.sh and a
+#    dispatchable release.yml / promotable docker-publish.yml; the candidate
+#    refuses the commit by name if any is missing.
+
+# 1. land the fixes on main first, then cherry-pick onto release/1.9.x
+#    (Release Branch Gate enforces this)
+
+# 2. the release prep commit on release/1.9.x sets Cargo.toml to 1.9.1 and
+#    opens the CHANGELOG section, exactly as on main
+
+# 3. certify — ON MAIN, naming the maintenance commit
+gh workflow run release-candidate.yml --repo artifact-keeper/artifact-keeper \
+  --ref main -f sha=<the release/1.9.x commit>
+
+# 4. promote — ON MAIN, same commit
+gh workflow run release-promote.yml --repo artifact-keeper/artifact-keeper \
+  --ref main -f sha=<the certified commit>
+```
+
+There is no `--ref release/1.9.x` step, and that is the security property.
+
+### The signing identity never widens
+
+A certification is trusted because of one thing: the Sigstore certificate's
+SubjectAlternativeName, pinned byte-for-byte to
+`...release-candidate.yml@refs/heads/main`. A maintenance release does **not**
+relax that pin. `release-candidate.yml` is dispatched on `main` and certifies
+the maintenance commit from there, so main's copy of the workflow remains the
+only thing that can produce an accepted certification. A copy of that file on
+a `release/*` branch — including one an attacker managed to create — signs
+with an identity nothing accepts, exactly as a copy on any topic branch does.
+The alternative was to widen the pin to
+`...release-candidate.yml@refs/heads/release/1.9.x`; certifying from main is
+strictly stronger, because the attack of creating a `release/*` ref, putting
+an edited workflow on it and satisfying an exact pin has no identity to reach
+for at all, rather than being bounded by argument.
+
+Nothing in the workflow depended on the dispatched ref for this to work: every
+job but `resolve` already checks out the resolved sha explicitly, the reusable
+Release Gate is an absolute cross-repository reference
+(`artifact-keeper-test/.../release-gate.yml@main`) that takes the images by
+digest, and none of the scripts run at the certified sha reads `GITHUB_REF`.
+
+### Which commits main may certify
+
+That is the second, independent control, and it lives in one place:
+`scripts/ci/resolve-certified-ref.sh`, which every consumer asks — the
+candidate, the promote, `release.yml` on the tag, and `docker-publish.yml`'s
+certified-candidate promote. The commit must be an ancestor of `main`; failing
+that, an ancestor of `refs/heads/release/<X>.<Y>.x`, where X and Y are read
+from `Cargo.toml` **at that commit**, its existence checked case-sensitively
+against the git-refs API. The line is therefore a function of the commit's own
+content and the repository's refs; no dispatch input names it. The predicate
+records the resolved line as `certified_ref`, and the verifier asks the
+repository the same question again at promote time — a disagreement is never
+promoted.
+
+The resolver also **pins the content** of `release-candidate.yml` at the
+certified commit: it must be byte-identical (same git blob id) to the copy
+`main` carries at the merge base of main and that commit, or to main's current
+copy, which is what a forward-port produces. That is no longer load-bearing
+for the identity, but it is cheap and it backstops the window in which an
+admin has the release ruleset toggled off to create a line: a `release/6.6.x`
+created in that window, carrying an edited workflow, is refused on content as
+well as on identity. If it refuses with "not a copy that lives on main", do
+**not** edit the workflow on the branch — cherry-pick main's copy across and
+dispatch a new candidate.
+
+### Branch protection, for reference
+
+Relevant because it decides who can put a commit on a release line at all
+(ruleset 20038606 vs `branches/main/protection`), not because the
+certification depends on it:
+
+| write path | `main` | `refs/heads/release/X.Y.x` |
+|---|---|---|
+| direct push | allowed, if the required contexts are green on that sha | **refused** — a pull request is required |
+| force push / rewrite | blocked (`allow_force_pushes: false`) | blocked (`non_fast_forward`) |
+| deletion | blocked (`allow_deletions: false`) | blocked (`deletion`) |
+| ref creation | n/a (it exists) | **refused** — `do_not_enforce_on_create: false`, no bypass actor |
+| required checks | 3 | 2, incl. `Verify commits trace back to main` |
+| required approvals | none configured | none configured |
+| admin bypass | **yes** — `enforce_admins: false` | **no** — `bypass_actors: []` |
+
+One thing to fix, and it is bigger than the release flow: on **both**
+branches, a pull request's required checks are defined by workflows the pull
+request itself can edit, and neither branch requires an approval. The real
+floor under a release is therefore *write access*, not review. Raising
+`required_approving_review_count` above 0 on ruleset 20038606, and giving
+`main` a ruleset of its own, would raise it.
+
 ## Supply chain: what the release job signs, and what it refuses
 
 Release binaries used to ship with a `<name>.sha256` beside them and nothing
@@ -435,6 +540,15 @@ scanned bytes; deleting it breaks every chart that pins it.
 - `CHANGELOG.md` always has an open `## [Unreleased]` as its first `## [`
   heading. Enforced by `scripts/ci/check-changelog-unreleased.sh` in CI's
   shell-tests job (#3433).
+- A stable release is the promotion of a **certified commit**, and which
+  branch may have certified it is **derived** from the commit
+  (`scripts/ci/resolve-certified-ref.sh`), never passed in: `main`, or the
+  `release/X.Y.x` its own `Cargo.toml` names. The Release Candidate is always
+  dispatched on `main`, including for a maintenance release, so the signing
+  identity is always `...release-candidate.yml@refs/heads/main` and never
+  widens; `release-candidate.yml` at the certified commit must additionally be
+  byte-identical to a copy that lives on `main`. See "Patch releases from a
+  `release/X.Y.x` branch".
 - Floating tags (`:latest`, `:X.Y`) are applied ONLY after the release gate
   and the GitHub Release, by a build-free promotion that re-points them at the
   digest `:X.Y.Z` already names. A floating tag may only name a version with a
